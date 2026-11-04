@@ -8,7 +8,7 @@ This is the shortest path to validate one camera Pi and one monitor Pi before ex
 - Connect the HQ/IMX477 camera and verify the ribbon cable orientation.
 - Prepare a monitor Pi with HDMI output and a wired network connection.
 - Put the test Pi devices, management server, and MediaMTX host on the same isolated test network.
-- Have the admin token and the server/media-server IP addresses ready.
+- Have the server/media-server IP addresses ready. The dashboard creates its administrator account on first visit; the legacy admin token is still accepted for Pi agents and test scripts.
 
 ## Camera Pi
 

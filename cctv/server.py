@@ -37,15 +37,32 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0"))
         return json.loads(self.rfile.read(length) or b"{}")
 
+    def session_token(self) -> str:
+        cookies = self.headers.get("Cookie", "").split(";")
+        for cookie in cookies:
+            name, _, value = cookie.strip().partition("=")
+            if name == "cctv_session":
+                return value
+        return ""
+
+    def session_user(self) -> dict | None:
+        token = self.session_token()
+        return self.store.session_user(token) if token else None
+
     def authorized(self, admin_only: bool = False) -> bool:
+        user = self.session_user()
+        if user:
+            return user["role"] == "admin" or (not admin_only and user["role"] in {"operator", "viewer"})
         admin_token = getattr(self.server, "admin_token", "")  # type: ignore[attr-defined]
         read_token = getattr(self.server, "read_token", "")  # type: ignore[attr-defined]
-        if not admin_token and not read_token:
-            return True
         supplied = self.headers.get("Authorization", "")
         if admin_token and secrets.compare_digest(supplied, f"Bearer {admin_token}"):
             return True
-        return not admin_only and bool(read_token) and secrets.compare_digest(supplied, f"Bearer {read_token}")
+        if not admin_only and read_token and secrets.compare_digest(supplied, f"Bearer {read_token}"):
+            return True
+        if self.store.user_count():
+            return False
+        return not admin_token and not read_token
 
     def require_auth(self) -> bool:
         if self.authorized(admin_only=True):
@@ -84,6 +101,15 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
+        if parsed.path == "/api/auth/status":
+            user = self.session_user()
+            self.send_json({"authenticated": bool(user), "setup_required": self.store.user_count() == 0, "user": user})
+            return
+        if parsed.path == "/api/users":
+            if not self.require_auth():
+                return
+            self.send_json({"users": self.store.users()})
+            return
         if parsed.path == "/":
             content = (ROOT / "dashboard.html").read_bytes()
             self.send_response(200)
@@ -198,6 +224,55 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         try:
+            if parsed.path == "/api/auth/setup":
+                if self.store.user_count():
+                    self.send_json({"error": "setup already completed"}, HTTPStatus.CONFLICT)
+                    return
+                payload = self.body()
+                user = self.store.create_user(str(payload.get("username", "")), str(payload.get("password", "")), "admin")
+                token = self.store.create_session(user["username"])
+                self.send_response(HTTPStatus.CREATED)
+                self.send_header("Set-Cookie", f"cctv_session={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200")
+                self.send_header("Content-Type", "application/json")
+                body = json.dumps({"user": user}).encode()
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            if parsed.path == "/api/auth/login":
+                payload = self.body()
+                user = self.store.authenticate_user(str(payload.get("username", "")), str(payload.get("password", "")))
+                if not user:
+                    self.send_json({"error": "invalid username or password"}, HTTPStatus.UNAUTHORIZED)
+                    return
+                token = self.store.create_session(user["username"])
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Set-Cookie", f"cctv_session={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200")
+                self.send_header("Content-Type", "application/json")
+                body = json.dumps({"user": user}).encode()
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            if parsed.path == "/api/auth/logout":
+                if self.session_token():
+                    self.store.revoke_session(self.session_token())
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Set-Cookie", "cctv_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0")
+                self.send_header("Content-Type", "application/json")
+                body = b'{"ok":true}'
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            if parsed.path == "/api/users":
+                if not self.require_auth():
+                    return
+                payload = self.body()
+                user = self.store.create_user(str(payload.get("username", "")), str(payload.get("password", "")), str(payload.get("role", "viewer")))
+                self.store.audit("user.create", user["username"], self.client_address[0], {"role": user["role"]})
+                self.send_json({"user": user}, HTTPStatus.CREATED)
+                return
             if parsed.path == "/api/devices":
                 if not self.require_auth():
                     return
@@ -384,6 +459,21 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_DELETE(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
+        if parsed.path.startswith("/api/users/"):
+            if not self.require_auth():
+                return
+            username = unquote(parsed.path.split("/", 3)[3])
+            current = self.session_user()
+            if current and current["username"] == username:
+                self.send_json({"error": "cannot delete the current user"}, HTTPStatus.BAD_REQUEST)
+                return
+            if not any(user["username"] == username for user in self.store.users()):
+                self.send_json({"error": "user not found"}, HTTPStatus.NOT_FOUND)
+                return
+            self.store.delete_user(username)
+            self.store.audit("user.delete", username, self.client_address[0])
+            self.send_json({"deleted": username})
+            return
         if parsed.path.startswith("/api/devices/"):
             if not self.require_auth():
                 return

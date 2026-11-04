@@ -28,6 +28,7 @@ def serialized(method):
 
 class Store:
     stale_after = timedelta(seconds=45)
+    session_lifetime = timedelta(hours=12)
     def __init__(self, path: str | Path = "data/cctv.db") -> None:
         self.path = str(path)
         if self.path != ":memory:":
@@ -81,6 +82,18 @@ class Store:
                 adopted_device_id TEXT,
                 issued_token TEXT
             );
+            CREATE TABLE IF NOT EXISTS users (
+                username TEXT PRIMARY KEY,
+                password_hash TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT 'admin' CHECK(role IN ('admin', 'operator', 'viewer')),
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS sessions (
+                token_hash TEXT PRIMARY KEY,
+                username TEXT NOT NULL REFERENCES users(username) ON DELETE CASCADE,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL
+            );
             """
         )
         columns = {row[1] for row in self.db.execute("PRAGMA table_info(devices)").fetchall()}
@@ -103,6 +116,77 @@ class Store:
     @staticmethod
     def hash_token(token: str) -> str:
         return hashlib.sha256(token.encode()).hexdigest()
+
+    @staticmethod
+    def hash_password(password: str, salt: bytes | None = None) -> str:
+        salt = salt or secrets.token_bytes(16)
+        digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 260_000)
+        return f"pbkdf2_sha256$260000${salt.hex()}${digest.hex()}"
+
+    @staticmethod
+    def verify_password(password: str, encoded: str) -> bool:
+        try:
+            algorithm, rounds, salt_hex, digest_hex = encoded.split("$")
+            if algorithm != "pbkdf2_sha256":
+                return False
+            digest = hashlib.pbkdf2_hmac("sha256", password.encode(), bytes.fromhex(salt_hex), int(rounds))
+            return secrets.compare_digest(digest.hex(), digest_hex)
+        except (ValueError, TypeError):
+            return False
+
+    @serialized
+    def user_count(self) -> int:
+        return int(self.db.execute("SELECT COUNT(*) FROM users").fetchone()[0])
+
+    @serialized
+    def users(self) -> list[dict[str, Any]]:
+        rows = self.db.execute("SELECT username, role, created_at FROM users ORDER BY username").fetchall()
+        return [{"username": row["username"], "role": row["role"], "created_at": row["created_at"]} for row in rows]
+
+    @serialized
+    def create_user(self, username: str, password: str, role: str = "admin") -> dict[str, Any]:
+        username = username.strip()
+        if not username or len(username) > 80 or len(password) < 8 or role not in {"admin", "operator", "viewer"}:
+            raise ValueError("username, password, or role is invalid")
+        self.db.execute("INSERT INTO users(username, password_hash, role, created_at) VALUES(?, ?, ?, ?)", (username, self.hash_password(password), role, now()))
+        self.db.commit()
+        return {"username": username, "role": role}
+
+    @serialized
+    def delete_user(self, username: str) -> None:
+        self.db.execute("DELETE FROM users WHERE username=?", (username,))
+        self.db.commit()
+
+    @serialized
+    def authenticate_user(self, username: str, password: str) -> dict[str, Any] | None:
+        row = self.db.execute("SELECT username, password_hash, role FROM users WHERE username=?", (username.strip(),)).fetchone()
+        if not row or not self.verify_password(password, row["password_hash"]):
+            return None
+        return {"username": row["username"], "role": row["role"]}
+
+    @serialized
+    def create_session(self, username: str) -> str:
+        token = secrets.token_urlsafe(32)
+        created = datetime.now(timezone.utc)
+        self.db.execute("INSERT INTO sessions(token_hash, username, created_at, expires_at) VALUES(?, ?, ?, ?)", (self.hash_token(token), username, created.isoformat(), (created + self.session_lifetime).isoformat()))
+        self.db.commit()
+        return token
+
+    @serialized
+    def session_user(self, token: str) -> dict[str, Any] | None:
+        row = self.db.execute("SELECT u.username, u.role, s.expires_at FROM sessions s JOIN users u ON u.username=s.username WHERE s.token_hash=?", (self.hash_token(token),)).fetchone()
+        if not row:
+            return None
+        if datetime.fromisoformat(row["expires_at"]) <= datetime.now(timezone.utc):
+            self.db.execute("DELETE FROM sessions WHERE token_hash=?", (self.hash_token(token),))
+            self.db.commit()
+            return None
+        return {"username": row["username"], "role": row["role"]}
+
+    @serialized
+    def revoke_session(self, token: str) -> None:
+        self.db.execute("DELETE FROM sessions WHERE token_hash=?", (self.hash_token(token),))
+        self.db.commit()
 
     @serialized
     def device_token_valid(self, device_id: str, token: str) -> bool:
