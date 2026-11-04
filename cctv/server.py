@@ -47,6 +47,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def session_user(self) -> dict | None:
         token = self.session_token()
+        if not token:
+            supplied = self.headers.get("Authorization", "")
+            if supplied.startswith("Bearer "):
+                token = supplied[7:]
         return self.store.session_user(token) if token else None
 
     def authorized(self, admin_only: bool = False) -> bool:
@@ -234,7 +238,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_response(HTTPStatus.CREATED)
                 self.send_header("Set-Cookie", f"cctv_session={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200")
                 self.send_header("Content-Type", "application/json")
-                body = json.dumps({"user": user}).encode()
+                body = json.dumps({"user": user, "session_token": token}).encode()
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
@@ -249,14 +253,18 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Set-Cookie", f"cctv_session={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200")
                 self.send_header("Content-Type", "application/json")
-                body = json.dumps({"user": user}).encode()
+                body = json.dumps({"user": user, "session_token": token}).encode()
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
                 return
             if parsed.path == "/api/auth/logout":
-                if self.session_token():
-                    self.store.revoke_session(self.session_token())
+                token = self.session_token()
+                if not token:
+                    supplied = self.headers.get("Authorization", "")
+                    token = supplied[7:] if supplied.startswith("Bearer ") else ""
+                if token:
+                    self.store.revoke_session(token)
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Set-Cookie", "cctv_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0")
                 self.send_header("Content-Type", "application/json")
