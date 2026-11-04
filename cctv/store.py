@@ -153,6 +153,17 @@ class Store:
         return {"username": username, "role": role}
 
     @serialized
+    def set_password(self, username: str, password: str) -> None:
+        username = username.strip()
+        if len(password) < 8:
+            raise ValueError("password must be at least 8 characters")
+        result = self.db.execute("UPDATE users SET password_hash=? WHERE username=?", (self.hash_password(password), username))
+        if result.rowcount == 0:
+            raise ValueError("user not found")
+        self.db.execute("DELETE FROM sessions WHERE username=?", (username,))
+        self.db.commit()
+
+    @serialized
     def delete_user(self, username: str) -> None:
         self.db.execute("DELETE FROM users WHERE username=?", (username,))
         self.db.commit()

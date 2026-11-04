@@ -37,6 +37,14 @@ docker compose up -d --build
 
 The dashboard is then available at `http://SERVER:8080`. On first visit, create the administrator account with a username and password (minimum 8 characters). Administrators can create additional administrator, operator, and viewer accounts from the **Users** page. Keep the management port restricted to the authorized administration network; the RTSP port must be reachable by cameras and monitors on the CCTV VLAN. The legacy `CCTV_ADMIN_TOKEN` and `CCTV_READ_TOKEN` options remain available for API/agent compatibility.
 
+If an administrator password is forgotten, reset it locally on the dashboard server. The command prompts twice without displaying or storing the password:
+
+```bash
+python3 -m cctv.reset_password --username Admin
+```
+
+Use `--db /path/to/cctv.db` when the server uses a non-default database path. Resetting a password signs out all existing sessions for that user.
+
 For adoption-based provisioning, `CCTV_BOOTSTRAP_TOKEN` is used only to place generic Pis into the pending-device list. It is not an administrator token. After adoption, the Pi receives a device-specific credential and the dashboard-selected role. Set `CCTV_PUBLIC_MEDIA_URL` and `CCTV_PUBLIC_WEBRTC_URL` to URLs reachable from the administrator's browser for live previews.
 
 The V1 management server uses only Python's standard library and SQLite:
