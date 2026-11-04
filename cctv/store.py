@@ -48,6 +48,13 @@ class Store:
                 source TEXT NOT NULL DEFAULT '',
                 details TEXT NOT NULL DEFAULT '{}'
             );
+            CREATE TABLE IF NOT EXISTS device_commands (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+                command TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                consumed_at TEXT
+            );
             """
         )
         self.db.commit()
@@ -158,3 +165,18 @@ class Store:
     def audit_entries(self, limit: int = 100) -> list[dict[str, Any]]:
         limit = max(1, min(limit, 500))
         return [dict(row) for row in self.db.execute("SELECT * FROM audit_log ORDER BY id DESC LIMIT ?", (limit,)).fetchall()]
+
+    def queue_command(self, device_id: str, command: str) -> dict[str, Any]:
+        cursor = self.db.execute(
+            "INSERT INTO device_commands(device_id, command, created_at) VALUES(?, ?, ?)",
+            (device_id, command, now()),
+        )
+        self.db.commit()
+        return dict(self.db.execute("SELECT * FROM device_commands WHERE id = ?", (cursor.lastrowid,)).fetchone())
+
+    def consume_commands(self, device_id: str) -> list[dict[str, Any]]:
+        rows = self.db.execute("SELECT * FROM device_commands WHERE device_id=? AND consumed_at IS NULL ORDER BY id", (device_id,)).fetchall()
+        if rows:
+            self.db.execute("UPDATE device_commands SET consumed_at=? WHERE device_id=? AND consumed_at IS NULL", (now(), device_id))
+            self.db.commit()
+        return [dict(row) for row in rows]

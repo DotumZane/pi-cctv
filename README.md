@@ -100,6 +100,15 @@ Administrative mutations are written to the SQLite audit log. Authorized clients
 
 Device lifecycle is also available through the authenticated API: `POST /api/devices` enrolls or updates a device, and `DELETE /api/devices/{id}` removes it and any saved monitor assignment.
 
+An administrator can request a media restart without exposing arbitrary shell commands:
+
+```bash
+curl -X POST -H "Authorization: Bearer ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"command":"restart_media"}' \
+  http://SERVER:8080/api/devices/cam-01/commands
+```
+
 To exercise the intended control-plane scale without physical Pis:
 
 ```bash

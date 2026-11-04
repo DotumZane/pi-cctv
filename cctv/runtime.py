@@ -62,6 +62,13 @@ class DeviceRuntime:
     def heartbeat(self) -> None:
         http_json(f"{self.server}/api/devices/{self.device_id}/heartbeat", "POST", {"runtime": "v1"}, self.token)
 
+    def poll_commands(self) -> None:
+        commands = http_json(f"{self.server}/api/devices/{self.device_id}/commands", token=self.token).get("commands", [])
+        for command in commands:
+            if command.get("command") == "restart_media":
+                self.stop_media()
+                self.last_command = None
+
     def desired_command(self) -> str | None:
         if self.role == "camera":
             device = http_json(f"{self.server}/api/devices/{self.device_id}", token=self.token)
@@ -111,6 +118,7 @@ class DeviceRuntime:
             while True:
                 try:
                     self.heartbeat()
+                    self.poll_commands()
                     self.reconcile_media()
                 except Exception as exc:
                     print(f"Runtime check failed: {exc}; retrying", flush=True)

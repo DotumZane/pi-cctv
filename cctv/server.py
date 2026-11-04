@@ -77,6 +77,15 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self.send_json({"devices": self.store.devices(parse_qs(parsed.query).get("kind", [None])[0])})
             return
+        if parsed.path.startswith("/api/devices/") and parsed.path.endswith("/commands"):
+            if not self.require_read_auth():
+                return
+            device_id = parsed.path.split("/")[3]
+            if not self.store.device(device_id):
+                self.send_json({"error": "device not found"}, HTTPStatus.NOT_FOUND)
+                return
+            self.send_json({"commands": self.store.consume_commands(device_id)})
+            return
         if parsed.path.startswith("/api/devices/"):
             if not self.require_read_auth():
                 return
@@ -155,6 +164,21 @@ class Handler(BaseHTTPRequestHandler):
                 device_id = parsed.path.split("/")[3]
                 device = self.store.heartbeat(device_id, self.client_address[0], json.dumps(self.body()))
                 self.send_json(device or {"error": "device not found"}, HTTPStatus.OK if device else HTTPStatus.NOT_FOUND)
+                return
+            if parsed.path.startswith("/api/devices/") and parsed.path.endswith("/commands"):
+                if not self.require_auth():
+                    return
+                device_id = parsed.path.split("/")[3]
+                if not self.store.device(device_id):
+                    self.send_json({"error": "device not found"}, HTTPStatus.NOT_FOUND)
+                    return
+                payload = self.body()
+                if payload.get("command") != "restart_media":
+                    self.send_json({"error": "only restart_media is supported in V1"}, HTTPStatus.BAD_REQUEST)
+                    return
+                command = self.store.queue_command(device_id, payload["command"])
+                self.store.audit("device.command", device_id, self.client_address[0], {"command": payload["command"]})
+                self.send_json(command, HTTPStatus.ACCEPTED)
                 return
         except (json.JSONDecodeError, KeyError, ValueError) as exc:
             self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)

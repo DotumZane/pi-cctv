@@ -90,6 +90,16 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(index["recordings"][0]["path"], "cam-01/2026-11-04/06-00-00.mkv")
 
+    def test_restart_media_command_is_queued_and_consumed(self):
+        self.call("POST", "/api/devices", {"id": "cam-1", "kind": "camera", "name": "Saw 1"})
+        status, command = self.call("POST", "/api/devices/cam-1/commands", {"command": "restart_media"})
+        self.assertEqual(status, 202)
+        self.assertEqual(command["command"], "restart_media")
+        status, pending = self.call("GET", "/api/devices/cam-1/commands")
+        self.assertEqual(status, 200)
+        self.assertEqual(pending["commands"][0]["id"], command["id"])
+        self.assertEqual(self.call("GET", "/api/devices/cam-1/commands")[1]["commands"], [])
+
 
 if __name__ == "__main__":
     unittest.main()
