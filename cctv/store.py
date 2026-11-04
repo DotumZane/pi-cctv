@@ -6,7 +6,9 @@ import json
 import hashlib
 import secrets
 import sqlite3
+import threading
 from datetime import datetime, timedelta, timezone
+from functools import wraps
 from pathlib import Path
 from typing import Any
 
@@ -15,12 +17,22 @@ def now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def serialized(method):
+    """Serialize access to the shared SQLite connection used by HTTP threads."""
+    @wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+    return wrapper
+
+
 class Store:
     stale_after = timedelta(seconds=45)
     def __init__(self, path: str | Path = "data/cctv.db") -> None:
         self.path = str(path)
         if self.path != ":memory:":
             Path(self.path).parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.RLock()
         self.db = sqlite3.connect(self.path, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA foreign_keys = ON")
@@ -79,9 +91,11 @@ class Store:
             self.db.execute("ALTER TABLE assignments ADD COLUMN outputs TEXT NOT NULL DEFAULT '[]'")
         self.db.commit()
 
+    @serialized
     def close(self) -> None:
         self.db.close()
 
+    @serialized
     def device(self, device_id: str) -> dict[str, Any] | None:
         row = self.db.execute("SELECT * FROM devices WHERE id = ?", (device_id,)).fetchone()
         return dict(row) if row else None
@@ -90,10 +104,12 @@ class Store:
     def hash_token(token: str) -> str:
         return hashlib.sha256(token.encode()).hexdigest()
 
+    @serialized
     def device_token_valid(self, device_id: str, token: str) -> bool:
         device = self.device(device_id)
         return bool(device and device.get("token_hash") and secrets.compare_digest(device["token_hash"], self.hash_token(token)))
 
+    @serialized
     def pending_register(self, device_id: str, name: str, ip_address: str, metadata: dict[str, Any]) -> dict[str, Any]:
         timestamp = now()
         self.db.execute(
@@ -106,9 +122,11 @@ class Store:
         self.db.commit()
         return dict(self.db.execute("SELECT * FROM pending_devices WHERE id=?", (device_id,)).fetchone())
 
+    @serialized
     def pending_devices(self) -> list[dict[str, Any]]:
         return [dict(row) for row in self.db.execute("SELECT * FROM pending_devices WHERE adopted_device_id IS NULL ORDER BY first_seen").fetchall()]
 
+    @serialized
     def adopt_pending(self, pending_id: str, kind: str, name: str, location: str) -> tuple[dict[str, Any], str] | None:
         pending = self.db.execute("SELECT * FROM pending_devices WHERE id=? AND adopted_device_id IS NULL", (pending_id,)).fetchone()
         if not pending:
@@ -124,6 +142,7 @@ class Store:
         self.db.commit()
         return self.device(device_id), token  # type: ignore[return-value]
 
+    @serialized
     def claim_adoption(self, pending_id: str) -> dict[str, Any] | None:
         row = self.db.execute(
             "SELECT d.*, p.issued_token FROM devices d JOIN pending_devices p ON p.adopted_device_id=d.id WHERE p.id=? AND p.issued_token IS NOT NULL",
@@ -136,11 +155,13 @@ class Store:
         self.db.commit()
         return result
 
+    @serialized
     def delete_device(self, device_id: str) -> bool:
         result = self.db.execute("DELETE FROM devices WHERE id = ?", (device_id,))
         self.db.commit()
         return result.rowcount > 0
 
+    @serialized
     def devices(self, kind: str | None = None) -> list[dict[str, Any]]:
         if kind:
             rows = self.db.execute("SELECT * FROM devices WHERE kind = ? ORDER BY name", (kind,)).fetchall()
@@ -162,6 +183,7 @@ class Store:
             devices.append(device)
         return devices
 
+    @serialized
     def health_summary(self) -> dict[str, Any]:
         devices = self.devices()
         return {
@@ -172,6 +194,7 @@ class Store:
             "monitors": sum(device["kind"] == "monitor" for device in devices),
         }
 
+    @serialized
     def register(self, payload: dict[str, Any]) -> dict[str, Any]:
         device_id = str(payload["id"])
         self.db.execute(
@@ -186,6 +209,7 @@ class Store:
         self.db.commit()
         return self.device(device_id)  # type: ignore[return-value]
 
+    @serialized
     def heartbeat(self, device_id: str, ip_address: str = "", metadata: str = "{}") -> dict[str, Any] | None:
         existing = self.device(device_id)
         try:
@@ -201,6 +225,7 @@ class Store:
         self.db.commit()
         return self.device(device_id)
 
+    @serialized
     def update_settings(self, device_id: str, settings: dict[str, Any]) -> dict[str, Any] | None:
         device = self.device(device_id)
         if not device:
@@ -214,10 +239,12 @@ class Store:
         self.db.commit()
         return self.device(device_id)
 
+    @serialized
     def assignment(self, monitor_id: str) -> dict[str, Any] | None:
         row = self.db.execute("SELECT * FROM assignments WHERE monitor_id = ?", (monitor_id,)).fetchone()
         return dict(row) if row else None
 
+    @serialized
     def set_assignment(self, monitor_id: str, layout: str, cameras: list[str], outputs: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         updated = now()
         self.db.execute(
@@ -229,9 +256,11 @@ class Store:
         self.db.commit()
         return self.assignment(monitor_id)  # type: ignore[return-value]
 
+    @serialized
     def all_assignments(self) -> list[dict[str, Any]]:
         return [dict(row) for row in self.db.execute("SELECT * FROM assignments ORDER BY monitor_id").fetchall()]
 
+    @serialized
     def audit(self, action: str, target: str, source: str = "", details: dict[str, Any] | None = None) -> None:
         self.db.execute(
             "INSERT INTO audit_log(created_at, action, target, source, details) VALUES(?, ?, ?, ?, ?)",
@@ -239,10 +268,12 @@ class Store:
         )
         self.db.commit()
 
+    @serialized
     def audit_entries(self, limit: int = 100) -> list[dict[str, Any]]:
         limit = max(1, min(limit, 500))
         return [dict(row) for row in self.db.execute("SELECT * FROM audit_log ORDER BY id DESC LIMIT ?", (limit,)).fetchall()]
 
+    @serialized
     def queue_command(self, device_id: str, command: str) -> dict[str, Any]:
         cursor = self.db.execute(
             "INSERT INTO device_commands(device_id, command, created_at) VALUES(?, ?, ?)",
@@ -251,6 +282,7 @@ class Store:
         self.db.commit()
         return dict(self.db.execute("SELECT * FROM device_commands WHERE id = ?", (cursor.lastrowid,)).fetchone())
 
+    @serialized
     def consume_commands(self, device_id: str) -> list[dict[str, Any]]:
         rows = self.db.execute("SELECT * FROM device_commands WHERE device_id=? AND consumed_at IS NULL ORDER BY id", (device_id,)).fetchall()
         if rows:
