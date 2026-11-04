@@ -4,6 +4,10 @@
 logLevel: warn
 rtsp: true
 rtspAddress: :8554
+hls: true
+hlsAddress: :8888
+webrtc: true
+webrtcAddress: :8889
 readTimeout: 5s
 writeTimeout: 5s
 writeQueueSize: 512

@@ -116,6 +116,18 @@ class Handler(BaseHTTPRequestHandler):
                 claim["status"] = "adopted"
             self.send_json(claim or {"status": "pending"})
             return
+        if parsed.path.startswith("/api/cameras/") and parsed.path.endswith("/live"):
+            camera_id = parsed.path.split("/")[3]
+            if not self.require_read_auth():
+                return
+            camera = self.store.device(camera_id)
+            if not camera or camera["kind"] != "camera":
+                self.send_json({"error": "camera not found"}, HTTPStatus.NOT_FOUND)
+                return
+            media_url = getattr(self.server, "public_media_url", "http://127.0.0.1:8888").rstrip("/")  # type: ignore[attr-defined]
+            webrtc_url = getattr(self.server, "public_webrtc_url", "http://127.0.0.1:8889").rstrip("/")  # type: ignore[attr-defined]
+            self.send_json({"camera_id": camera_id, "hls_url": f"{media_url}/{camera_id}/index.m3u8", "webrtc_url": f"{webrtc_url}/{camera_id}/whep"})
+            return
         if parsed.path.startswith("/api/devices/") and parsed.path.endswith("/commands"):
             device_id = parsed.path.split("/")[3]
             if not self.require_device_auth(device_id):
@@ -316,6 +328,8 @@ def main() -> None:
     parser.add_argument("--read-token", default=os.getenv("CCTV_READ_TOKEN", ""))
     parser.add_argument("--recordings-dir", default=os.getenv("CCTV_RECORDINGS_DIR", "recordings"))
     parser.add_argument("--bootstrap-token", default=os.getenv("CCTV_BOOTSTRAP_TOKEN", ""))
+    parser.add_argument("--public-media-url", default=os.getenv("CCTV_PUBLIC_MEDIA_URL", "http://127.0.0.1:8888"))
+    parser.add_argument("--public-webrtc-url", default=os.getenv("CCTV_PUBLIC_WEBRTC_URL", "http://127.0.0.1:8889"))
     args = parser.parse_args()
     httpd = ThreadingHTTPServer((args.host, args.port), Handler)
     httpd.store = Store(args.db)  # type: ignore[attr-defined]
@@ -323,6 +337,8 @@ def main() -> None:
     httpd.read_token = args.read_token  # type: ignore[attr-defined]
     httpd.recordings_dir = args.recordings_dir  # type: ignore[attr-defined]
     httpd.bootstrap_token = args.bootstrap_token  # type: ignore[attr-defined]
+    httpd.public_media_url = args.public_media_url  # type: ignore[attr-defined]
+    httpd.public_webrtc_url = args.public_webrtc_url  # type: ignore[attr-defined]
     print(f"Pi CCTV server listening on http://{args.host}:{args.port}", flush=True)
     try:
         httpd.serve_forever()

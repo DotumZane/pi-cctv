@@ -37,7 +37,7 @@ docker compose up -d --build
 
 The dashboard is then available at `http://SERVER:8080`. Keep the management port restricted to the authorized administration network; the RTSP port must be reachable by cameras and monitors on the CCTV VLAN. `CCTV_ADMIN_TOKEN` can change configuration, while `CCTV_READ_TOKEN` is read-only.
 
-For adoption-based provisioning, `CCTV_BOOTSTRAP_TOKEN` is used only to place generic Pis into the pending-device list. It is not an administrator token. After adoption, the Pi receives a device-specific credential and the dashboard-selected role.
+For adoption-based provisioning, `CCTV_BOOTSTRAP_TOKEN` is used only to place generic Pis into the pending-device list. It is not an administrator token. After adoption, the Pi receives a device-specific credential and the dashboard-selected role. Set `CCTV_PUBLIC_MEDIA_URL` and `CCTV_PUBLIC_WEBRTC_URL` to URLs reachable from the administrator's browser for live previews.
 
 The V1 management server uses only Python's standard library and SQLite:
 

@@ -124,6 +124,12 @@ class ApiTests(unittest.TestCase):
         self.assertTrue(claim["device_token"])
         self.assertEqual(self.call("POST", "/api/devices/pending-pi/heartbeat", {"test": True}, claim["device_token"])[0], 200)
 
+    def test_camera_live_urls_are_available(self):
+        self.call("POST", "/api/devices", {"id": "cam-1", "kind": "camera", "name": "Saw 1"})
+        status, live = self.call("GET", "/api/cameras/cam-1/live")
+        self.assertEqual(status, 200)
+        self.assertTrue(live["hls_url"].endswith("/cam-1/index.m3u8"))
+
 
 if __name__ == "__main__":
     unittest.main()
