@@ -41,6 +41,7 @@ class Store:
                 monitor_id TEXT PRIMARY KEY REFERENCES devices(id) ON DELETE CASCADE,
                 layout TEXT NOT NULL DEFAULT 'single' CHECK(layout IN ('single', '2x2')),
                 cameras TEXT NOT NULL DEFAULT '[]',
+                outputs TEXT NOT NULL DEFAULT '[]',
                 updated_at TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS audit_log (
@@ -73,6 +74,9 @@ class Store:
         columns = {row[1] for row in self.db.execute("PRAGMA table_info(devices)").fetchall()}
         if "token_hash" not in columns:
             self.db.execute("ALTER TABLE devices ADD COLUMN token_hash TEXT")
+        assignment_columns = {row[1] for row in self.db.execute("PRAGMA table_info(assignments)").fetchall()}
+        if "outputs" not in assignment_columns:
+            self.db.execute("ALTER TABLE assignments ADD COLUMN outputs TEXT NOT NULL DEFAULT '[]'")
         self.db.commit()
 
     def close(self) -> None:
@@ -214,13 +218,13 @@ class Store:
         row = self.db.execute("SELECT * FROM assignments WHERE monitor_id = ?", (monitor_id,)).fetchone()
         return dict(row) if row else None
 
-    def set_assignment(self, monitor_id: str, layout: str, cameras: list[str]) -> dict[str, Any]:
+    def set_assignment(self, monitor_id: str, layout: str, cameras: list[str], outputs: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         updated = now()
         self.db.execute(
-            """INSERT INTO assignments(monitor_id, layout, cameras, updated_at) VALUES(?, ?, ?, ?)
+            """INSERT INTO assignments(monitor_id, layout, cameras, outputs, updated_at) VALUES(?, ?, ?, ?, ?)
                ON CONFLICT(monitor_id) DO UPDATE SET layout=excluded.layout, cameras=excluded.cameras,
-               updated_at=excluded.updated_at""",
-            (monitor_id, layout, __import__("json").dumps(cameras), updated),
+               outputs=excluded.outputs, updated_at=excluded.updated_at""",
+            (monitor_id, layout, __import__("json").dumps(cameras), __import__("json").dumps(outputs or []), updated),
         )
         self.db.commit()
         return self.assignment(monitor_id)  # type: ignore[return-value]

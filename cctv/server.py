@@ -191,7 +191,7 @@ class Handler(BaseHTTPRequestHandler):
             if not self.require_device_auth(monitor_id):
                 return
             assignment = self.store.assignment(monitor_id)
-            self.send_json(assignment or {"monitor_id": monitor_id, "layout": "single", "cameras": "[]"})
+            self.send_json(assignment or {"monitor_id": monitor_id, "layout": "single", "cameras": "[]", "outputs": "[]"})
             return
         self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
 
@@ -289,16 +289,33 @@ class Handler(BaseHTTPRequestHandler):
             payload = self.body()
             monitor = self.store.device(monitor_id)
             cameras = payload.get("cameras", [])
+            outputs = payload.get("outputs", [])
             camera_ids = {device["id"] for device in self.store.devices("camera")}
+            try:
+                metadata = json.loads(monitor["metadata"] or "{}") if monitor else {}
+            except json.JSONDecodeError:
+                metadata = {}
+            displays = metadata.get("displays", [])
+            display_count = len(displays) if isinstance(displays, list) and displays else int(metadata.get("display_count", 1) or 1)
+            valid_outputs = (
+                isinstance(outputs, list) and len(outputs) == display_count == 2
+                and all(isinstance(output, dict) and output.get("layout") == "single" and isinstance(output.get("cameras", []), list)
+                        and len(output.get("cameras", [])) <= 1 and all(camera in camera_ids for camera in output.get("cameras", []))
+                        for output in outputs)
+            )
             if not monitor or monitor["kind"] != "monitor":
                 self.send_json({"error": "monitor not found"}, HTTPStatus.NOT_FOUND)
             elif payload.get("layout") not in ("single", "2x2") or not isinstance(cameras, list):
                 self.send_json({"error": "layout must be single or 2x2 and cameras must be a list"}, HTTPStatus.BAD_REQUEST)
-            elif len(cameras) > (1 if payload["layout"] == "single" else 4) or any(camera not in camera_ids for camera in cameras):
+            elif display_count == 2 and not valid_outputs:
+                self.send_json({"error": "a two-display monitor requires two single-camera outputs"}, HTTPStatus.BAD_REQUEST)
+            elif display_count != 2 and outputs:
+                self.send_json({"error": "outputs are only used for two-display monitors"}, HTTPStatus.BAD_REQUEST)
+            elif len(cameras) > (2 if valid_outputs else (1 if payload["layout"] == "single" else 4)) or any(camera not in camera_ids for camera in cameras):
                 self.send_json({"error": "invalid camera assignment"}, HTTPStatus.BAD_REQUEST)
             else:
-                assignment = self.store.set_assignment(monitor_id, payload["layout"], cameras)
-                self.store.audit("monitor.assignment", monitor_id, self.client_address[0], {"layout": payload["layout"], "cameras": cameras})
+                assignment = self.store.set_assignment(monitor_id, payload["layout"], cameras, outputs)
+                self.store.audit("monitor.assignment", monitor_id, self.client_address[0], {"layout": payload["layout"], "cameras": cameras, "outputs": outputs})
                 self.send_json(assignment)
             return
         self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)

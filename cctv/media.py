@@ -35,9 +35,10 @@ class CameraMedia:
 class MonitorMedia:
     stream_url: str
     fullscreen: bool = True
+    connector_id: str | None = None
 
     def pipeline(self) -> str:
-        sink = "kmssink sync=false" if self.fullscreen else "autovideosink sync=false"
+        sink = "kmssink" + (f" connector-id={self.connector_id}" if self.connector_id else "") + " sync=false" if self.fullscreen else "autovideosink sync=false"
         return (
             "gst-launch-1.0 -e "
             f"rtspsrc location={quote(self.stream_url)} protocols=tcp latency=0 drop-on-latency=true ! "

@@ -12,7 +12,7 @@ Pi camera --RTSP/H.264--> MediaMTX / CCTV network --RTSP/H.264--> Pi monitor
 
 - The management API stores devices, assignments, settings, health, and audit entries in SQLite.
 - Camera and monitor agents enroll, send heartbeats, and recover their media subprocesses.
-- Monitor agents poll assignments and build either a single-camera or 2×2 hardware-decoder pipeline.
+- Monitor agents report connected displays, then poll assignments and build either a single-camera or 2×2 hardware-decoder pipeline for one display, or one single-camera pipeline per output for two displays.
 - The recorder reads compressed RTSP streams independently and writes segmented files with retention cleanup.
 - Media does not pass through the management API, avoiding unnecessary central-server latency and bandwidth.
 

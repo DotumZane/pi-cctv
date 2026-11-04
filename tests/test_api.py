@@ -54,6 +54,23 @@ class ApiTests(unittest.TestCase):
         status, _ = self.call("PUT", "/api/monitors/mon-1/assignment", {"layout": "single", "cameras": ["missing"]})
         self.assertEqual(status, 400)
 
+    def test_two_display_monitor_requires_one_camera_per_output(self):
+        self.call("POST", "/api/devices", {"id": "cam-1", "kind": "camera", "name": "Saw 1"})
+        self.call("POST", "/api/devices", {"id": "cam-2", "kind": "camera", "name": "Saw 2"})
+        self.call("POST", "/api/devices", {"id": "mon-1", "kind": "monitor", "name": "Control"})
+        self.call("POST", "/api/devices/mon-1/heartbeat", {"displays": [{"id": "HDMI-A-1"}, {"id": "HDMI-A-2"}]})
+        status, _ = self.call("PUT", "/api/monitors/mon-1/assignment", {"layout": "2x2", "cameras": ["cam-1", "cam-2"]})
+        self.assertEqual(status, 400)
+        status, assignment = self.call("PUT", "/api/monitors/mon-1/assignment", {
+            "layout": "single", "cameras": ["cam-1", "cam-2"],
+            "outputs": [
+                {"display_id": "HDMI-A-1", "layout": "single", "cameras": ["cam-1"]},
+                {"display_id": "HDMI-A-2", "layout": "single", "cameras": ["cam-2"]},
+            ],
+        })
+        self.assertEqual(status, 200)
+        self.assertEqual(len(json.loads(assignment["outputs"])), 2)
+
     def test_optional_admin_token_protects_mutations(self):
         self.httpd.admin_token = "test-token"
         self.assertEqual(self.call("POST", "/api/devices", {"id": "cam-1", "kind": "camera", "name": "Saw 1"})[0], 401)

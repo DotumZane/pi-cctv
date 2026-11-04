@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import glob
+import re
 import subprocess
 import time
 import urllib.request
@@ -35,6 +37,28 @@ def system_metrics() -> dict[str, float | int]:
     return metrics
 
 
+def connected_displays() -> list[dict[str, str]]:
+    """Return connected DRM display outputs, using stable connector names."""
+    displays = []
+    try:
+        modetest = subprocess.run(["modetest", "-M", "vc4", "-c"], capture_output=True, text=True, timeout=5, check=False).stdout
+        for match in re.finditer(r"^\s*(\d+)\s+\d+\s+connected\s+(\S+)", modetest, re.MULTILINE):
+            displays.append({"id": match.group(2), "name": match.group(2).replace("-", " "), "connector_id": match.group(1)})
+    except (OSError, subprocess.SubprocessError):
+        pass
+    if displays:
+        return displays
+    for status_path in sorted(glob.glob("/sys/class/drm/card*-*/status")):
+        try:
+            if open(status_path).read().strip() != "connected":
+                continue
+        except OSError:
+            continue
+        connector = status_path.rsplit("/", 2)[-2]
+        displays.append({"id": connector, "name": connector.replace("-", " ")})
+    return displays or [{"id": "primary", "name": "Display 1"}]
+
+
 def http_json(url: str, method: str = "GET", payload: dict | None = None, token: str = "") -> dict:
     data = json.dumps(payload).encode() if payload is not None else None
     request = urllib.request.Request(url, data=data, method=method)
@@ -56,6 +80,24 @@ def command_for_assignment(assignment: dict, media_server: str) -> str | None:
     return MonitorMedia(urls[0]).pipeline()
 
 
+def commands_for_assignment(assignment: dict, media_server: str) -> list[str]:
+    """Build one monitor pipeline per physical output when configured."""
+    try:
+        outputs = json.loads(assignment.get("outputs", "[]")) if isinstance(assignment.get("outputs"), str) else assignment.get("outputs", [])
+    except json.JSONDecodeError:
+        outputs = []
+    if not outputs:
+        command = command_for_assignment(assignment, media_server)
+        return [command] if command else []
+    commands = []
+    for output in outputs:
+        cameras = output.get("cameras", []) if isinstance(output, dict) else []
+        if cameras:
+            connector_id = output.get("connector_id")
+            commands.append(MonitorMedia(f"rtsp://{media_server}:8554/{cameras[0]}", connector_id=connector_id).pipeline())
+    return commands
+
+
 @dataclass
 class DeviceRuntime:
     role: str
@@ -71,8 +113,8 @@ class DeviceRuntime:
     def __post_init__(self) -> None:
         self.server = self.server.rstrip("/")
         self.media_server = self.media_server.rstrip("/")
-        self.process: subprocess.Popen | None = None
-        self.last_command: str | None = None
+        self.processes: list[subprocess.Popen] = []
+        self.last_command: tuple[str, ...] | None = None
 
     def enroll(self) -> None:
         http_json(f"{self.server}/api/devices", "POST", {
@@ -83,7 +125,10 @@ class DeviceRuntime:
         }, token=self.token)
 
     def heartbeat(self) -> None:
-        http_json(f"{self.server}/api/devices/{self.device_id}/heartbeat", "POST", {"runtime": "v1", "metrics": system_metrics()}, self.token)
+        payload = {"runtime": "v1", "metrics": system_metrics()}
+        if self.role == "monitor":
+            payload["displays"] = connected_displays()
+        http_json(f"{self.server}/api/devices/{self.device_id}/heartbeat", "POST", payload, self.token)
 
     def poll_commands(self) -> None:
         commands = http_json(f"{self.server}/api/devices/{self.device_id}/commands", token=self.token).get("commands", [])
@@ -92,7 +137,7 @@ class DeviceRuntime:
                 self.stop_media()
                 self.last_command = None
 
-    def desired_command(self) -> str | None:
+    def desired_command(self) -> list[str]:
         if self.role == "camera":
             device = http_json(f"{self.server}/api/devices/{self.device_id}", token=self.token)
             try:
@@ -105,29 +150,30 @@ class DeviceRuntime:
                 fps=settings.get("fps", 30), bitrate=settings.get("bitrate", 6_000_000),
             ).pipeline()
         assignment = http_json(f"{self.server}/api/monitors/{self.device_id}/assignment", token=self.token)
-        return command_for_assignment(assignment, self.media_server)
+        return commands_for_assignment(assignment, self.media_server)
 
     def reconcile_media(self) -> None:
-        command = self.desired_command()
-        if command == self.last_command and self.process and self.process.poll() is None:
+        commands = self.desired_command()
+        signature = tuple(commands)
+        if signature == self.last_command and self.processes and all(process.poll() is None for process in self.processes):
             return
         self.stop_media()
-        self.last_command = command
-        if command:
+        self.last_command = signature
+        for command in commands:
             print(f"Starting media pipeline for {self.device_id}", flush=True)
-            self.process = self.process_factory(command, shell=True)
+            self.processes.append(self.process_factory(command, shell=True))
 
     def stop_media(self) -> None:
-        if not self.process or self.process.poll() is not None:
-            self.process = None
-            return
-        self.process.terminate()
-        try:
-            self.process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            self.process.kill()
-            self.process.wait(timeout=5)
-        self.process = None
+        for process in self.processes:
+            if process.poll() is not None:
+                continue
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
+        self.processes = []
 
     def run(self, enroll: bool = True) -> None:
         if enroll:

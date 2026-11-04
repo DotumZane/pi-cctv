@@ -8,7 +8,7 @@ import socket
 import time
 import urllib.request
 
-from .runtime import DeviceRuntime, system_metrics
+from .runtime import DeviceRuntime, connected_displays, system_metrics
 
 
 def request(url: str, method: str, payload: dict | None = None, token: str = "", bootstrap: str = "") -> dict:
@@ -72,7 +72,10 @@ def main() -> None:
     print(f"Enrolled {args.role} {args.name} as {args.id}", flush=True)
     while True:
         try:
-            request(f"{base}/api/devices/{args.id}/heartbeat", "POST", {"hostname": socket.gethostname(), "metrics": system_metrics()}, args.token)
+            heartbeat = {"hostname": socket.gethostname(), "metrics": system_metrics()}
+            if args.role == "monitor":
+                heartbeat["displays"] = connected_displays()
+            request(f"{base}/api/devices/{args.id}/heartbeat", "POST", heartbeat, args.token)
         except Exception as exc:  # device agents must keep retrying through outages
             print(f"Heartbeat failed: {exc}", flush=True)
         time.sleep(args.interval)
