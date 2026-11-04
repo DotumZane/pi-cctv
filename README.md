@@ -50,4 +50,11 @@ sudo bash install.sh
 python3 -m cctv.agent --role camera --name "Saw 1" --location "Line 1" --server http://SERVER:8080
 ```
 
-Use `--role monitor` for a monitor Pi. The agent registers the device and retries heartbeats through temporary network outages. V1 still needs hardware validation, service unit generation, authentication, recording, and production security hardening before deployment.
+Use `--role monitor` for a monitor Pi. The agent registers the device and retries heartbeats through temporary network outages. Add `--run-media --media-server MEDIA_SERVER` to launch and recover the camera or monitor media process automatically:
+
+```bash
+python3 -m cctv.agent --role camera --name "Saw 1" --location "Line 1" \
+  --server http://SERVER:8080 --media-server MEDIA_SERVER --run-media
+```
+
+The monitor runtime polls its centrally stored assignment and restarts its pipeline when the assignment changes or the process exits. V1 still needs hardware validation, service unit generation, authentication, recording, and production security hardening before deployment.

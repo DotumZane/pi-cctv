@@ -9,6 +9,8 @@ import time
 import urllib.request
 import uuid
 
+from .runtime import DeviceRuntime
+
 
 def request(url: str, method: str, payload: dict) -> dict:
     data = json.dumps(payload).encode()
@@ -25,7 +27,12 @@ def main() -> None:
     parser.add_argument("--server", default="http://127.0.0.1:8080")
     parser.add_argument("--id", default=f"{socket.gethostname()}-{uuid.uuid4().hex[:6]}")
     parser.add_argument("--interval", type=int, default=15)
+    parser.add_argument("--run-media", action="store_true", help="launch and recover the camera/monitor media pipeline")
+    parser.add_argument("--media-server", default="127.0.0.1", help="hostname or IP of the MediaMTX server")
     args = parser.parse_args()
+    if args.run_media:
+        DeviceRuntime(args.role, args.id, args.name, args.location, args.server, args.media_server, args.interval).run()
+        return
     base = args.server.rstrip("/")
     payload = {"id": args.id, "kind": args.role, "name": args.name, "location": args.location}
     request(f"{base}/api/devices", "POST", payload)
