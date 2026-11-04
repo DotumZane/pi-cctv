@@ -69,6 +69,15 @@ class ApiTests(unittest.TestCase):
         metadata = json.loads(device["metadata"])
         self.assertEqual(metadata["settings"]["width"], 1280)
 
+    def test_heartbeat_metrics_do_not_overwrite_camera_settings(self):
+        self.call("POST", "/api/devices", {"id": "cam-1", "kind": "camera", "name": "Saw 1"})
+        self.call("PUT", "/api/cameras/cam-1/settings", {"width": 1280})
+        self.call("POST", "/api/devices/cam-1/heartbeat", {"metrics": {"cpu_temperature_c": 55.2}})
+        device = self.call("GET", "/api/devices/cam-1")[1]
+        metadata = json.loads(device["metadata"])
+        self.assertEqual(metadata["settings"]["width"], 1280)
+        self.assertEqual(metadata["metrics"]["cpu_temperature_c"], 55.2)
+
     def test_mutations_create_audit_entries(self):
         self.call("POST", "/api/devices", {"id": "cam-1", "kind": "camera", "name": "Saw 1"})
         status, entries = self.call("GET", "/api/audit")

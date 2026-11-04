@@ -8,7 +8,7 @@ import socket
 import time
 import urllib.request
 
-from .runtime import DeviceRuntime
+from .runtime import DeviceRuntime, system_metrics
 
 
 def request(url: str, method: str, payload: dict, token: str = "") -> dict:
@@ -44,7 +44,7 @@ def main() -> None:
     print(f"Enrolled {args.role} {args.name} as {args.id}", flush=True)
     while True:
         try:
-            request(f"{base}/api/devices/{args.id}/heartbeat", "POST", {"hostname": socket.gethostname()}, args.token)
+            request(f"{base}/api/devices/{args.id}/heartbeat", "POST", {"hostname": socket.gethostname(), "metrics": system_metrics()}, args.token)
         except Exception as exc:  # device agents must keep retrying through outages
             print(f"Heartbeat failed: {exc}", flush=True)
         time.sleep(args.interval)

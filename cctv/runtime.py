@@ -12,6 +12,29 @@ from typing import Callable
 from .media import CameraMedia, MonitorMedia, quad_pipeline
 
 
+def system_metrics() -> dict[str, float | int]:
+    metrics: dict[str, float | int] = {}
+    try:
+        metrics["cpu_temperature_c"] = round(int(open("/sys/class/thermal/thermal_zone0/temp").read()) / 1000, 1)
+    except (OSError, ValueError):
+        pass
+    try:
+        metrics["load_1m"] = float(open("/proc/loadavg").read().split()[0])
+    except (OSError, ValueError, IndexError):
+        pass
+    try:
+        memory = {line.split(":", 1)[0]: int(line.split()[1]) for line in open("/proc/meminfo") if ":" in line}
+        if "MemTotal" in memory and "MemAvailable" in memory:
+            metrics["memory_used_percent"] = round((1 - memory["MemAvailable"] / memory["MemTotal"]) * 100, 1)
+    except (OSError, ValueError, IndexError):
+        pass
+    try:
+        metrics["uptime_seconds"] = int(float(open("/proc/uptime").read().split()[0]))
+    except (OSError, ValueError, IndexError):
+        pass
+    return metrics
+
+
 def http_json(url: str, method: str = "GET", payload: dict | None = None, token: str = "") -> dict:
     data = json.dumps(payload).encode() if payload is not None else None
     request = urllib.request.Request(url, data=data, method=method)
@@ -60,7 +83,7 @@ class DeviceRuntime:
         }, token=self.token)
 
     def heartbeat(self) -> None:
-        http_json(f"{self.server}/api/devices/{self.device_id}/heartbeat", "POST", {"runtime": "v1"}, self.token)
+        http_json(f"{self.server}/api/devices/{self.device_id}/heartbeat", "POST", {"runtime": "v1", "metrics": system_metrics()}, self.token)
 
     def poll_commands(self) -> None:
         commands = http_json(f"{self.server}/api/devices/{self.device_id}/commands", token=self.token).get("commands", [])

@@ -117,6 +117,13 @@ class Store:
         return self.device(device_id)  # type: ignore[return-value]
 
     def heartbeat(self, device_id: str, ip_address: str = "", metadata: str = "{}") -> dict[str, Any] | None:
+        existing = self.device(device_id)
+        try:
+            merged_metadata = json.loads(existing["metadata"] or "{}") if existing else {}
+            merged_metadata.update(json.loads(metadata or "{}"))
+            metadata = json.dumps(merged_metadata)
+        except json.JSONDecodeError:
+            pass
         self.db.execute(
             "UPDATE devices SET status='online', last_seen=?, ip_address=COALESCE(NULLIF(?, ''), ip_address), metadata=? WHERE id=?",
             (now(), ip_address, metadata, device_id),

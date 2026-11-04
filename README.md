@@ -84,6 +84,8 @@ The monitor runtime polls its centrally stored assignment and restarts its pipel
 
 If `--id` is omitted, the agent uses the Pi hostname so the identity remains stable across reboot and service restart.
 
+Pi heartbeats include available CPU temperature, one-minute load, memory-use percentage, and uptime metrics. Settings and health metadata are merged so recurring heartbeats cannot erase administrator configuration.
+
 The centralized recorder uses FFmpeg stream copy and segmented files, so it does not transcode live video:
 
 ```bash
