@@ -28,6 +28,8 @@ gst-inspect-1.0 libcamerasrc
 gst-inspect-1.0 v4l2h264enc
 ```
 
+The camera installer enables the IMX477 overlay automatically. For a 2K recording test, set the camera to 2560×1440 in the dashboard; leave the monitor at its native 1080p output and verify that it scales the feed without changing the recorded source resolution.
+
 The camera should appear in the dashboard and show `online` after its first heartbeat.
 
 ## Monitor Pi

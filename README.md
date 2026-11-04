@@ -108,6 +108,8 @@ If `--id` is omitted, the agent uses the Pi hostname so the identity remains sta
 
 Pi heartbeats include available CPU temperature, one-minute load, memory-use percentage, uptime metrics, and monitor display outputs when applicable. Settings and health metadata are merged so recurring heartbeats cannot erase administrator configuration.
 
+For the IMX477 HQ camera, the camera installer automatically enables `dtoverlay=imx477` in the Pi boot configuration. Set a camera to 2560×1440 in **Camera settings** when 2K/QHD recording is desired. The recorder keeps that source resolution with stream copy, while a 1080p monitor scales the same stream down locally.
+
 The centralized recorder uses FFmpeg stream copy and segmented files, so it does not transcode live video:
 
 ```bash

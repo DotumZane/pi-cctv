@@ -44,6 +44,24 @@ if [[ "$SKIP_PACKAGES" != "true" && -x "$(command -v apt-get 2>/dev/null || true
     gstreamer1.0-plugins-bad gstreamer1.0-libav
 fi
 
+configure_imx477() {
+  local config
+  for config in /boot/firmware/config.txt /boot/config.txt; do
+    if [[ -f "$config" ]]; then
+      if ! grep -Eiq '^[[:space:]]*dtoverlay[[:space:]]*=[[:space:]]*imx477' "$config"; then
+        printf '\n# Pi CCTV: Arducam/Raspberry Pi HQ IMX477 camera\ndtoverlay=imx477\n' >> "$config"
+        echo "Enabled IMX477 camera overlay in $config; reboot may be required."
+      fi
+      return
+    fi
+  done
+  echo "Warning: could not find the Pi camera config file; enable dtoverlay=imx477 before using an IMX477 camera." >&2
+}
+
+if [[ "$ROLE" == "camera" ]]; then
+  configure_imx477
+fi
+
 command -v git >/dev/null || { echo "git is required" >&2; exit 1; }
 command -v python3 >/dev/null || { echo "python3 is required" >&2; exit 1; }
 
