@@ -1,0 +1,12 @@
+# V1 low-latency media relay configuration.
+# Cameras publish and monitors read directly through this relay. The
+# management server is not in the live-video path.
+logLevel: warn
+rtsp: true
+rtspAddress: :8554
+readTimeout: 5s
+writeTimeout: 5s
+writeQueueSize: 512
+paths:
+  all:
+    source: publisher
