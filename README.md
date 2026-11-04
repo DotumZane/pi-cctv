@@ -45,6 +45,8 @@ The V1 management server uses only Python's standard library and SQLite:
 
 Open `http://SERVER:8080` for the dashboard. The first V1 API supports device enrollment, heartbeats, camera inventory, monitor assignments, and single-camera or 2×2 assignment validation.
 
+Run the local quality gate with `make check`. The same test and compile checks run automatically in GitHub Actions for pushes and pull requests.
+
 V1 also includes pure media-pipeline builders for the Raspberry Pi hardware path. They use GStreamer, hardware H.264 encode/decode, RTSP, and low-latency queue settings:
 
 ```bash
