@@ -1,8 +1,10 @@
 import json
+import tempfile
 import threading
 import unittest
 from http.client import HTTPConnection
 from http.server import ThreadingHTTPServer
+from pathlib import Path
 
 from cctv.server import Handler
 from cctv.store import Store
@@ -12,6 +14,8 @@ class ApiTests(unittest.TestCase):
     def setUp(self):
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.httpd.store = Store(":memory:")
+        self.recordings = tempfile.TemporaryDirectory()
+        self.httpd.recordings_dir = self.recordings.name
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
         self.thread.start()
         self.base = ("127.0.0.1", self.httpd.server_port)
@@ -20,6 +24,7 @@ class ApiTests(unittest.TestCase):
         self.httpd.shutdown()
         self.httpd.server_close()
         self.httpd.store.close()
+        self.recordings.cleanup()
 
     def call(self, method, path, payload=None, token=""):
         connection = HTTPConnection(*self.base)
@@ -76,6 +81,14 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(result["deleted"], "mon-1")
         self.assertEqual(self.call("GET", "/api/devices/mon-1")[0], 404)
+
+    def test_recording_index_and_safe_download(self):
+        recording = Path(self.recordings.name) / "cam-01" / "2026-11-04" / "06-00-00.mkv"
+        recording.parent.mkdir(parents=True)
+        recording.write_bytes(b"test-video")
+        status, index = self.call("GET", "/api/recordings?camera_id=cam-01")
+        self.assertEqual(status, 200)
+        self.assertEqual(index["recordings"][0]["path"], "cam-01/2026-11-04/06-00-00.mkv")
 
 
 if __name__ == "__main__":

@@ -6,10 +6,11 @@ import argparse
 import json
 import os
 import secrets
+from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from .store import Store
 
@@ -95,6 +96,34 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError:
                 limit = 100
             self.send_json({"entries": self.store.audit_entries(limit)})
+            return
+        if parsed.path == "/api/recordings":
+            if not self.require_read_auth():
+                return
+            root = Path(getattr(self.server, "recordings_dir", "recordings"))  # type: ignore[attr-defined]
+            camera_id = parse_qs(parsed.query).get("camera_id", [None])[0]
+            entries = []
+            for recording in root.glob("**/*.mkv"):
+                relative = recording.relative_to(root)
+                if camera_id and relative.parts[0] != camera_id:
+                    continue
+                stat = recording.stat()
+                entries.append({"path": str(relative), "bytes": stat.st_size, "modified": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat()})
+            entries.sort(key=lambda entry: entry["modified"], reverse=True)
+            self.send_json({"recordings": entries})
+            return
+        if parsed.path.startswith("/recordings/"):
+            root = Path(getattr(self.server, "recordings_dir", "recordings")).resolve()
+            requested = (root / unquote(parsed.path.removeprefix("/recordings/"))).resolve()
+            if root not in requested.parents or not requested.is_file() or requested.suffix != ".mkv":
+                self.send_json({"error": "recording not found"}, HTTPStatus.NOT_FOUND)
+                return
+            body = requested.read_bytes()
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "video/x-matroska")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
             return
         if parsed.path.startswith("/api/monitors/") and parsed.path.endswith("/assignment"):
             if not self.require_read_auth():
@@ -194,11 +223,13 @@ def main() -> None:
     parser.add_argument("--db", default=os.getenv("CCTV_DB", "data/cctv.db"))
     parser.add_argument("--admin-token", default=os.getenv("CCTV_ADMIN_TOKEN", ""))
     parser.add_argument("--read-token", default=os.getenv("CCTV_READ_TOKEN", ""))
+    parser.add_argument("--recordings-dir", default=os.getenv("CCTV_RECORDINGS_DIR", "recordings"))
     args = parser.parse_args()
     httpd = ThreadingHTTPServer((args.host, args.port), Handler)
     httpd.store = Store(args.db)  # type: ignore[attr-defined]
     httpd.admin_token = args.admin_token  # type: ignore[attr-defined]
     httpd.read_token = args.read_token  # type: ignore[attr-defined]
+    httpd.recordings_dir = args.recordings_dir  # type: ignore[attr-defined]
     print(f"Pi CCTV server listening on http://{args.host}:{args.port}", flush=True)
     try:
         httpd.serve_forever()
