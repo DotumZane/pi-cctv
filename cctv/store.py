@@ -59,6 +59,11 @@ class Store:
         row = self.db.execute("SELECT * FROM devices WHERE id = ?", (device_id,)).fetchone()
         return dict(row) if row else None
 
+    def delete_device(self, device_id: str) -> bool:
+        result = self.db.execute("DELETE FROM devices WHERE id = ?", (device_id,))
+        self.db.commit()
+        return result.rowcount > 0
+
     def devices(self, kind: str | None = None) -> list[dict[str, Any]]:
         if kind:
             rows = self.db.execute("SELECT * FROM devices WHERE kind = ? ORDER BY name", (kind,)).fetchall()

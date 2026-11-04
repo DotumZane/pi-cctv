@@ -154,6 +154,21 @@ class Handler(BaseHTTPRequestHandler):
             return
         self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
 
+    def do_DELETE(self) -> None:  # noqa: N802
+        parsed = urlparse(self.path)
+        if parsed.path.startswith("/api/devices/"):
+            if not self.require_auth():
+                return
+            device_id = parsed.path.split("/")[3]
+            if not self.store.device(device_id):
+                self.send_json({"error": "device not found"}, HTTPStatus.NOT_FOUND)
+                return
+            self.store.delete_device(device_id)
+            self.store.audit("device.delete", device_id, self.client_address[0])
+            self.send_json({"deleted": device_id})
+            return
+        self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Pi CCTV V1 management server")

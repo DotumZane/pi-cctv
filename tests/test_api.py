@@ -64,6 +64,13 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(entries["entries"][0]["action"], "device.register")
 
+    def test_device_delete_removes_device_and_assignment(self):
+        self.call("POST", "/api/devices", {"id": "mon-1", "kind": "monitor", "name": "Control"})
+        status, result = self.call("DELETE", "/api/devices/mon-1")
+        self.assertEqual(status, 200)
+        self.assertEqual(result["deleted"], "mon-1")
+        self.assertEqual(self.call("GET", "/api/devices/mon-1")[0], 404)
+
 
 if __name__ == "__main__":
     unittest.main()
