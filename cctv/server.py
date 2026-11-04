@@ -36,14 +36,23 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0"))
         return json.loads(self.rfile.read(length) or b"{}")
 
-    def authorized(self) -> bool:
-        expected = getattr(self.server, "admin_token", "")  # type: ignore[attr-defined]
-        if not expected:
+    def authorized(self, admin_only: bool = False) -> bool:
+        admin_token = getattr(self.server, "admin_token", "")  # type: ignore[attr-defined]
+        read_token = getattr(self.server, "read_token", "")  # type: ignore[attr-defined]
+        if not admin_token and not read_token:
             return True
         supplied = self.headers.get("Authorization", "")
-        return secrets.compare_digest(supplied, f"Bearer {expected}")
+        if admin_token and secrets.compare_digest(supplied, f"Bearer {admin_token}"):
+            return True
+        return not admin_only and bool(read_token) and secrets.compare_digest(supplied, f"Bearer {read_token}")
 
     def require_auth(self) -> bool:
+        if self.authorized(admin_only=True):
+            return True
+        self.send_json({"error": "authentication required"}, HTTPStatus.UNAUTHORIZED)
+        return False
+
+    def require_read_auth(self) -> bool:
         if self.authorized():
             return True
         self.send_json({"error": "authentication required"}, HTTPStatus.UNAUTHORIZED)
@@ -63,13 +72,19 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"ok": True, "version": "0.1.0", "devices": self.store.health_summary()})
             return
         if parsed.path == "/api/devices":
+            if not self.require_read_auth():
+                return
             self.send_json({"devices": self.store.devices(parse_qs(parsed.query).get("kind", [None])[0])})
             return
         if parsed.path.startswith("/api/devices/"):
+            if not self.require_read_auth():
+                return
             device = self.store.device(parsed.path.split("/")[3])
             self.send_json(device or {"error": "device not found"}, HTTPStatus.OK if device else HTTPStatus.NOT_FOUND)
             return
         if parsed.path == "/api/assignments":
+            if not self.require_read_auth():
+                return
             self.send_json({"assignments": self.store.all_assignments()})
             return
         if parsed.path == "/api/audit":
@@ -82,6 +97,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"entries": self.store.audit_entries(limit)})
             return
         if parsed.path.startswith("/api/monitors/") and parsed.path.endswith("/assignment"):
+            if not self.require_read_auth():
+                return
             monitor_id = parsed.path.split("/")[3]
             assignment = self.store.assignment(monitor_id)
             self.send_json(assignment or {"monitor_id": monitor_id, "layout": "single", "cameras": "[]"})
@@ -176,10 +193,12 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=int(os.getenv("CCTV_PORT", "8080")))
     parser.add_argument("--db", default=os.getenv("CCTV_DB", "data/cctv.db"))
     parser.add_argument("--admin-token", default=os.getenv("CCTV_ADMIN_TOKEN", ""))
+    parser.add_argument("--read-token", default=os.getenv("CCTV_READ_TOKEN", ""))
     args = parser.parse_args()
     httpd = ThreadingHTTPServer((args.host, args.port), Handler)
     httpd.store = Store(args.db)  # type: ignore[attr-defined]
     httpd.admin_token = args.admin_token  # type: ignore[attr-defined]
+    httpd.read_token = args.read_token  # type: ignore[attr-defined]
     print(f"Pi CCTV server listening on http://{args.host}:{args.port}", flush=True)
     try:
         httpd.serve_forever()

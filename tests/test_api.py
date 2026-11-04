@@ -51,6 +51,12 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.call("POST", "/api/devices", {"id": "cam-1", "kind": "camera", "name": "Saw 1"})[0], 401)
         self.assertEqual(self.call("POST", "/api/devices", {"id": "cam-1", "kind": "camera", "name": "Saw 1"}, "test-token")[0], 201)
 
+    def test_read_token_allows_inventory_but_not_mutations(self):
+        self.httpd.admin_token = "admin-token"
+        self.httpd.read_token = "read-token"
+        self.assertEqual(self.call("GET", "/api/devices", token="read-token")[0], 200)
+        self.assertEqual(self.call("POST", "/api/devices", {"id": "cam-1", "kind": "camera", "name": "Saw 1"}, "read-token")[0], 401)
+
     def test_camera_settings_are_persisted(self):
         self.call("POST", "/api/devices", {"id": "cam-1", "kind": "camera", "name": "Saw 1"})
         status, device = self.call("PUT", "/api/cameras/cam-1/settings", {"width": 1280, "height": 720, "fps": 30, "bitrate": 4000000})

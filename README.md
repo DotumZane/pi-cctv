@@ -35,7 +35,7 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-The dashboard is then available at `http://SERVER:8080`. Keep the management port restricted to the authorized administration network; the RTSP port must be reachable by cameras and monitors on the CCTV VLAN.
+The dashboard is then available at `http://SERVER:8080`. Keep the management port restricted to the authorized administration network; the RTSP port must be reachable by cameras and monitors on the CCTV VLAN. `CCTV_ADMIN_TOKEN` can change configuration, while `CCTV_READ_TOKEN` is read-only.
 
 The V1 management server uses only Python's standard library and SQLite:
 
