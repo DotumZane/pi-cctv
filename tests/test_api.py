@@ -58,6 +58,12 @@ class ApiTests(unittest.TestCase):
         metadata = json.loads(device["metadata"])
         self.assertEqual(metadata["settings"]["width"], 1280)
 
+    def test_mutations_create_audit_entries(self):
+        self.call("POST", "/api/devices", {"id": "cam-1", "kind": "camera", "name": "Saw 1"})
+        status, entries = self.call("GET", "/api/audit")
+        self.assertEqual(status, 200)
+        self.assertEqual(entries["entries"][0]["action"], "device.register")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -40,6 +40,14 @@ class Store:
                 cameras TEXT NOT NULL DEFAULT '[]',
                 updated_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL,
+                action TEXT NOT NULL,
+                target TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT '',
+                details TEXT NOT NULL DEFAULT '{}'
+            );
             """
         )
         self.db.commit()
@@ -134,3 +142,14 @@ class Store:
 
     def all_assignments(self) -> list[dict[str, Any]]:
         return [dict(row) for row in self.db.execute("SELECT * FROM assignments ORDER BY monitor_id").fetchall()]
+
+    def audit(self, action: str, target: str, source: str = "", details: dict[str, Any] | None = None) -> None:
+        self.db.execute(
+            "INSERT INTO audit_log(created_at, action, target, source, details) VALUES(?, ?, ?, ?, ?)",
+            (now(), action, target, source, json.dumps(details or {})),
+        )
+        self.db.commit()
+
+    def audit_entries(self, limit: int = 100) -> list[dict[str, Any]]:
+        limit = max(1, min(limit, 500))
+        return [dict(row) for row in self.db.execute("SELECT * FROM audit_log ORDER BY id DESC LIMIT ?", (limit,)).fetchall()]

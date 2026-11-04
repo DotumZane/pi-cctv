@@ -77,3 +77,5 @@ python3 -m cctv.recording --camera-id cam-1 \
 ```
 
 Files are organized by camera and date, and old segments are deleted automatically. Recording throughput and storage capacity must be sized and tested for the final camera bitrate and retention period.
+
+Administrative mutations are written to the SQLite audit log. Authorized clients can inspect the most recent entries with `GET /api/audit?limit=100`.

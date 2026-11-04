@@ -72,6 +72,15 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/assignments":
             self.send_json({"assignments": self.store.all_assignments()})
             return
+        if parsed.path == "/api/audit":
+            if not self.require_auth():
+                return
+            try:
+                limit = int(parse_qs(parsed.query).get("limit", [100])[0])
+            except ValueError:
+                limit = 100
+            self.send_json({"entries": self.store.audit_entries(limit)})
+            return
         if parsed.path.startswith("/api/monitors/") and parsed.path.endswith("/assignment"):
             monitor_id = parsed.path.split("/")[3]
             assignment = self.store.assignment(monitor_id)
@@ -90,7 +99,9 @@ class Handler(BaseHTTPRequestHandler):
                 if missing or payload.get("kind") not in ("camera", "monitor"):
                     self.send_json({"error": "id, name, and kind (camera or monitor) are required"}, HTTPStatus.BAD_REQUEST)
                     return
-                self.send_json(self.store.register(payload), HTTPStatus.CREATED)
+                device = self.store.register(payload)
+                self.store.audit("device.register", payload["id"], self.client_address[0], {"kind": payload["kind"], "name": payload["name"]})
+                self.send_json(device, HTTPStatus.CREATED)
                 return
             if parsed.path.startswith("/api/devices/") and parsed.path.endswith("/heartbeat"):
                 if not self.require_auth():
@@ -118,7 +129,9 @@ class Handler(BaseHTTPRequestHandler):
             elif any(key not in allowed for key in settings) or not all(isinstance(value, int) and value > 0 for value in settings.values()):
                 self.send_json({"error": "settings must contain only positive integer width, height, fps, or bitrate values"}, HTTPStatus.BAD_REQUEST)
             else:
-                self.send_json(self.store.update_settings(camera_id, settings))
+                device = self.store.update_settings(camera_id, settings)
+                self.store.audit("camera.settings", camera_id, self.client_address[0], settings)
+                self.send_json(device)
             return
         if parsed.path.startswith("/api/monitors/") and parsed.path.endswith("/assignment"):
             if not self.require_auth():
@@ -135,7 +148,9 @@ class Handler(BaseHTTPRequestHandler):
             elif len(cameras) > (1 if payload["layout"] == "single" else 4) or any(camera not in camera_ids for camera in cameras):
                 self.send_json({"error": "invalid camera assignment"}, HTTPStatus.BAD_REQUEST)
             else:
-                self.send_json(self.store.set_assignment(monitor_id, payload["layout"], cameras))
+                assignment = self.store.set_assignment(monitor_id, payload["layout"], cameras)
+                self.store.audit("monitor.assignment", monitor_id, self.client_address[0], {"layout": payload["layout"], "cameras": cameras})
+                self.send_json(assignment)
             return
         self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
 
