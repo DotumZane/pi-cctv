@@ -64,6 +64,16 @@ sudo bash install.sh
 python3 -m cctv.agent --role camera --name "Saw 1" --location "Line 1" --server http://SERVER:8080
 ```
 
+On Raspberry Pi OS/Debian, the installer also installs the required GStreamer, libcamera, and plugin packages. Use `--skip-packages` only when those dependencies have already been installed.
+
+For a fresh Pi directly from the repository, the complete one-command form is:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/DotumZane/pi-cctv/main/install.sh | \
+  sudo bash -s -- --role camera --name "Saw 1" --location "Line 1" \
+  --server http://SERVER:8080 --media-server MEDIA_SERVER --token ADMIN_TOKEN
+```
+
 To install and start a boot service in one command, provide the device role and endpoints:
 
 ```bash

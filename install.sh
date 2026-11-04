@@ -10,6 +10,7 @@ LOCATION=""
 SERVER=""
 MEDIA_SERVER=""
 TOKEN=""
+SKIP_PACKAGES="false"
 
 if [[ "${EUID}" -ne 0 ]]; then
   echo "Run as root: sudo bash install.sh" >&2
@@ -24,9 +25,20 @@ while [[ $# -gt 0 ]]; do
     --server) SERVER="$2"; shift 2;;
     --media-server) MEDIA_SERVER="$2"; shift 2;;
     --token) TOKEN="$2"; shift 2;;
+    --skip-packages) SKIP_PACKAGES="true"; shift;;
     *) echo "Unknown option: $1" >&2; exit 2;;
   esac
 done
+
+if [[ "$SKIP_PACKAGES" != "true" && -x "$(command -v apt-get 2>/dev/null || true)" ]]; then
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update
+  apt-get install -y \
+    git python3 \
+    gstreamer1.0-tools gstreamer1.0-libcamera \
+    gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
+    gstreamer1.0-plugins-bad gstreamer1.0-libav
+fi
 
 command -v git >/dev/null || { echo "git is required" >&2; exit 1; }
 command -v python3 >/dev/null || { echo "python3 is required" >&2; exit 1; }
@@ -54,8 +66,8 @@ cat <<EOF
 V1 installed at $INSTALL_DIR.
 
 Enroll a camera:
-  python3 -m cctv.agent --role camera --name "Saw 1" --location "Line 1" --server http://SERVER:8080
+  cd $INSTALL_DIR && python3 -m cctv.agent --role camera --name "Saw 1" --location "Line 1" --server http://SERVER:8080
 
 Enroll a monitor:
-  python3 -m cctv.agent --role monitor --name "Control 1" --location "Control Room" --server http://SERVER:8080
+  cd $INSTALL_DIR && python3 -m cctv.agent --role monitor --name "Control 1" --location "Control Room" --server http://SERVER:8080
 EOF
