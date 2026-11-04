@@ -11,6 +11,7 @@ cctv-agent = "cctv.agent:main"
 cctv-media = "cctv.media:main"
 cctv-record = "cctv.recording:main"
 cctv-latency = "cctv.latency:main"
+cctv-simulate = "cctv.simulate:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

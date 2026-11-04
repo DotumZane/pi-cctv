@@ -94,4 +94,12 @@ Administrative mutations are written to the SQLite audit log. Authorized clients
 
 Device lifecycle is also available through the authenticated API: `POST /api/devices` enrolls or updates a device, and `DELETE /api/devices/{id}` removes it and any saved monitor assignment.
 
+To exercise the intended control-plane scale without physical Pis:
+
+```bash
+python3 -m cctv.simulate --server http://SERVER:8080 --token ADMIN_TOKEN
+```
+
+By default this provisions 26 virtual cameras, 23 virtual monitors, and a mix of single and 2×2 assignments.
+
 See [`docs/latency-test.md`](docs/latency-test.md) for the required end-to-end measurement procedure and [`docs/architecture.md`](docs/architecture.md) for the V1 system boundaries.
