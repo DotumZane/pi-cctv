@@ -1,0 +1,34 @@
+# Operating-system files
+.DS_Store
+Thumbs.db
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+*.secret
+*.key
+*.pem
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# Node.js
+node_modules/
+dist/
+build/
+
+# Logs and local runtime data
+*.log
+logs/
+data/
+tmp/
+
+# Editors
+.idea/
+.vscode/
+*.swp
