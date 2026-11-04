@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -75,6 +76,19 @@ class Store:
             "UPDATE devices SET status='online', last_seen=?, ip_address=COALESCE(NULLIF(?, ''), ip_address), metadata=? WHERE id=?",
             (now(), ip_address, metadata, device_id),
         )
+        self.db.commit()
+        return self.device(device_id)
+
+    def update_settings(self, device_id: str, settings: dict[str, Any]) -> dict[str, Any] | None:
+        device = self.device(device_id)
+        if not device:
+            return None
+        try:
+            metadata = json.loads(device["metadata"] or "{}")
+        except json.JSONDecodeError:
+            metadata = {}
+        metadata["settings"] = settings
+        self.db.execute("UPDATE devices SET metadata=? WHERE id=?", (json.dumps(metadata), device_id))
         self.db.commit()
         return self.device(device_id)
 

@@ -51,6 +51,13 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.call("POST", "/api/devices", {"id": "cam-1", "kind": "camera", "name": "Saw 1"})[0], 401)
         self.assertEqual(self.call("POST", "/api/devices", {"id": "cam-1", "kind": "camera", "name": "Saw 1"}, "test-token")[0], 201)
 
+    def test_camera_settings_are_persisted(self):
+        self.call("POST", "/api/devices", {"id": "cam-1", "kind": "camera", "name": "Saw 1"})
+        status, device = self.call("PUT", "/api/cameras/cam-1/settings", {"width": 1280, "height": 720, "fps": 30, "bitrate": 4000000})
+        self.assertEqual(status, 200)
+        metadata = json.loads(device["metadata"])
+        self.assertEqual(metadata["settings"]["width"], 1280)
+
 
 if __name__ == "__main__":
     unittest.main()

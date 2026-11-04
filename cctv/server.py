@@ -65,6 +65,10 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/devices":
             self.send_json({"devices": self.store.devices(parse_qs(parsed.query).get("kind", [None])[0])})
             return
+        if parsed.path.startswith("/api/devices/"):
+            device = self.store.device(parsed.path.split("/")[3])
+            self.send_json(device or {"error": "device not found"}, HTTPStatus.OK if device else HTTPStatus.NOT_FOUND)
+            return
         if parsed.path == "/api/assignments":
             self.send_json({"assignments": self.store.all_assignments()})
             return
@@ -102,6 +106,20 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_PUT(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
+        if parsed.path.startswith("/api/cameras/") and parsed.path.endswith("/settings"):
+            if not self.require_auth():
+                return
+            camera_id = parsed.path.split("/")[3]
+            camera = self.store.device(camera_id)
+            settings = self.body()
+            allowed = {"width", "height", "fps", "bitrate"}
+            if not camera or camera["kind"] != "camera":
+                self.send_json({"error": "camera not found"}, HTTPStatus.NOT_FOUND)
+            elif any(key not in allowed for key in settings) or not all(isinstance(value, int) and value > 0 for value in settings.values()):
+                self.send_json({"error": "settings must contain only positive integer width, height, fps, or bitrate values"}, HTTPStatus.BAD_REQUEST)
+            else:
+                self.send_json(self.store.update_settings(camera_id, settings))
+            return
         if parsed.path.startswith("/api/monitors/") and parsed.path.endswith("/assignment"):
             if not self.require_auth():
                 return
