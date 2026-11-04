@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +14,7 @@ def now() -> str:
 
 
 class Store:
+    stale_after = timedelta(seconds=45)
     def __init__(self, path: str | Path = "data/cctv.db") -> None:
         self.path = str(path)
         if self.path != ":memory:":
@@ -55,7 +56,31 @@ class Store:
             rows = self.db.execute("SELECT * FROM devices WHERE kind = ? ORDER BY name", (kind,)).fetchall()
         else:
             rows = self.db.execute("SELECT * FROM devices ORDER BY kind, name").fetchall()
-        return [dict(row) for row in rows]
+        current = datetime.now(timezone.utc)
+        devices = []
+        for row in rows:
+            device = dict(row)
+            if device["last_seen"]:
+                try:
+                    last_seen = datetime.fromisoformat(device["last_seen"])
+                    if current - last_seen > self.stale_after:
+                        device["status"] = "offline"
+                except ValueError:
+                    device["status"] = "offline"
+            else:
+                device["status"] = "offline"
+            devices.append(device)
+        return devices
+
+    def health_summary(self) -> dict[str, Any]:
+        devices = self.devices()
+        return {
+            "total": len(devices),
+            "online": sum(device["status"] == "online" for device in devices),
+            "offline": sum(device["status"] == "offline" for device in devices),
+            "cameras": sum(device["kind"] == "camera" for device in devices),
+            "monitors": sum(device["kind"] == "monitor" for device in devices),
+        }
 
     def register(self, payload: dict[str, Any]) -> dict[str, Any]:
         device_id = str(payload["id"])

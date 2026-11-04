@@ -60,7 +60,7 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(content)
             return
         if parsed.path == "/api/health":
-            self.send_json({"ok": True, "version": "0.1.0"})
+            self.send_json({"ok": True, "version": "0.1.0", "devices": self.store.health_summary()})
             return
         if parsed.path == "/api/devices":
             self.send_json({"devices": self.store.devices(parse_qs(parsed.query).get("kind", [None])[0])})
