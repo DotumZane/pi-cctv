@@ -7,7 +7,6 @@ import json
 import socket
 import time
 import urllib.request
-import uuid
 
 from .runtime import DeviceRuntime
 
@@ -28,7 +27,9 @@ def main() -> None:
     parser.add_argument("--name", required=True)
     parser.add_argument("--location", default="")
     parser.add_argument("--server", default="http://127.0.0.1:8080")
-    parser.add_argument("--id", default=f"{socket.gethostname()}-{uuid.uuid4().hex[:6]}")
+    # Hostname is stable across service restarts. Operators can provide --id
+    # when a site needs an identifier different from the Pi hostname.
+    parser.add_argument("--id", default=socket.gethostname())
     parser.add_argument("--interval", type=int, default=15)
     parser.add_argument("--run-media", action="store_true", help="launch and recover the camera/monitor media pipeline")
     parser.add_argument("--media-server", default="127.0.0.1", help="hostname or IP of the MediaMTX server")
