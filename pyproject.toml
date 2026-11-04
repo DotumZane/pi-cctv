@@ -1,0 +1,13 @@
+[project]
+name = "pi-cctv"
+version = "0.1.0"
+description = "Low-latency, centrally managed Raspberry Pi CCTV system"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+cctv-server = "cctv.server:main"
+cctv-agent = "cctv.agent:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
