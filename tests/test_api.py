@@ -14,6 +14,7 @@ class ApiTests(unittest.TestCase):
     def setUp(self):
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.httpd.store = Store(":memory:")
+        self.httpd.bootstrap_token = "bootstrap-token"
         self.recordings = tempfile.TemporaryDirectory()
         self.httpd.recordings_dir = self.recordings.name
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
@@ -26,12 +27,14 @@ class ApiTests(unittest.TestCase):
         self.httpd.store.close()
         self.recordings.cleanup()
 
-    def call(self, method, path, payload=None, token=""):
+    def call(self, method, path, payload=None, token="", bootstrap=""):
         connection = HTTPConnection(*self.base)
         data = json.dumps(payload).encode() if payload is not None else None
         headers = {"Content-Type": "application/json"} if data else {}
         if token:
             headers["Authorization"] = f"Bearer {token}"
+        if bootstrap:
+            headers["X-Bootstrap-Token"] = bootstrap
         connection.request(method, path, data, headers)
         response = connection.getresponse()
         body = json.loads(response.read())
@@ -108,6 +111,18 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(pending["commands"][0]["id"], command["id"])
         self.assertEqual(self.call("GET", "/api/devices/cam-1/commands")[1]["commands"], [])
+
+    def test_pending_device_can_be_adopted_and_claims_device_token(self):
+        status, pending = self.call("POST", "/api/enroll", {"id": "pending-pi", "name": "New Pi"}, bootstrap="bootstrap-token")
+        self.assertEqual(status, 202)
+        self.assertEqual(pending["status"], "pending")
+        status, adopted = self.call("POST", "/api/pending/pending-pi/adopt", {"kind": "camera", "name": "Saw 1", "location": "Line 1"})
+        self.assertEqual(status, 201)
+        status, claim = self.call("GET", "/api/enroll/pending-pi", bootstrap="bootstrap-token")
+        self.assertEqual(status, 200)
+        self.assertEqual(claim["status"], "adopted")
+        self.assertTrue(claim["device_token"])
+        self.assertEqual(self.call("POST", "/api/devices/pending-pi/heartbeat", {"test": True}, claim["device_token"])[0], 200)
 
 
 if __name__ == "__main__":

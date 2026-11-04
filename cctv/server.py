@@ -59,6 +59,29 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json({"error": "authentication required"}, HTTPStatus.UNAUTHORIZED)
         return False
 
+    def bootstrap_authorized(self) -> bool:
+        expected = getattr(self.server, "bootstrap_token", "")  # type: ignore[attr-defined]
+        supplied = self.headers.get("X-Bootstrap-Token", "")
+        return bool(expected) and secrets.compare_digest(supplied, expected)
+
+    def require_bootstrap(self) -> bool:
+        if self.bootstrap_authorized():
+            return True
+        self.send_json({"error": "bootstrap authentication required"}, HTTPStatus.UNAUTHORIZED)
+        return False
+
+    def device_authorized(self, device_id: str) -> bool:
+        if self.authorized():
+            return True
+        supplied = self.headers.get("Authorization", "")
+        return supplied.startswith("Bearer ") and self.store.device_token_valid(device_id, supplied[7:])
+
+    def require_device_auth(self, device_id: str) -> bool:
+        if self.device_authorized(device_id):
+            return True
+        self.send_json({"error": "device authentication required"}, HTTPStatus.UNAUTHORIZED)
+        return False
+
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         if parsed.path == "/":
@@ -77,19 +100,36 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self.send_json({"devices": self.store.devices(parse_qs(parsed.query).get("kind", [None])[0])})
             return
-        if parsed.path.startswith("/api/devices/") and parsed.path.endswith("/commands"):
-            if not self.require_read_auth():
+        if parsed.path == "/api/pending":
+            if not self.require_auth():
                 return
+            self.send_json({"devices": self.store.pending_devices()})
+            return
+        if parsed.path.startswith("/api/enroll/"):
+            if not self.require_bootstrap():
+                return
+            pending_id = parsed.path.split("/")[3]
+            claim = self.store.claim_adoption(pending_id)
+            if claim:
+                claim["device_token"] = claim.pop("issued_token")
+                claim.pop("token_hash", None)
+                claim["status"] = "adopted"
+            self.send_json(claim or {"status": "pending"})
+            return
+        if parsed.path.startswith("/api/devices/") and parsed.path.endswith("/commands"):
             device_id = parsed.path.split("/")[3]
+            if not self.require_device_auth(device_id):
+                return
             if not self.store.device(device_id):
                 self.send_json({"error": "device not found"}, HTTPStatus.NOT_FOUND)
                 return
             self.send_json({"commands": self.store.consume_commands(device_id)})
             return
         if parsed.path.startswith("/api/devices/"):
-            if not self.require_read_auth():
+            device_id = parsed.path.split("/")[3]
+            if not self.require_device_auth(device_id):
                 return
-            device = self.store.device(parsed.path.split("/")[3])
+            device = self.store.device(device_id)
             self.send_json(device or {"error": "device not found"}, HTTPStatus.OK if device else HTTPStatus.NOT_FOUND)
             return
         if parsed.path == "/api/assignments":
@@ -135,9 +175,9 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
             return
         if parsed.path.startswith("/api/monitors/") and parsed.path.endswith("/assignment"):
-            if not self.require_read_auth():
-                return
             monitor_id = parsed.path.split("/")[3]
+            if not self.require_device_auth(monitor_id):
+                return
             assignment = self.store.assignment(monitor_id)
             self.send_json(assignment or {"monitor_id": monitor_id, "layout": "single", "cameras": "[]"})
             return
@@ -158,12 +198,39 @@ class Handler(BaseHTTPRequestHandler):
                 self.store.audit("device.register", payload["id"], self.client_address[0], {"kind": payload["kind"], "name": payload["name"]})
                 self.send_json(device, HTTPStatus.CREATED)
                 return
-            if parsed.path.startswith("/api/devices/") and parsed.path.endswith("/heartbeat"):
-                if not self.require_auth():
+            if parsed.path == "/api/enroll":
+                if not self.require_bootstrap():
                     return
+                payload = self.body()
+                device_id = str(payload.get("id", "")).strip()
+                if not device_id:
+                    self.send_json({"error": "id is required"}, HTTPStatus.BAD_REQUEST)
+                    return
+                pending = self.store.pending_register(device_id, payload.get("name", device_id), self.client_address[0], payload.get("metadata", {}))
+                self.send_json({"status": "pending", "id": pending["id"]}, HTTPStatus.ACCEPTED)
+                return
+            if parsed.path.startswith("/api/devices/") and parsed.path.endswith("/heartbeat"):
                 device_id = parsed.path.split("/")[3]
+                if not self.require_device_auth(device_id):
+                    return
                 device = self.store.heartbeat(device_id, self.client_address[0], json.dumps(self.body()))
                 self.send_json(device or {"error": "device not found"}, HTTPStatus.OK if device else HTTPStatus.NOT_FOUND)
+                return
+            if parsed.path.startswith("/api/pending/") and parsed.path.endswith("/adopt"):
+                if not self.require_auth():
+                    return
+                pending_id = parsed.path.split("/")[3]
+                payload = self.body()
+                if payload.get("kind") not in ("camera", "monitor") or not payload.get("name"):
+                    self.send_json({"error": "kind and name are required"}, HTTPStatus.BAD_REQUEST)
+                    return
+                result = self.store.adopt_pending(pending_id, payload["kind"], payload["name"], payload.get("location", ""))
+                if not result:
+                    self.send_json({"error": "pending device not found or already adopted"}, HTTPStatus.NOT_FOUND)
+                    return
+                device, _token = result
+                self.store.audit("device.adopt", pending_id, self.client_address[0], {"kind": payload["kind"], "name": payload["name"]})
+                self.send_json(device, HTTPStatus.CREATED)
                 return
             if parsed.path.startswith("/api/devices/") and parsed.path.endswith("/commands"):
                 if not self.require_auth():
@@ -248,12 +315,14 @@ def main() -> None:
     parser.add_argument("--admin-token", default=os.getenv("CCTV_ADMIN_TOKEN", ""))
     parser.add_argument("--read-token", default=os.getenv("CCTV_READ_TOKEN", ""))
     parser.add_argument("--recordings-dir", default=os.getenv("CCTV_RECORDINGS_DIR", "recordings"))
+    parser.add_argument("--bootstrap-token", default=os.getenv("CCTV_BOOTSTRAP_TOKEN", ""))
     args = parser.parse_args()
     httpd = ThreadingHTTPServer((args.host, args.port), Handler)
     httpd.store = Store(args.db)  # type: ignore[attr-defined]
     httpd.admin_token = args.admin_token  # type: ignore[attr-defined]
     httpd.read_token = args.read_token  # type: ignore[attr-defined]
     httpd.recordings_dir = args.recordings_dir  # type: ignore[attr-defined]
+    httpd.bootstrap_token = args.bootstrap_token  # type: ignore[attr-defined]
     print(f"Pi CCTV server listening on http://{args.host}:{args.port}", flush=True)
     try:
         httpd.serve_forever()

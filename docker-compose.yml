@@ -7,6 +7,7 @@ services:
     environment:
       CCTV_ADMIN_TOKEN: ${CCTV_ADMIN_TOKEN:?set CCTV_ADMIN_TOKEN in .env}
       CCTV_READ_TOKEN: ${CCTV_READ_TOKEN:?set CCTV_READ_TOKEN in .env}
+      CCTV_BOOTSTRAP_TOKEN: ${CCTV_BOOTSTRAP_TOKEN:?set CCTV_BOOTSTRAP_TOKEN in .env}
     volumes:
       - cctv-data:/data
     depends_on:

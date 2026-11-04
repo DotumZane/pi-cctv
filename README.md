@@ -37,6 +37,8 @@ docker compose up -d --build
 
 The dashboard is then available at `http://SERVER:8080`. Keep the management port restricted to the authorized administration network; the RTSP port must be reachable by cameras and monitors on the CCTV VLAN. `CCTV_ADMIN_TOKEN` can change configuration, while `CCTV_READ_TOKEN` is read-only.
 
+For adoption-based provisioning, `CCTV_BOOTSTRAP_TOKEN` is used only to place generic Pis into the pending-device list. It is not an administrator token. After adoption, the Pi receives a device-specific credential and the dashboard-selected role.
+
 The V1 management server uses only Python's standard library and SQLite:
 
 ```bash
@@ -73,6 +75,16 @@ curl -fsSL https://raw.githubusercontent.com/DotumZane/pi-cctv/main/install.sh |
   sudo bash -s -- --role camera --name "Saw 1" --location "Line 1" \
   --server http://SERVER:8080 --media-server MEDIA_SERVER --token ADMIN_TOKEN
 ```
+
+To install a generic Pi that waits for dashboard adoption instead of choosing a role during installation:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/DotumZane/pi-cctv/main/install.sh | \
+  sudo bash -s -- --enroll --server http://SERVER:8080 \
+  --media-server MEDIA_SERVER --bootstrap-token BOOTSTRAP_TOKEN
+```
+
+The dashboard will show the Pi under **Pending devices**. Choose Camera or Monitor, set its name/location, and click **Adopt**.
 
 To install and start a boot service in one command, provide the device role and endpoints:
 

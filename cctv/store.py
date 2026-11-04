@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import secrets
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -32,7 +34,8 @@ class Store:
                 ip_address TEXT NOT NULL DEFAULT '',
                 status TEXT NOT NULL DEFAULT 'offline',
                 last_seen TEXT,
-                metadata TEXT NOT NULL DEFAULT '{}'
+                metadata TEXT NOT NULL DEFAULT '{}',
+                token_hash TEXT
             );
             CREATE TABLE IF NOT EXISTS assignments (
                 monitor_id TEXT PRIMARY KEY REFERENCES devices(id) ON DELETE CASCADE,
@@ -55,8 +58,21 @@ class Store:
                 created_at TEXT NOT NULL,
                 consumed_at TEXT
             );
+            CREATE TABLE IF NOT EXISTS pending_devices (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                ip_address TEXT NOT NULL DEFAULT '',
+                metadata TEXT NOT NULL DEFAULT '{}',
+                first_seen TEXT NOT NULL,
+                last_seen TEXT NOT NULL,
+                adopted_device_id TEXT,
+                issued_token TEXT
+            );
             """
         )
+        columns = {row[1] for row in self.db.execute("PRAGMA table_info(devices)").fetchall()}
+        if "token_hash" not in columns:
+            self.db.execute("ALTER TABLE devices ADD COLUMN token_hash TEXT")
         self.db.commit()
 
     def close(self) -> None:
@@ -65,6 +81,56 @@ class Store:
     def device(self, device_id: str) -> dict[str, Any] | None:
         row = self.db.execute("SELECT * FROM devices WHERE id = ?", (device_id,)).fetchone()
         return dict(row) if row else None
+
+    @staticmethod
+    def hash_token(token: str) -> str:
+        return hashlib.sha256(token.encode()).hexdigest()
+
+    def device_token_valid(self, device_id: str, token: str) -> bool:
+        device = self.device(device_id)
+        return bool(device and device.get("token_hash") and secrets.compare_digest(device["token_hash"], self.hash_token(token)))
+
+    def pending_register(self, device_id: str, name: str, ip_address: str, metadata: dict[str, Any]) -> dict[str, Any]:
+        timestamp = now()
+        self.db.execute(
+            """INSERT INTO pending_devices(id, name, ip_address, metadata, first_seen, last_seen)
+               VALUES(?, ?, ?, ?, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET name=excluded.name, ip_address=excluded.ip_address,
+               metadata=excluded.metadata, last_seen=excluded.last_seen""",
+            (device_id, name, ip_address, json.dumps(metadata), timestamp, timestamp),
+        )
+        self.db.commit()
+        return dict(self.db.execute("SELECT * FROM pending_devices WHERE id=?", (device_id,)).fetchone())
+
+    def pending_devices(self) -> list[dict[str, Any]]:
+        return [dict(row) for row in self.db.execute("SELECT * FROM pending_devices WHERE adopted_device_id IS NULL ORDER BY first_seen").fetchall()]
+
+    def adopt_pending(self, pending_id: str, kind: str, name: str, location: str) -> tuple[dict[str, Any], str] | None:
+        pending = self.db.execute("SELECT * FROM pending_devices WHERE id=? AND adopted_device_id IS NULL", (pending_id,)).fetchone()
+        if not pending:
+            return None
+        token = secrets.token_urlsafe(32)
+        device_id = pending_id
+        self.db.execute(
+            """INSERT INTO devices(id, kind, name, location, ip_address, status, last_seen, metadata, token_hash)
+               VALUES(?, ?, ?, ?, ?, 'online', ?, ?, ?)""",
+            (device_id, kind, name, location, pending["ip_address"], now(), pending["metadata"], self.hash_token(token)),
+        )
+        self.db.execute("UPDATE pending_devices SET adopted_device_id=?, issued_token=? WHERE id=?", (device_id, token, pending_id))
+        self.db.commit()
+        return self.device(device_id), token  # type: ignore[return-value]
+
+    def claim_adoption(self, pending_id: str) -> dict[str, Any] | None:
+        row = self.db.execute(
+            "SELECT d.*, p.issued_token FROM devices d JOIN pending_devices p ON p.adopted_device_id=d.id WHERE p.id=? AND p.issued_token IS NOT NULL",
+            (pending_id,),
+        ).fetchone()
+        if not row:
+            return None
+        result = dict(row)
+        self.db.execute("UPDATE pending_devices SET issued_token=NULL WHERE id=?", (pending_id,))
+        self.db.commit()
+        return result
 
     def delete_device(self, device_id: str) -> bool:
         result = self.db.execute("DELETE FROM devices WHERE id = ?", (device_id,))

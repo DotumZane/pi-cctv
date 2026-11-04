@@ -129,14 +129,15 @@ class DeviceRuntime:
             self.process.wait(timeout=5)
         self.process = None
 
-    def run(self) -> None:
-        while True:
-            try:
-                self.enroll()
-                break
-            except Exception as exc:
-                print(f"Enrollment failed: {exc}; retrying", flush=True)
-                time.sleep(5)
+    def run(self, enroll: bool = True) -> None:
+        if enroll:
+            while True:
+                try:
+                    self.enroll()
+                    break
+                except Exception as exc:
+                    print(f"Enrollment failed: {exc}; retrying", flush=True)
+                    time.sleep(5)
         try:
             while True:
                 try:
