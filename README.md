@@ -104,6 +104,8 @@ python3 -m cctv.agent --role camera --name "Saw 1" --location "Line 1" \
 
 The monitor runtime polls its centrally stored assignment and restarts its pipeline when the assignment changes or the process exits. It reports connected DRM/HDMI displays automatically. A one-display Pi can use a single camera or 2×2 layout; a two-display Pi exposes two independent single-camera outputs. The server supports optional bearer-token authentication through `CCTV_ADMIN_TOKEN` or `--admin-token`. V1 still needs hardware validation, recording, and further production security hardening before deployment.
 
+Monitor settings are available from the selected monitor editor: scaling, orientation, output size, refresh rate, kiosk mode, screen blanking prevention, camera/timestamp overlays, reconnect/watchdog limits, fallback camera, and scheduled-layout enablement. Hardware-specific display behavior still needs validation on the first Pi board.
+
 If `--id` is omitted, the agent uses the Pi hostname so the identity remains stable across reboot and service restart.
 
 Pi heartbeats include available CPU temperature, one-minute load, memory-use percentage, uptime metrics, and monitor display outputs when applicable. Settings and health metadata are merged so recurring heartbeats cannot erase administrator configuration.

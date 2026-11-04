@@ -70,31 +70,42 @@ def http_json(url: str, method: str = "GET", payload: dict | None = None, token:
         return json.load(response)
 
 
-def command_for_assignment(assignment: dict, media_server: str) -> str | None:
+def command_for_assignment(assignment: dict, media_server: str, settings: dict | None = None) -> str | None:
+    settings = settings or {}
     cameras = json.loads(assignment.get("cameras", "[]")) if isinstance(assignment.get("cameras"), str) else assignment.get("cameras", [])
     if not cameras:
         return None
     urls = [f"rtsp://{media_server}:8554/{camera}" for camera in cameras]
     if assignment.get("layout", "single") == "2x2":
         return quad_pipeline(urls)
-    return MonitorMedia(urls[0]).pipeline()
+    return MonitorMedia(
+        urls[0], fullscreen=settings.get("kiosk", True), width=settings.get("width"), height=settings.get("height"),
+        orientation=settings.get("orientation", 0), show_camera_name=settings.get("show_camera_name", False),
+        show_timestamp=settings.get("show_timestamp", False), camera_name=settings.get("camera_name", ""),
+    ).pipeline()
 
 
-def commands_for_assignment(assignment: dict, media_server: str) -> list[str]:
+def commands_for_assignment(assignment: dict, media_server: str, settings: dict | None = None) -> list[str]:
     """Build one monitor pipeline per physical output when configured."""
     try:
         outputs = json.loads(assignment.get("outputs", "[]")) if isinstance(assignment.get("outputs"), str) else assignment.get("outputs", [])
     except json.JSONDecodeError:
         outputs = []
     if not outputs:
-        command = command_for_assignment(assignment, media_server)
+        command = command_for_assignment(assignment, media_server, settings)
         return [command] if command else []
     commands = []
     for output in outputs:
         cameras = output.get("cameras", []) if isinstance(output, dict) else []
         if cameras:
             connector_id = output.get("connector_id")
-            commands.append(MonitorMedia(f"rtsp://{media_server}:8554/{cameras[0]}", connector_id=connector_id).pipeline())
+            settings = settings or {}
+            commands.append(MonitorMedia(
+                f"rtsp://{media_server}:8554/{cameras[0]}", connector_id=connector_id,
+                fullscreen=settings.get("kiosk", True), width=settings.get("width"), height=settings.get("height"),
+                orientation=settings.get("orientation", 0), show_camera_name=settings.get("show_camera_name", False),
+                show_timestamp=settings.get("show_timestamp", False), camera_name=settings.get("camera_name", ""),
+            ).pipeline())
     return commands
 
 
@@ -149,8 +160,14 @@ class DeviceRuntime:
                 width=settings.get("width", 1920), height=settings.get("height", 1080),
                 fps=settings.get("fps", 30), bitrate=settings.get("bitrate", 6_000_000),
             ).pipeline()
+        device = http_json(f"{self.server}/api/devices/{self.device_id}", token=self.token)
+        try:
+            settings = json.loads(device.get("metadata", "{}")).get("settings", {})
+        except json.JSONDecodeError:
+            settings = {}
+        settings["camera_name"] = self.name
         assignment = http_json(f"{self.server}/api/monitors/{self.device_id}/assignment", token=self.token)
-        return commands_for_assignment(assignment, self.media_server)
+        return commands_for_assignment(assignment, self.media_server, settings)
 
     def reconcile_media(self) -> None:
         commands = self.desired_command()

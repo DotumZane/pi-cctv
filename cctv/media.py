@@ -36,14 +36,30 @@ class MonitorMedia:
     stream_url: str
     fullscreen: bool = True
     connector_id: str | None = None
+    width: int | None = None
+    height: int | None = None
+    orientation: int = 0
+    show_camera_name: bool = False
+    show_timestamp: bool = False
+    camera_name: str = ""
 
     def pipeline(self) -> str:
         sink = "kmssink" + (f" connector-id={self.connector_id}" if self.connector_id else "") + " sync=false" if self.fullscreen else "autovideosink sync=false"
+        filters = []
+        if self.orientation in (90, 180, 270):
+            filters.append(f"videoflip method=rotate-{self.orientation}")
+        if self.width and self.height:
+            filters.extend(["videoscale", f"video/x-raw,width={self.width},height={self.height}"])
+        if self.show_timestamp:
+            filters.append('clockoverlay time-format="%Y-%m-%d %H:%M:%S" halignment=left valignment=top')
+        if self.show_camera_name and self.camera_name:
+            filters.append(f'textoverlay text="{self.camera_name}" halignment=right valignment=top')
+        filter_chain = (" ! " + " ! ".join(filters)) if filters else ""
         return (
             "gst-launch-1.0 -e "
             f"rtspsrc location={quote(self.stream_url)} protocols=tcp latency=0 drop-on-latency=true ! "
             "rtph264depay ! h264parse ! v4l2h264dec ! queue max-size-buffers=2 leaky=downstream ! "
-            f"{sink}"
+            f"videoconvert{filter_chain} ! {sink}"
         )
 
 

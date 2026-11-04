@@ -282,6 +282,45 @@ class Handler(BaseHTTPRequestHandler):
                 self.store.audit("camera.settings", camera_id, self.client_address[0], settings)
                 self.send_json(device)
             return
+        if parsed.path.startswith("/api/monitors/") and parsed.path.endswith("/settings"):
+            if not self.require_auth():
+                return
+            monitor_id = parsed.path.split("/")[3]
+            monitor = self.store.device(monitor_id)
+            settings = self.body()
+            allowed = {
+                "scale_mode", "orientation", "width", "height", "refresh_hz", "kiosk",
+                "prevent_blanking", "show_camera_name", "show_timestamp", "reconnect_seconds",
+                "watchdog_seconds", "fallback_camera", "schedule_enabled",
+            }
+            camera_ids = {device["id"] for device in self.store.devices("camera")}
+            valid_enums = (
+                settings.get("scale_mode", "fit") in ("fit", "fill")
+                and settings.get("orientation", 0) in (0, 90, 180, 270)
+                and (not settings.get("fallback_camera") or settings.get("fallback_camera") in camera_ids)
+            )
+            valid_types = all(
+                (key in {"width", "height", "refresh_hz", "orientation", "reconnect_seconds", "watchdog_seconds"}
+                 and isinstance(value, int) and not isinstance(value, bool) and value > 0)
+                or (key in {"kiosk", "prevent_blanking", "show_camera_name", "show_timestamp", "schedule_enabled"} and isinstance(value, bool))
+                or (key in {"scale_mode", "fallback_camera"} and isinstance(value, str))
+                for key, value in settings.items()
+            )
+            reconnect_seconds = settings.get("reconnect_seconds", 5)
+            watchdog_seconds = settings.get("watchdog_seconds", 30)
+            valid_ranges = (
+                isinstance(reconnect_seconds, int) and not isinstance(reconnect_seconds, bool) and 1 <= reconnect_seconds <= 120
+                and isinstance(watchdog_seconds, int) and not isinstance(watchdog_seconds, bool) and 5 <= watchdog_seconds <= 600
+            )
+            if not monitor or monitor["kind"] != "monitor":
+                self.send_json({"error": "monitor not found"}, HTTPStatus.NOT_FOUND)
+            elif not settings or any(key not in allowed for key in settings) or not valid_types or not valid_enums or not valid_ranges:
+                self.send_json({"error": "invalid monitor settings"}, HTTPStatus.BAD_REQUEST)
+            else:
+                device = self.store.update_settings(monitor_id, settings)
+                self.store.audit("monitor.settings", monitor_id, self.client_address[0], settings)
+                self.send_json(device)
+            return
         if parsed.path.startswith("/api/monitors/") and parsed.path.endswith("/assignment"):
             if not self.require_auth():
                 return

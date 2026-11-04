@@ -71,6 +71,18 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(len(json.loads(assignment["outputs"])), 2)
 
+    def test_monitor_settings_are_persisted(self):
+        self.call("POST", "/api/devices", {"id": "mon-1", "kind": "monitor", "name": "Control"})
+        status, device = self.call("PUT", "/api/monitors/mon-1/settings", {
+            "scale_mode": "fill", "orientation": 90, "width": 1920, "height": 1080,
+            "refresh_hz": 60, "kiosk": True, "prevent_blanking": True,
+            "show_camera_name": True, "show_timestamp": True,
+            "reconnect_seconds": 5, "watchdog_seconds": 30,
+            "fallback_camera": "", "schedule_enabled": False,
+        })
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(device["metadata"])["settings"]["orientation"], 90)
+
     def test_optional_admin_token_protects_mutations(self):
         self.httpd.admin_token = "test-token"
         self.assertEqual(self.call("POST", "/api/devices", {"id": "cam-1", "kind": "camera", "name": "Saw 1"})[0], 401)
