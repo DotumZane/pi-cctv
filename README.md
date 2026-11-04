@@ -67,3 +67,13 @@ python3 -m cctv.agent --role camera --name "Saw 1" --location "Line 1" \
 ```
 
 The monitor runtime polls its centrally stored assignment and restarts its pipeline when the assignment changes or the process exits. The server supports optional bearer-token authentication through `CCTV_ADMIN_TOKEN` or `--admin-token`. V1 still needs hardware validation, recording, and further production security hardening before deployment.
+
+The centralized recorder uses FFmpeg stream copy and segmented files, so it does not transcode live video:
+
+```bash
+python3 -m cctv.recording --camera-id cam-1 \
+  --stream-url rtsp://MEDIA_SERVER:8554/cam-1 \
+  --output-dir /var/lib/pi-cctv/recordings --retention-hours 24
+```
+
+Files are organized by camera and date, and old segments are deleted automatically. Recording throughput and storage capacity must be sized and tested for the final camera bitrate and retention period.

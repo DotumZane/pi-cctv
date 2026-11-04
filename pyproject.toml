@@ -9,6 +9,7 @@ dependencies = []
 cctv-server = "cctv.server:main"
 cctv-agent = "cctv.agent:main"
 cctv-media = "cctv.media:main"
+cctv-record = "cctv.recording:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

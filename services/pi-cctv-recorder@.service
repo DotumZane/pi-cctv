@@ -1,0 +1,16 @@
+[Unit]
+Description=Pi CCTV recorder for camera %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cctv
+WorkingDirectory=/var/lib/pi-cctv
+EnvironmentFile=/etc/default/pi-cctv-recorder-%i
+ExecStart=/usr/bin/python3 -m cctv.recording --camera-id %i --stream-url ${CCTV_STREAM_URL} --output-dir ${CCTV_RECORDING_DIR} --retention-hours ${CCTV_RETENTION_HOURS}
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
