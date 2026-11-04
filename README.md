@@ -50,6 +50,15 @@ sudo bash install.sh
 python3 -m cctv.agent --role camera --name "Saw 1" --location "Line 1" --server http://SERVER:8080
 ```
 
+To install and start a boot service in one command, provide the device role and endpoints:
+
+```bash
+sudo bash install.sh --role camera --name "Saw 1" --location "Line 1" \
+  --server http://SERVER:8080 --media-server MEDIA_SERVER --token ADMIN_TOKEN
+```
+
+The installer creates and enables `pi-cctv-agent.service`, which restarts automatically after failures and starts after network-online.
+
 Use `--role monitor` for a monitor Pi. The agent registers the device and retries heartbeats through temporary network outages. Add `--run-media --media-server MEDIA_SERVER` to launch and recover the camera or monitor media process automatically:
 
 ```bash
@@ -57,4 +66,4 @@ python3 -m cctv.agent --role camera --name "Saw 1" --location "Line 1" \
   --server http://SERVER:8080 --media-server MEDIA_SERVER --run-media
 ```
 
-The monitor runtime polls its centrally stored assignment and restarts its pipeline when the assignment changes or the process exits. V1 still needs hardware validation, service unit generation, authentication, recording, and production security hardening before deployment.
+The monitor runtime polls its centrally stored assignment and restarts its pipeline when the assignment changes or the process exits. The server supports optional bearer-token authentication through `CCTV_ADMIN_TOKEN` or `--admin-token`. V1 still needs hardware validation, recording, and further production security hardening before deployment.

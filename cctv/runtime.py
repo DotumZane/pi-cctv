@@ -12,11 +12,13 @@ from typing import Callable
 from .media import CameraMedia, MonitorMedia, quad_pipeline
 
 
-def http_json(url: str, method: str = "GET", payload: dict | None = None) -> dict:
+def http_json(url: str, method: str = "GET", payload: dict | None = None, token: str = "") -> dict:
     data = json.dumps(payload).encode() if payload is not None else None
     request = urllib.request.Request(url, data=data, method=method)
     if data:
         request.add_header("Content-Type", "application/json")
+    if token:
+        request.add_header("Authorization", f"Bearer {token}")
     with urllib.request.urlopen(request, timeout=10) as response:
         return json.load(response)
 
@@ -40,6 +42,7 @@ class DeviceRuntime:
     server: str
     media_server: str
     heartbeat_interval: int = 15
+    token: str = ""
     process_factory: Callable[..., subprocess.Popen] = subprocess.Popen
 
     def __post_init__(self) -> None:
@@ -54,15 +57,15 @@ class DeviceRuntime:
             "kind": self.role,
             "name": self.name,
             "location": self.location,
-        })
+        }, token=self.token)
 
     def heartbeat(self) -> None:
-        http_json(f"{self.server}/api/devices/{self.device_id}/heartbeat", "POST", {"runtime": "v1"})
+        http_json(f"{self.server}/api/devices/{self.device_id}/heartbeat", "POST", {"runtime": "v1"}, self.token)
 
     def desired_command(self) -> str | None:
         if self.role == "camera":
             return CameraMedia(f"rtsp://{self.media_server}:8554/{self.device_id}").pipeline()
-        assignment = http_json(f"{self.server}/api/monitors/{self.device_id}/assignment")
+        assignment = http_json(f"{self.server}/api/monitors/{self.device_id}/assignment", token=self.token)
         return command_for_assignment(assignment, self.media_server)
 
     def reconcile_media(self) -> None:

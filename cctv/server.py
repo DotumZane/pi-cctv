@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import secrets
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -34,6 +35,19 @@ class Handler(BaseHTTPRequestHandler):
     def body(self) -> dict:
         length = int(self.headers.get("Content-Length", "0"))
         return json.loads(self.rfile.read(length) or b"{}")
+
+    def authorized(self) -> bool:
+        expected = getattr(self.server, "admin_token", "")  # type: ignore[attr-defined]
+        if not expected:
+            return True
+        supplied = self.headers.get("Authorization", "")
+        return secrets.compare_digest(supplied, f"Bearer {expected}")
+
+    def require_auth(self) -> bool:
+        if self.authorized():
+            return True
+        self.send_json({"error": "authentication required"}, HTTPStatus.UNAUTHORIZED)
+        return False
 
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
@@ -65,6 +79,8 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         try:
             if parsed.path == "/api/devices":
+                if not self.require_auth():
+                    return
                 payload = self.body()
                 missing = [field for field in ("id", "kind", "name") if not payload.get(field)]
                 if missing or payload.get("kind") not in ("camera", "monitor"):
@@ -73,6 +89,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(self.store.register(payload), HTTPStatus.CREATED)
                 return
             if parsed.path.startswith("/api/devices/") and parsed.path.endswith("/heartbeat"):
+                if not self.require_auth():
+                    return
                 device_id = parsed.path.split("/")[3]
                 device = self.store.heartbeat(device_id, self.client_address[0], json.dumps(self.body()))
                 self.send_json(device or {"error": "device not found"}, HTTPStatus.OK if device else HTTPStatus.NOT_FOUND)
@@ -85,6 +103,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_PUT(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         if parsed.path.startswith("/api/monitors/") and parsed.path.endswith("/assignment"):
+            if not self.require_auth():
+                return
             monitor_id = parsed.path.split("/")[3]
             payload = self.body()
             monitor = self.store.device(monitor_id)
@@ -107,9 +127,11 @@ def main() -> None:
     parser.add_argument("--host", default=os.getenv("CCTV_HOST", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=int(os.getenv("CCTV_PORT", "8080")))
     parser.add_argument("--db", default=os.getenv("CCTV_DB", "data/cctv.db"))
+    parser.add_argument("--admin-token", default=os.getenv("CCTV_ADMIN_TOKEN", ""))
     args = parser.parse_args()
     httpd = ThreadingHTTPServer((args.host, args.port), Handler)
     httpd.store = Store(args.db)  # type: ignore[attr-defined]
+    httpd.admin_token = args.admin_token  # type: ignore[attr-defined]
     print(f"Pi CCTV server listening on http://{args.host}:{args.port}", flush=True)
     try:
         httpd.serve_forever()

@@ -21,10 +21,13 @@ class ApiTests(unittest.TestCase):
         self.httpd.server_close()
         self.httpd.store.close()
 
-    def call(self, method, path, payload=None):
+    def call(self, method, path, payload=None, token=""):
         connection = HTTPConnection(*self.base)
         data = json.dumps(payload).encode() if payload is not None else None
-        connection.request(method, path, data, {"Content-Type": "application/json"} if data else {})
+        headers = {"Content-Type": "application/json"} if data else {}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        connection.request(method, path, data, headers)
         response = connection.getresponse()
         body = json.loads(response.read())
         connection.close()
@@ -42,6 +45,11 @@ class ApiTests(unittest.TestCase):
         self.call("POST", "/api/devices", {"id": "mon-1", "kind": "monitor", "name": "Control"})
         status, _ = self.call("PUT", "/api/monitors/mon-1/assignment", {"layout": "single", "cameras": ["missing"]})
         self.assertEqual(status, 400)
+
+    def test_optional_admin_token_protects_mutations(self):
+        self.httpd.admin_token = "test-token"
+        self.assertEqual(self.call("POST", "/api/devices", {"id": "cam-1", "kind": "camera", "name": "Saw 1"})[0], 401)
+        self.assertEqual(self.call("POST", "/api/devices", {"id": "cam-1", "kind": "camera", "name": "Saw 1"}, "test-token")[0], 201)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,18 @@
+[Unit]
+Description=Pi CCTV V1 device agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/pi-cctv
+EnvironmentFile=-/etc/default/pi-cctv-agent
+ExecStart=/usr/bin/python3 -m cctv.agent $CCTV_AGENT_ARGS
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
