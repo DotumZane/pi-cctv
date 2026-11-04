@@ -24,3 +24,7 @@ def main() -> None:
     parser.add_argument("--fps", type=int, default=30)
     args = parser.parse_args()
     print(test_pattern_pipeline(args.publish_url, args.width, args.height, args.fps))
+
+
+if __name__ == "__main__":
+    main()

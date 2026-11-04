@@ -69,3 +69,7 @@ def main() -> None:
     if args.segment_seconds < 10 or args.retention_hours < 1:
         parser.error("segment-seconds must be at least 10 and retention-hours at least 1")
     run(RecorderConfig(args.camera_id, args.stream_url, Path(args.output_dir), args.segment_seconds, args.retention_hours))
+
+
+if __name__ == "__main__":
+    main()

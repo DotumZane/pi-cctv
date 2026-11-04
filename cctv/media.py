@@ -76,11 +76,17 @@ def main() -> None:
     monitor = subparsers.add_parser("monitor")
     monitor.add_argument("stream_url")
     quad = subparsers.add_parser("quad")
-    quad.add_argument("stream_urls", nargs="+", max_values=4)
+    quad.add_argument("stream_urls", nargs="+")
     args = parser.parse_args()
     if args.role == "camera":
         print(CameraMedia(args.publish_url, args.width, args.height, args.fps, args.bitrate).pipeline())
     elif args.role == "monitor":
         print(MonitorMedia(args.stream_url).pipeline())
     else:
+        if len(args.stream_urls) > 4:
+            parser.error("quad accepts at most four stream URLs")
         print(quad_pipeline(args.stream_urls))
+
+
+if __name__ == "__main__":
+    main()

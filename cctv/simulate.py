@@ -42,3 +42,7 @@ def main() -> None:
     parser.add_argument("--token", default="")
     args = parser.parse_args()
     print(json.dumps(provision(args.server, args.cameras, args.monitors, args.token), indent=2))
+
+
+if __name__ == "__main__":
+    main()
