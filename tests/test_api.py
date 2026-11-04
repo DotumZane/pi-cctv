@@ -141,6 +141,16 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(pending["commands"][0]["id"], command["id"])
         self.assertEqual(self.call("GET", "/api/devices/cam-1/commands")[1]["commands"], [])
 
+    def test_diagnostics_commands_are_allowlisted_and_history_is_available(self):
+        self.call("POST", "/api/devices", {"id": "cam-1", "kind": "camera", "name": "Saw 1"})
+        status, _ = self.call("POST", "/api/devices/cam-1/commands", {"command": "shell"})
+        self.assertEqual(status, 400)
+        status, command = self.call("POST", "/api/devices/cam-1/commands", {"command": "diagnostics"})
+        self.assertEqual(status, 202)
+        status, history = self.call("GET", "/api/devices/cam-1/command-history")
+        self.assertEqual(status, 200)
+        self.assertEqual(history["commands"][0]["id"], command["id"])
+
     def test_pending_device_can_be_adopted_and_claims_device_token(self):
         status, pending = self.call("POST", "/api/enroll", {"id": "pending-pi", "name": "New Pi"}, bootstrap="bootstrap-token")
         self.assertEqual(status, 202)

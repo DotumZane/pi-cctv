@@ -169,6 +169,15 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self.send_json({"commands": self.store.consume_commands(device_id)})
             return
+        if parsed.path.startswith("/api/devices/") and parsed.path.endswith("/command-history"):
+            if not self.require_auth():
+                return
+            device_id = parsed.path.split("/")[3]
+            if not self.store.device(device_id):
+                self.send_json({"error": "device not found"}, HTTPStatus.NOT_FOUND)
+                return
+            self.send_json({"commands": self.store.command_history(device_id)})
+            return
         if parsed.path.startswith("/api/devices/"):
             device_id = parsed.path.split("/")[3]
             if not self.require_device_auth(device_id):
@@ -337,11 +346,13 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json({"error": "device not found"}, HTTPStatus.NOT_FOUND)
                     return
                 payload = self.body()
-                if payload.get("command") != "restart_media":
-                    self.send_json({"error": "only restart_media is supported in V1"}, HTTPStatus.BAD_REQUEST)
+                allowed_commands = {"restart_media", "diagnostics", "restart_agent", "reboot"}
+                command_name = str(payload.get("command", ""))
+                if command_name not in allowed_commands:
+                    self.send_json({"error": "unsupported diagnostic command"}, HTTPStatus.BAD_REQUEST)
                     return
-                command = self.store.queue_command(device_id, payload["command"])
-                self.store.audit("device.command", device_id, self.client_address[0], {"command": payload["command"]})
+                command = self.store.queue_command(device_id, command_name)
+                self.store.audit("device.command", device_id, self.client_address[0], {"command": command_name})
                 self.send_json(command, HTTPStatus.ACCEPTED)
                 return
         except (json.JSONDecodeError, KeyError, ValueError) as exc:

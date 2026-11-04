@@ -144,9 +144,18 @@ class DeviceRuntime:
     def poll_commands(self) -> None:
         commands = http_json(f"{self.server}/api/devices/{self.device_id}/commands", token=self.token).get("commands", [])
         for command in commands:
-            if command.get("command") == "restart_media":
+            command_name = command.get("command")
+            if command_name == "restart_media":
                 self.stop_media()
                 self.last_command = None
+            elif command_name == "diagnostics":
+                print(f"Diagnostics {self.device_id}: {json.dumps(system_metrics(), sort_keys=True)}", flush=True)
+            elif command_name == "restart_agent":
+                self.stop_media()
+                self.last_command = None
+                raise SystemExit("agent restart requested")
+            elif command_name == "reboot":
+                subprocess.Popen(["sudo", "reboot"])
 
     def desired_command(self) -> list[str]:
         if self.role == "camera":

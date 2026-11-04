@@ -384,3 +384,11 @@ class Store:
             self.db.execute("UPDATE device_commands SET consumed_at=? WHERE device_id=? AND consumed_at IS NULL", (now(), device_id))
             self.db.commit()
         return [dict(row) for row in rows]
+
+    @serialized
+    def command_history(self, device_id: str, limit: int = 30) -> list[dict[str, Any]]:
+        limit = max(1, min(limit, 100))
+        return [dict(row) for row in self.db.execute(
+            "SELECT * FROM device_commands WHERE device_id=? ORDER BY id DESC LIMIT ?",
+            (device_id, limit),
+        ).fetchall()]
