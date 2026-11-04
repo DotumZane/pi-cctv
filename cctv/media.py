@@ -19,12 +19,27 @@ class CameraMedia:
     height: int = 1080
     fps: int = 30
     bitrate: int = 6_000_000
+    flip_horizontal: bool = False
+    flip_vertical: bool = False
+    brightness: float = 0.0
+    contrast: float = 1.0
+    saturation: float = 1.0
 
     def pipeline(self) -> str:
+        transforms = []
+        if self.flip_horizontal and self.flip_vertical:
+            transforms.append("videoflip method=rotate-180")
+        elif self.flip_horizontal:
+            transforms.append("videoflip method=flip-horiz")
+        elif self.flip_vertical:
+            transforms.append("videoflip method=flip-vert")
+        if self.brightness or self.contrast != 1.0 or self.saturation != 1.0:
+            transforms.append(f"videobalance brightness={self.brightness} contrast={self.contrast} saturation={self.saturation}")
+        transform_chain = (" ! " + " ! ".join(transforms)) if transforms else ""
         return (
             "gst-launch-1.0 -e "
             f"libcamerasrc ! video/x-raw,width={self.width},height={self.height},framerate={self.fps}/1 ! "
-            "queue max-size-buffers=2 leaky=downstream ! videoconvert ! "
+            f"queue max-size-buffers=2 leaky=downstream ! videoconvert{transform_chain} ! "
             f"v4l2h264enc extra-controls=controls,video_bitrate={self.bitrate} ! "
             "h264parse config-interval=1 ! rtph264pay pt=96 config-interval=1 ! "
             f"rtspclientsink location={quote(self.publish_url)} protocols=tcp latency=0"
