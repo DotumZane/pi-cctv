@@ -25,6 +25,18 @@ Implementation will begin after the architecture and technical design are review
 
 ## V1 quick start
 
+### Central server
+
+With Docker Compose installed, bootstrap the management API and RTSP relay with:
+
+```bash
+cp .env.example .env
+# edit .env and replace the example token
+docker compose up -d --build
+```
+
+The dashboard is then available at `http://SERVER:8080`. Keep the management port restricted to the authorized administration network; the RTSP port must be reachable by cameras and monitors on the CCTV VLAN.
+
 The V1 management server uses only Python's standard library and SQLite:
 
 ```bash
