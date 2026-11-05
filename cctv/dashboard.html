@@ -131,6 +131,6 @@ function playWorkspaceRecording(url,path){document.querySelector('#workspace-pla
 </script><script>
 const nvrNav=document.querySelector('[data-view="nvr"]');if(nvrNav)nvrNav.textContent='⚙ NVR settings';
 const nvrView=document.querySelector('#view-nvr');if(nvrView){nvrView.querySelector('.panel-head h2').textContent='NVR settings';nvrView.querySelector('.panel-head .notice').textContent='Configure recording retention and segment length.';nvrView.querySelector('.nvr-filters').style.display='none';nvrView.querySelector('#nvr-player').style.display='none';nvrView.querySelector('#nvr-recordings').style.display='none'}
-const originalSelectView=selectView;selectView=function(view){localStorage.cctvView=view;history.replaceState(null,'',view==='overview'?location.pathname:location.pathname+'#'+encodeURIComponent(view));return originalSelectView(view)};
+const originalSelectView=selectView;selectView=function(view){localStorage.cctvView=view;history.replaceState(null,'',view==='overview'?location.pathname:location.pathname+'#'+encodeURIComponent(view));const result=originalSelectView(view);if(view==='nvr')loadNvr();return result};
 const savedView=decodeURIComponent(location.hash.slice(1))||localStorage.cctvView||'overview';if(document.querySelector('#view-'+CSS.escape(savedView)))selectView(savedView);
 </script></body></html>
