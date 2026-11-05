@@ -8,6 +8,12 @@ import re
 import subprocess
 import time
 import urllib.request
+import os
+import shutil
+import socket
+import platform
+import datetime
+import sys
 from dataclasses import dataclass
 from typing import Callable
 
@@ -57,6 +63,48 @@ def connected_displays() -> list[dict[str, str]]:
         connector = status_path.rsplit("/", 2)[-2]
         displays.append({"id": connector, "name": connector.replace("-", " ")})
     return displays or [{"id": "primary", "name": "Display 1"}]
+
+
+def collect_diagnostics(role: str, device_id: str, media_server: str, processes: list | None = None) -> dict:
+    """Collect bounded, read-only health details suitable for a dashboard report."""
+    result = {"collected_at": datetime.datetime.now(datetime.timezone.utc).isoformat(), "device_id": device_id,
+              "hostname": socket.gethostname(), "role": role, "platform": platform.platform(),
+              "metrics": system_metrics(), "displays": connected_displays() if role == "monitor" else []}
+    disks=[]
+    for path in ("/", "/data", "/var/lib/mediamtx"):
+        if os.path.exists(path):
+            try:
+                usage=shutil.disk_usage(path); disks.append({"path":path,"total_bytes":usage.total,"free_bytes":usage.free,"used_percent":round(100*usage.used/usage.total,1)})
+            except OSError: pass
+    result["storage"]=disks
+    try:
+        with socket.create_connection((media_server,8554),timeout=2): reachable=True
+    except OSError: reachable=False
+    result["network"]={"media_server":media_server,"rtsp_port_8554_reachable":reachable}
+    result["media_processes"]=[{"running":p.poll() is None,"pid":p.pid} for p in (processes or [])]
+    checks=[]
+    for service in ("mediamtx", "pi-cctv-agent", "pi-cctv-recorder"):
+        try:
+            p=subprocess.run(["systemctl","is-active",service],capture_output=True,text=True,timeout=3,check=False)
+            checks.append({"service":service,"active":p.stdout.strip()=="active","state":p.stdout.strip() or "unknown"})
+        except (OSError,subprocess.SubprocessError): checks.append({"service":service,"active":False,"state":"unavailable"})
+    result["services"]=checks
+    try:
+        p=subprocess.run(["journalctl","-u","pi-cctv-agent","-n","40","--no-pager","-o","short-iso"],capture_output=True,text=True,timeout=5,check=False)
+        result["recent_logs"]=p.stdout[-12000:].splitlines()
+    except (OSError,subprocess.SubprocessError): result["recent_logs"]=[]
+    return result
+
+
+def recent_logs() -> list[str]:
+    try:
+        result = subprocess.run(
+            ["journalctl", "-u", "pi-cctv-agent", "-n", "80", "--no-pager", "-o", "short-iso"],
+            capture_output=True, text=True, timeout=5, check=False,
+        )
+        return result.stdout[-16000:].splitlines()
+    except (OSError, subprocess.SubprocessError):
+        return []
 
 
 def http_json(url: str, method: str = "GET", payload: dict | None = None, token: str = "") -> dict:
@@ -136,7 +184,7 @@ class DeviceRuntime:
         }, token=self.token)
 
     def heartbeat(self) -> None:
-        payload = {"runtime": "v1", "metrics": system_metrics()}
+        payload = {"runtime": "v1", "metrics": system_metrics(), "recent_logs": recent_logs()}
         if self.role == "monitor":
             payload["displays"] = connected_displays()
         http_json(f"{self.server}/api/devices/{self.device_id}/heartbeat", "POST", payload, self.token)
@@ -149,7 +197,15 @@ class DeviceRuntime:
                 self.stop_media()
                 self.last_command = None
             elif command_name == "diagnostics":
-                print(f"Diagnostics {self.device_id}: {json.dumps(system_metrics(), sort_keys=True)}", flush=True)
+                report = collect_diagnostics(self.role, self.device_id, self.media_server, self.processes)
+                try:
+                    http_json(f"{self.server}/api/devices/{self.device_id}/diagnostics", "POST", {"diagnostics": report}, self.token)
+                except Exception as exc:
+                    print(f"Unable to upload diagnostics: {exc}", flush=True)
+            elif command_name == "update":
+                print("Remote update requested", flush=True)
+                subprocess.Popen([sys.executable, "-m", "cctv.update"], start_new_session=True)
+                raise SystemExit("remote update requested")
             elif command_name == "restart_agent":
                 self.stop_media()
                 self.last_command = None

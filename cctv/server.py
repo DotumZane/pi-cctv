@@ -16,6 +16,7 @@ from .store import Store
 
 
 ROOT = Path(__file__).parent
+DEFAULT_NVR_SETTINGS = {"retention_hours": 24, "segment_seconds": 900}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -127,6 +128,13 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/health":
             self.send_json({"ok": True, "version": "0.1.0", "devices": self.store.health_summary()})
             return
+        if parsed.path == "/api/nvr/settings":
+            if not self.require_read_auth(): return
+            path = Path(getattr(self.server, "recordings_dir", "recordings")) / "nvr-settings.json"  # type: ignore[attr-defined]
+            try: settings = {**DEFAULT_NVR_SETTINGS, **json.loads(path.read_text())}
+            except (OSError, ValueError, TypeError): settings = dict(DEFAULT_NVR_SETTINGS)
+            self.send_json({"settings": settings})
+            return
         if parsed.path == "/api/devices":
             if not self.require_read_auth():
                 return
@@ -178,6 +186,26 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self.send_json({"commands": self.store.command_history(device_id)})
             return
+        if parsed.path.startswith("/api/devices/") and parsed.path.endswith("/diagnostics"):
+            if not self.require_auth(): return
+            device_id = parsed.path.split("/")[3]
+            device = self.store.device(device_id)
+            if not device:
+                self.send_json({"error":"device not found"}, HTTPStatus.NOT_FOUND); return
+            try: report = json.loads(device.get("metadata", "{}")).get("diagnostics")
+            except (ValueError, TypeError): report = None
+            self.send_json({"diagnostics":report})
+            return
+        if parsed.path.startswith("/api/devices/") and parsed.path.endswith("/logs"):
+            if not self.require_read_auth(): return
+            device_id = parsed.path.split("/")[3]
+            device = self.store.device(device_id)
+            if not device:
+                self.send_json({"error":"device not found"}, HTTPStatus.NOT_FOUND); return
+            try: logs = json.loads(device.get("metadata", "{}")).get("recent_logs", [])
+            except (ValueError, TypeError): logs = []
+            self.send_json({"logs": logs[-200:]})
+            return
         if parsed.path.startswith("/api/devices/"):
             device_id = parsed.path.split("/")[3]
             if not self.require_device_auth(device_id):
@@ -210,7 +238,12 @@ class Handler(BaseHTTPRequestHandler):
                 if camera_id and relative.parts[0] != camera_id:
                     continue
                 stat = recording.stat()
-                entries.append({"path": str(relative), "bytes": stat.st_size, "modified": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat()})
+                start = None
+                try:
+                    start = datetime.strptime(f"{relative.parts[-2]} {recording.stem}", "%Y-%m-%d %H-%M-%S").replace(tzinfo=timezone.utc)
+                except (IndexError, ValueError):
+                    pass
+                entries.append({"path": str(relative), "camera_id": relative.parts[0] if relative.parts else "", "bytes": stat.st_size, "modified": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(), "start": start.isoformat() if start else None, "url": "/recordings/" + str(relative)})
             entries.sort(key=lambda entry: entry["modified"], reverse=True)
             self.send_json({"recordings": entries})
             return
@@ -322,6 +355,18 @@ class Handler(BaseHTTPRequestHandler):
                 device = self.store.heartbeat(device_id, self.client_address[0], json.dumps(self.body()))
                 self.send_json(device or {"error": "device not found"}, HTTPStatus.OK if device else HTTPStatus.NOT_FOUND)
                 return
+            if parsed.path.startswith("/api/devices/") and parsed.path.endswith("/diagnostics"):
+                device_id = parsed.path.split("/")[3]
+                if not self.require_device_auth(device_id): return
+                device = self.store.device(device_id)
+                if not device:
+                    self.send_json({"error":"device not found"}, HTTPStatus.NOT_FOUND); return
+                payload=self.body().get("diagnostics")
+                if not isinstance(payload,dict):
+                    self.send_json({"error":"diagnostics object is required"}, HTTPStatus.BAD_REQUEST); return
+                self.store.heartbeat(device_id, self.client_address[0], json.dumps({"diagnostics":payload}))
+                self.send_json({"ok":True})
+                return
             if parsed.path.startswith("/api/pending/") and parsed.path.endswith("/adopt"):
                 if not self.require_auth():
                     return
@@ -346,7 +391,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json({"error": "device not found"}, HTTPStatus.NOT_FOUND)
                     return
                 payload = self.body()
-                allowed_commands = {"restart_media", "diagnostics", "restart_agent", "reboot"}
+                allowed_commands = {"restart_media", "diagnostics", "restart_agent", "reboot", "update"}
                 command_name = str(payload.get("command", ""))
                 if command_name not in allowed_commands:
                     self.send_json({"error": "unsupported diagnostic command"}, HTTPStatus.BAD_REQUEST)
@@ -362,6 +407,24 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_PUT(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
+        if parsed.path == "/api/nvr/settings":
+            if not self.require_auth(): return
+            payload = self.body()
+            try:
+                retention = int(payload.get("retention_hours", 24))
+                segment = int(payload.get("segment_seconds", 900))
+            except (TypeError, ValueError):
+                self.send_json({"error": "retention_hours and segment_seconds must be integers"}, HTTPStatus.BAD_REQUEST)
+                return
+            if not (1 <= retention <= 8760 and 10 <= segment <= 3600):
+                self.send_json({"error": "retention must be 1-8760 hours and segments 10-3600 seconds"}, HTTPStatus.BAD_REQUEST)
+                return
+            path = Path(getattr(self.server, "recordings_dir", "recordings")) / "nvr-settings.json"  # type: ignore[attr-defined]
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({"retention_hours": retention, "segment_seconds": segment}, indent=2) + "\n")
+            self.store.audit("nvr.settings.update", "nvr", self.client_address[0], {"retention_hours": retention, "segment_seconds": segment})
+            self.send_json({"settings": {"retention_hours": retention, "segment_seconds": segment}})
+            return
         if parsed.path.startswith("/api/cameras/") and parsed.path.endswith("/settings"):
             if not self.require_auth():
                 return

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import subprocess
 import time
 from dataclasses import dataclass
@@ -47,6 +48,14 @@ def run(config: RecorderConfig, cleanup_interval: int = 300) -> None:
     config.output_dir.mkdir(parents=True, exist_ok=True)
     last_cleanup = 0.0
     while True:
+        settings_path = config.output_dir / "nvr-settings.json"
+        try:
+            settings = json.loads(settings_path.read_text())
+            config = RecorderConfig(config.camera_id, config.stream_url, config.output_dir,
+                                    int(settings.get("segment_seconds", config.segment_seconds)),
+                                    int(settings.get("retention_hours", config.retention_hours)))
+        except (OSError, ValueError, TypeError):
+            pass
         now = time.monotonic()
         if now - last_cleanup >= cleanup_interval:
             prune_recordings(config.output_dir, config.retention_hours)
