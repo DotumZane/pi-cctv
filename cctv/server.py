@@ -16,7 +16,13 @@ from .store import Store
 
 
 ROOT = Path(__file__).parent
-DEFAULT_NVR_SETTINGS = {"retention_hours": 24, "segment_seconds": 900}
+DEFAULT_NVR_SETTINGS = {
+    "recording_enabled": True,
+    "retention_hours": 24,
+    "segment_seconds": 900,
+    "storage_limit_gb": 500,
+    "camera_recording": {},
+}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -411,19 +417,24 @@ class Handler(BaseHTTPRequestHandler):
             if not self.require_auth(): return
             payload = self.body()
             try:
+                enabled = payload.get("recording_enabled", True)
                 retention = int(payload.get("retention_hours", 24))
                 segment = int(payload.get("segment_seconds", 900))
+                storage_limit = int(payload.get("storage_limit_gb", 500))
+                camera_recording = payload.get("camera_recording", {})
             except (TypeError, ValueError):
-                self.send_json({"error": "retention_hours and segment_seconds must be integers"}, HTTPStatus.BAD_REQUEST)
+                self.send_json({"error": "NVR settings contain invalid values"}, HTTPStatus.BAD_REQUEST)
                 return
-            if not (1 <= retention <= 8760 and 10 <= segment <= 3600):
-                self.send_json({"error": "retention must be 1-8760 hours and segments 10-3600 seconds"}, HTTPStatus.BAD_REQUEST)
+            if not isinstance(enabled, bool) or not (1 <= retention <= 8760 and 10 <= segment <= 3600 and 1 <= storage_limit <= 100000 and isinstance(camera_recording, dict)) or any(not isinstance(value, bool) for value in camera_recording.values()):
+                self.send_json({"error": "Retention, segment length, storage cap, or camera selections are invalid"}, HTTPStatus.BAD_REQUEST)
                 return
+            camera_recording = {str(key): value for key, value in camera_recording.items() if self.store.device(str(key)) and self.store.device(str(key)).get("kind") == "camera"}
+            saved = {"recording_enabled": enabled, "retention_hours": retention, "segment_seconds": segment, "storage_limit_gb": storage_limit, "camera_recording": camera_recording}
             path = Path(getattr(self.server, "recordings_dir", "recordings")) / "nvr-settings.json"  # type: ignore[attr-defined]
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps({"retention_hours": retention, "segment_seconds": segment}, indent=2) + "\n")
-            self.store.audit("nvr.settings.update", "nvr", self.client_address[0], {"retention_hours": retention, "segment_seconds": segment})
-            self.send_json({"settings": {"retention_hours": retention, "segment_seconds": segment}})
+            path.write_text(json.dumps(saved, indent=2) + "\n")
+            self.store.audit("nvr.settings.update", "nvr", self.client_address[0], saved)
+            self.send_json({"settings": saved})
             return
         if parsed.path.startswith("/api/cameras/") and parsed.path.endswith("/settings"):
             if not self.require_auth():
