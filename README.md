@@ -112,6 +112,26 @@ python3 -m cctv.agent --role camera --name "Saw 1" --location "Line 1" \
 
 The monitor runtime polls its centrally stored assignment and restarts its pipeline when the assignment changes or the process exits. It reports connected DRM/HDMI displays automatically. A one-display Pi can use a single camera or 2×2 layout; a two-display Pi exposes two independent single-camera outputs. The server supports optional bearer-token authentication through `CCTV_ADMIN_TOKEN` or `--admin-token`. V1 still needs hardware validation, recording, and further production security hardening before deployment.
 
+### Optional remote SSH with Tailscale
+
+Tailscale works on Raspberry Pi OS Lite and provides private remote access without router port forwarding or exposing SSH to the public internet. Install it on each camera or monitor Pi and on the computer you will use to connect. Keep the Pis in the same Tailscale network (tailnet) as your admin computer, and give each one a clear device name such as `cctv-cam-01` in the Tailscale admin console.
+
+On each Pi, install and sign in to Tailscale, then enable Tailscale SSH:
+
+```bash
+curl -fsSL https://tailscale.com/install.sh | sh
+sudo tailscale up
+sudo tailscale set --ssh
+```
+
+Open the sign-in URL printed by `tailscale up` and authorize the Pi. Repeat with a unique device name for each Pi. Install and sign in to Tailscale on your admin computer too. Once the tailnet access policy permits your account to SSH to the Pi, connect using the Pi's Linux username and Tailscale device name:
+
+```bash
+ssh <pi-username>@cctv-cam-01
+```
+
+Use a non-root Pi username. If the device name does not resolve, use the Pi's Tailscale IP shown in the admin console or by `tailscale status`. Tailscale SSH is available for Linux devices and must be enabled on each Pi. If you later tag the Pis as a group, add an SSH policy permitting your admin account to reach that tag; the default self-device SSH rule does not automatically cover tagged devices. See the [Tailscale SSH guide](https://tailscale.com/docs/features/tailscale-ssh) and [tag guide](https://tailscale.com/docs/features/tags).
+
 Monitor settings are available from the selected monitor editor: scaling, orientation, output size, refresh rate, kiosk mode, screen blanking prevention, camera/timestamp overlays, reconnect/watchdog limits, fallback camera, and scheduled-layout enablement. Hardware-specific display behavior still needs validation on the first Pi board.
 
 If `--id` is omitted, the agent uses the Pi hostname so the identity remains stable across reboot and service restart.
