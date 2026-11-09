@@ -4,7 +4,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from cctv.agent import run_pending
-from cctv.runtime import DeviceRuntime, command_for_assignment, commands_for_assignment
+from cctv.runtime import DeviceRuntime, _monitor_output_size, command_for_assignment, commands_for_assignment
 
 
 class RuntimeTests(unittest.TestCase):
@@ -14,6 +14,15 @@ class RuntimeTests(unittest.TestCase):
     def test_single_assignment_targets_camera_path(self):
         command = command_for_assignment({"layout": "single", "cameras": '["cam-7"]'}, "media")
         self.assertIn("rtsp://media:8554/cam-7", command)
+
+    def test_monitor_auto_resolution_uses_detected_native_mode(self):
+        settings = {"auto_resolution": True, "display_modes": {"32": {"width": "800", "height": "480"}}}
+        self.assertEqual(_monitor_output_size(settings, "32"), (800, 480))
+        command = command_for_assignment({"layout": "single", "cameras": '["cam-7"]'}, "media", settings)
+        self.assertIn("video/x-raw,width=800,height=480", command)
+
+    def test_monitor_manual_resolution_remains_available(self):
+        self.assertEqual(_monitor_output_size({"auto_resolution": False, "width": 1280, "height": 720}), (1280, 720))
 
     def test_camera_runtime_starts_pipeline_as_one_command(self):
         process = Mock()

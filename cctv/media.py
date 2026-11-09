@@ -56,6 +56,7 @@ class MonitorMedia:
     connector_id: str | None = None
     width: int | None = None
     height: int | None = None
+    scale_mode: str = "fit"
     orientation: int = 0
     show_camera_name: bool = False
     show_timestamp: bool = False
@@ -67,7 +68,12 @@ class MonitorMedia:
         if self.orientation in (90, 180, 270):
             filters.append(f"videoflip method=rotate-{self.orientation}")
         if self.width and self.height:
-            filters.extend(["videoscale", f"video/x-raw,width={self.width},height={self.height}"])
+            if self.scale_mode == "fill":
+                filters.append(f"aspectratiocrop aspect-ratio={self.width}/{self.height}")
+            filters.extend([
+                f"videoscale add-borders={'false' if self.scale_mode == 'fill' else 'true'}",
+                f"video/x-raw,width={self.width},height={self.height}",
+            ])
         if self.show_timestamp:
             filters.append('clockoverlay time-format="%Y-%m-%d %H:%M:%S" halignment=left valignment=top')
         if self.show_camera_name and self.camera_name:
@@ -81,22 +87,26 @@ class MonitorMedia:
         )
 
 
-def quad_pipeline(stream_urls: list[str]) -> str:
+def quad_pipeline(stream_urls: list[str], width: int = 1920, height: int = 1080) -> str:
     """Build a 2×2 decoder pipeline for one to four RTSP streams."""
     if not 1 <= len(stream_urls) <= 4:
         raise ValueError("a 2x2 layout requires between one and four streams")
+    cell_width, cell_height = max(1, width // 2), max(1, height // 2)
     branches = []
     for index, url in enumerate(stream_urls):
         branches.append(
             f"rtspsrc location={quote(url)} protocols=tcp latency=0 drop-on-latency=true ! "
-            f"rtph264depay ! h264parse ! v4l2h264dec ! videoconvert ! videoscale ! "
-            f"video/x-raw,width=960,height=540 ! compositor.sink_{index}"
+            f"rtph264depay ! h264parse ! v4l2h264dec ! videoconvert ! videoscale add-borders=true ! "
+            f"video/x-raw,width={cell_width},height={cell_height} ! compositor.sink_{index}"
         )
     positions = " ".join(
-        f"sink_{i}::xpos={(i % 2) * 960} sink_{i}::ypos={(i // 2) * 540}"
+        f"sink_{i}::xpos={(i % 2) * cell_width} sink_{i}::ypos={(i // 2) * cell_height}"
         for i in range(len(stream_urls))
     )
-    return "gst-launch-1.0 -e " + " ".join(branches) + f" compositor name=compositor {positions} ! kmssink sync=false"
+    return (
+        "gst-launch-1.0 -e " + " ".join(branches)
+        + f" compositor name=compositor {positions} ! video/x-raw,width={width},height={height} ! kmssink sync=false"
+    )
 
 
 def main() -> None:

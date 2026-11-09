@@ -482,7 +482,7 @@ class Handler(BaseHTTPRequestHandler):
             monitor = self.store.device(monitor_id)
             settings = self.body()
             allowed = {
-                "scale_mode", "orientation", "width", "height", "refresh_hz", "kiosk",
+                "scale_mode", "orientation", "width", "height", "refresh_hz", "auto_resolution", "kiosk",
                 "prevent_blanking", "show_camera_name", "show_timestamp", "reconnect_seconds",
                 "watchdog_seconds", "fallback_camera", "schedule_enabled",
             }
@@ -497,6 +497,7 @@ class Handler(BaseHTTPRequestHandler):
                  and isinstance(value, int) and not isinstance(value, bool) and value > 0)
                 or (key == "orientation" and isinstance(value, int) and not isinstance(value, bool) and value in (0, 90, 180, 270))
                 or (key in {"kiosk", "prevent_blanking", "show_camera_name", "show_timestamp", "schedule_enabled"} and isinstance(value, bool))
+                or (key == "auto_resolution" and isinstance(value, bool))
                 or (key in {"scale_mode", "fallback_camera"} and isinstance(value, str))
                 for key, value in settings.items()
             )

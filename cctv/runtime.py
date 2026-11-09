@@ -46,11 +46,30 @@ def system_metrics() -> dict[str, float | int]:
 
 def connected_displays() -> list[dict[str, str]]:
     """Return connected DRM display outputs, using stable connector names."""
+    def add_mode(display: dict[str, str]) -> dict[str, str]:
+        connector = display.get("id", "")
+        if connector.startswith("card"):
+            paths = [f"/sys/class/drm/{connector}/mode", f"/sys/class/drm/{connector}/modes"]
+        else:
+            paths = sorted(glob.glob(f"/sys/class/drm/card*-{connector}/mode"))
+            paths += sorted(glob.glob(f"/sys/class/drm/card*-{connector}/modes"))
+        for path in paths:
+            try:
+                lines = open(path).read().splitlines()
+            except OSError:
+                continue
+            for line in lines:
+                match = re.fullmatch(r"\s*(\d+)x(\d+)\s*", line)
+                if match:
+                    display["width"], display["height"] = match.groups()
+                    return display
+        return display
+
     displays = []
     try:
         modetest = subprocess.run(["modetest", "-M", "vc4", "-c"], capture_output=True, text=True, timeout=5, check=False).stdout
         for match in re.finditer(r"^\s*(\d+)\s+\d+\s+connected\s+(\S+)", modetest, re.MULTILINE):
-            displays.append({"id": match.group(2), "name": match.group(2).replace("-", " "), "connector_id": match.group(1)})
+            displays.append(add_mode({"id": match.group(2), "name": match.group(2).replace("-", " "), "connector_id": match.group(1)}))
     except (OSError, subprocess.SubprocessError):
         pass
     if displays:
@@ -62,7 +81,7 @@ def connected_displays() -> list[dict[str, str]]:
         except OSError:
             continue
         connector = status_path.rsplit("/", 2)[-2]
-        displays.append({"id": connector, "name": connector.replace("-", " ")})
+        displays.append(add_mode({"id": connector, "name": connector.replace("-", " ")}))
     return displays or [{"id": "primary", "name": "Display 1"}]
 
 
@@ -125,10 +144,12 @@ def command_for_assignment(assignment: dict, media_server: str, settings: dict |
     if not cameras:
         return None
     urls = [f"rtsp://{media_server}:8554/{camera}" for camera in cameras]
+    width, height = _monitor_output_size(settings)
     if assignment.get("layout", "single") == "2x2":
-        return quad_pipeline(urls)
+        return quad_pipeline(urls, width or 1920, height or 1080)
     return MonitorMedia(
-        urls[0], fullscreen=settings.get("kiosk", True), width=settings.get("width"), height=settings.get("height"),
+        urls[0], fullscreen=settings.get("kiosk", True), width=width, height=height,
+        scale_mode=settings.get("scale_mode", "fit"),
         orientation=settings.get("orientation", 0), show_camera_name=settings.get("show_camera_name", False),
         show_timestamp=settings.get("show_timestamp", False), camera_name=settings.get("camera_name", ""),
     ).pipeline()
@@ -149,13 +170,32 @@ def commands_for_assignment(assignment: dict, media_server: str, settings: dict 
         if cameras:
             connector_id = output.get("connector_id")
             settings = settings or {}
+            width, height = _monitor_output_size(settings, connector_id)
             commands.append(MonitorMedia(
                 f"rtsp://{media_server}:8554/{cameras[0]}", connector_id=connector_id,
-                fullscreen=settings.get("kiosk", True), width=settings.get("width"), height=settings.get("height"),
+                fullscreen=settings.get("kiosk", True), width=width, height=height,
+                scale_mode=settings.get("scale_mode", "fit"),
                 orientation=settings.get("orientation", 0), show_camera_name=settings.get("show_camera_name", False),
                 show_timestamp=settings.get("show_timestamp", False), camera_name=settings.get("camera_name", ""),
             ).pipeline())
     return commands
+
+
+def _monitor_output_size(settings: dict | None, connector_id: str | None = None) -> tuple[int | None, int | None]:
+    settings = settings or {}
+    if settings.get("auto_resolution", True):
+        modes = settings.get("display_modes", {})
+        mode = modes.get(str(connector_id)) if connector_id is not None else None
+        mode = mode or settings.get("display_mode") or next(iter(modes.values()), None)
+        if isinstance(mode, dict):
+            try:
+                width, height = int(mode.get("width")), int(mode.get("height"))
+            except (TypeError, ValueError):
+                return None, None
+            if isinstance(width, int) and isinstance(height, int) and width > 0 and height > 0:
+                return width, height
+        return None, None
+    return settings.get("width"), settings.get("height")
 
 
 @dataclass
@@ -238,6 +278,14 @@ class DeviceRuntime:
             settings = {}
         settings["camera_name"] = self.name
         assignment = http_json(f"{self.server}/api/monitors/{self.device_id}/assignment", token=self.token)
+        displays = connected_displays()
+        settings["display_modes"] = {
+            str(display.get("connector_id", display.get("id"))): {
+                "width": display["width"], "height": display["height"],
+            }
+            for display in displays if display.get("width") and display.get("height")
+        }
+        settings["display_mode"] = next(iter(settings["display_modes"].values()), None)
         return commands_for_assignment(assignment, self.media_server, settings)
 
     def reconcile_media(self) -> None:
