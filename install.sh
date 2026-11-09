@@ -39,7 +39,7 @@ if [[ "$SKIP_PACKAGES" != "true" && -x "$(command -v apt-get 2>/dev/null || true
   apt-get update
   apt-get install -y \
     git python3 \
-    gstreamer1.0-tools gstreamer1.0-libcamera \
+    gstreamer1.0-tools gstreamer1.0-libcamera gstreamer1.0-rtsp \
     gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
     gstreamer1.0-plugins-bad gstreamer1.0-libav
 fi
