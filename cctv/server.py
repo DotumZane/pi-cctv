@@ -13,6 +13,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
+from . import __version__
 from .store import Store
 
 
@@ -133,7 +134,7 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(content)
             return
         if parsed.path == "/api/health":
-            self.send_json({"ok": True, "version": "0.1.0", "devices": self.store.health_summary()})
+            self.send_json({"ok": True, "version": __version__, "latest_agent_version": __version__, "devices": self.store.health_summary()})
             return
         if parsed.path == "/api/nvr/settings":
             if not self.require_read_auth(): return

@@ -11,6 +11,7 @@ import time
 import urllib.request
 from pathlib import Path
 
+from . import __version__
 from .runtime import DeviceRuntime, connected_displays, system_metrics
 
 
@@ -117,7 +118,7 @@ def main() -> None:
     print(f"Enrolled {args.role} {args.name} as {args.id}", flush=True)
     while True:
         try:
-            heartbeat = {"hostname": socket.gethostname(), "metrics": system_metrics()}
+            heartbeat = {"hostname": socket.gethostname(), "agent_version": __version__, "metrics": system_metrics()}
             if args.role == "monitor":
                 heartbeat["displays"] = connected_displays()
             request(f"{base}/api/devices/{args.id}/heartbeat", "POST", heartbeat, args.token)
