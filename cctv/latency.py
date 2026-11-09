@@ -11,7 +11,7 @@ def test_pattern_pipeline(publish_url: str, width: int = 1920, height: int = 108
         "gst-launch-1.0 -e videotestsrc is-live=true pattern=ball ! "
         f"video/x-raw,width={width},height={height},framerate={fps}/1 ! "
         "timeoverlay halignment=left valignment=top ! videoconvert ! "
-        "v4l2h264enc ! h264parse config-interval=1 ! rtph264pay pt=96 config-interval=1 ! "
+        "v4l2h264enc ! h264parse config-interval=1 ! "
         f"rtspclientsink location={publish_url} protocols=tcp latency=0"
     )
 

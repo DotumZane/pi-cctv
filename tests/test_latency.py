@@ -9,3 +9,4 @@ class LatencyTests(unittest.TestCase):
         self.assertIn("timeoverlay", command)
         self.assertIn("latency=0", command)
         self.assertIn("rtspclientsink", command)
+        self.assertNotIn("rtph264pay", command)

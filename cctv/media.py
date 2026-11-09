@@ -41,7 +41,7 @@ class CameraMedia:
             f"libcamerasrc ! video/x-raw,width={self.width},height={self.height},framerate={self.fps}/1 ! "
             f"queue max-size-buffers=2 leaky=downstream ! videoconvert{transform_chain} ! "
             f"v4l2h264enc extra-controls=controls,video_bitrate={self.bitrate} ! "
-            "h264parse config-interval=1 ! rtph264pay pt=96 config-interval=1 ! "
+            "h264parse config-interval=1 ! "
             f"rtspclientsink location={quote(self.publish_url)} protocols=tcp latency=0"
         )
 

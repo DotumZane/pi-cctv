@@ -9,6 +9,8 @@ class MediaTests(unittest.TestCase):
         self.assertIn("v4l2h264enc", command)
         self.assertIn("latency=0", command)
         self.assertIn("rtspclientsink", command)
+        self.assertIn("h264parse config-interval=1 ! rtspclientsink", command)
+        self.assertNotIn("rtph264pay", command)
 
     def test_monitor_pipeline_uses_hardware_decode(self):
         command = MonitorMedia("rtsp://media:8554/cam-1").pipeline()
