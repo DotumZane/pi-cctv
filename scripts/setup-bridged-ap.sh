@@ -66,6 +66,8 @@ remove_ap() {
     connection.master "$OLD_MASTER" connection.port-type "$OLD_PORT_TYPE" \
     ipv4.method "$OLD_IPV4" ipv6.method "$OLD_IPV6" \
     connection.autoconnect "$OLD_AUTOCONNECT"
+  nmcli general reload
+  nmcli device set wlan0 managed yes
   nmcli connection reload
   nmcli connection up uuid "$ETH_UUID" ifname eth0 || true
   rm -rf "$STATE_DIR"
