@@ -4,6 +4,7 @@ set -euo pipefail
 
 STATE_DIR=/var/lib/pi-cctv/setup-ap
 BRIDGE=pi-cctv-setup-bridge
+BRIDGE_PORT=pi-cctv-setup-ethernet-port
 NM_CONF=/etc/NetworkManager/conf.d/99-pi-cctv-setup-ap.conf
 HOSTAPD_CONF=/etc/hostapd/hostapd.conf
 HOSTAPD_DEFAULTS=/etc/default/hostapd
@@ -16,6 +17,8 @@ Configure or remove the optional Pi CCTV hidden setup access point.
 Usage:
   sudo bash scripts/setup-bridged-ap.sh --apply [--ssid SSID] [--country US] [--channel 6]
   sudo bash scripts/setup-bridged-ap.sh --remove
+  sudo bash scripts/setup-bridged-ap.sh --status
+  sudo bash scripts/setup-bridged-ap.sh --repair
 
 The AP bridges Wi-Fi clients onto the wired LAN. The LAN must provide DHCP,
 and its switch port must allow the Pi and connected phone MAC addresses.
@@ -33,6 +36,8 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --apply) MODE=apply; shift;;
     --remove) MODE=remove; shift;;
+    --status) MODE=status; shift;;
+    --repair) MODE=repair; shift;;
     --ssid) [[ $# -ge 2 ]] || { usage >&2; exit 2; }; SSID=$2; shift 2;;
     --country) [[ $# -ge 2 ]] || { usage >&2; exit 2; }; COUNTRY=$2; shift 2;;
     --channel) [[ $# -ge 2 ]] || { usage >&2; exit 2; }; CHANNEL=$2; shift 2;;
@@ -90,17 +95,26 @@ remove_ap() {
   else
     rm -f "$HOSTAPD_DEFAULTS"
   fi
+  if [[ -n "${PORT_UUID:-}" ]]; then
+    if nmcli -t -f UUID connection show | grep -Fxq "$PORT_UUID"; then
+      nmcli connection down uuid "$PORT_UUID" >/dev/null 2>&1 || true
+      nmcli connection delete uuid "$PORT_UUID" >/dev/null
+    fi
+  fi
   if nmcli -t -f NAME connection show | grep -Fxq "$BRIDGE"; then
     nmcli connection down "$BRIDGE" >/dev/null 2>&1 || true
     nmcli connection delete "$BRIDGE" >/dev/null
   fi
-  # A bridge port profile cannot carry IP settings. Detach it first, then
-  # restore the original layer-3 settings after it is an ordinary connection.
-  nmcli connection modify uuid "$ETH_UUID" \
-    connection.master "$OLD_MASTER" connection.port-type "$OLD_PORT_TYPE"
-  nmcli connection modify uuid "$ETH_UUID" \
-    ipv4.method "$OLD_IPV4" ipv6.method "$OLD_IPV6" \
-    connection.autoconnect "$OLD_AUTOCONNECT"
+  if [[ -n "${PORT_UUID:-}" ]]; then
+    nmcli connection modify uuid "$ETH_UUID" connection.autoconnect "$OLD_AUTOCONNECT"
+  else
+    # Older installs modified the original Ethernet profile in place.
+    nmcli connection modify uuid "$ETH_UUID" \
+      connection.master "$OLD_MASTER" connection.port-type "$OLD_PORT_TYPE"
+    nmcli connection modify uuid "$ETH_UUID" \
+      ipv4.method "$OLD_IPV4" ipv6.method "$OLD_IPV6" \
+      connection.autoconnect "$OLD_AUTOCONNECT"
+  fi
   nmcli general reload
   nmcli device set wlan0 managed yes
   nmcli connection reload
@@ -110,14 +124,43 @@ remove_ap() {
   echo "Removed the Pi CCTV setup AP and restored the previous Ethernet profile."
 }
 
+ap_is_healthy() {
+  [[ -f "$STATE_DIR/state" && -s "$HOSTAPD_CONF" ]] || return 1
+  systemctl is-active --quiet hostapd.service || return 1
+  bridge link show dev eth0 | grep -q 'master br0' || return 1
+  bridge link show dev wlan0 | grep -q 'master br0' || return 1
+  ip -4 addr show dev br0 | grep -q 'inet ' || return 1
+}
+
 if [[ "$MODE" == remove ]]; then
   remove_ap
   exit 0
+fi
+if [[ "$MODE" == status ]]; then
+  if ap_is_healthy; then
+    echo "Setup AP is active and both Wi-Fi and Ethernet are attached to br0."
+    exit 0
+  fi
+  echo "Setup AP bridge is not healthy: expected hostapd active, wlan0 and eth0 on br0, and a LAN address on br0." >&2
+  exit 1
+fi
+if [[ "$MODE" == repair ]]; then
+  PROFILE_PATH=/var/lib/pi-cctv/setup-ap-profile.json
+  [[ -f "$PROFILE_PATH" ]] || { echo "No server-managed setup Wi-Fi profile is saved on this Pi." >&2; exit 1; }
+  if [[ -f "$STATE_DIR/state" ]]; then
+    bash "$0" --remove
+  fi
+  exec bash "$0" --apply --config-file "$PROFILE_PATH" --noninteractive
 fi
 
 [[ ! -e "$STATE_DIR/state" ]] || { echo "Setup AP is already configured; use --remove first." >&2; exit 1; }
 [[ ! -e "$HOSTAPD_CONF" ]] || { echo "$HOSTAPD_CONF already exists; refusing to overwrite it." >&2; exit 1; }
 [[ ! -e "$NM_CONF" ]] || { echo "$NM_CONF already exists; refusing to overwrite it." >&2; exit 1; }
+if nmcli -t -f NAME connection show | grep -Fxq "$BRIDGE" || \
+   nmcli -t -f NAME connection show | grep -Fxq "$BRIDGE_PORT"; then
+  echo "A setup bridge profile already exists without saved state; refusing to overwrite it." >&2
+  exit 1
+fi
 [[ "$SSID" =~ ^[[:print:]]{1,32}$ ]] || { echo "SSID must be 1–32 printable characters." >&2; exit 2; }
 [[ "$COUNTRY" =~ ^[A-Z]{2}$ ]] || { echo "Country must be a two-letter uppercase code, e.g. US." >&2; exit 2; }
 [[ "$CHANNEL" =~ ^([1-9]|1[01])$ ]] || { echo "Use a 2.4 GHz channel from 1 to 11." >&2; exit 2; }
@@ -155,6 +198,7 @@ printf 'ETH_UUID=%q\nOLD_MASTER=%q\nOLD_PORT_TYPE=%q\nOLD_IPV4=%q\nOLD_IPV6=%q\n
   "$ETH_UUID" "$OLD_MASTER" "$OLD_PORT_TYPE" "$OLD_IPV4" "$OLD_IPV6" "$OLD_AUTOCONNECT" > "$STATE_DIR/state"
 chmod 0600 "$STATE_DIR/state"
 printf 'OLD_HOSTAPD_ENABLED=%q\n' "$OLD_HOSTAPD_ENABLED" >> "$STATE_DIR/state"
+printf 'PORT_UUID=\n' >> "$STATE_DIR/state"
 if [[ -f "$HOSTAPD_DEFAULTS" ]]; then
   cp -p "$HOSTAPD_DEFAULTS" "$STATE_DIR/hostapd-defaults"
 fi
@@ -216,13 +260,17 @@ fi
 nmcli connection add type bridge con-name "$BRIDGE" ifname br0 \
   connection.autoconnect-ports 1 bridge.stp no bridge.mac-address "$ETH_MAC" \
   ipv4.method auto ipv6.method auto >/dev/null
-nmcli connection modify uuid "$ETH_UUID" ipv4.method disabled ipv6.method disabled
-nmcli connection modify uuid "$ETH_UUID" \
-  connection.master "$BRIDGE" connection.port-type bridge
+BRIDGE_UUID=$(nmcli -g connection.uuid connection show "$BRIDGE")
+nmcli connection modify uuid "$ETH_UUID" connection.autoconnect no
+nmcli connection add type ethernet con-name "$BRIDGE_PORT" ifname eth0 \
+  connection.master "$BRIDGE_UUID" connection.port-type bridge \
+  ipv4.method disabled ipv6.method disabled connection.autoconnect yes >/dev/null
+PORT_UUID=$(nmcli -g connection.uuid connection show "$BRIDGE_PORT")
+printf 'PORT_UUID=%q\n' "$PORT_UUID" >> "$STATE_DIR/state"
 nmcli connection reload
-nmcli connection up "$BRIDGE"
 nmcli connection down uuid "$ETH_UUID" >/dev/null 2>&1 || true
-nmcli connection up uuid "$ETH_UUID" ifname eth0
+nmcli connection up "$BRIDGE"
+nmcli connection up uuid "$PORT_UUID" ifname eth0
 nmcli connection up "$BRIDGE"
 
 if ! bridge link show dev eth0 | grep -q 'master br0'; then

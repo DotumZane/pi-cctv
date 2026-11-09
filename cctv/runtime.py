@@ -281,7 +281,13 @@ class DeviceRuntime:
         serialized = json.dumps(profile, sort_keys=True, separators=(",", ":")) + "\n"
         try:
             if profile_path.read_text() == serialized and state_path.exists():
-                return
+                health = subprocess.run(
+                    ["bash", str(helper), "--status"],
+                    capture_output=True, text=True, timeout=15,
+                )
+                if health.returncode == 0:
+                    return
+                print("Saved setup Wi-Fi profile is present but its bridge is unhealthy; repairing it.", flush=True)
         except OSError:
             pass
 
