@@ -62,8 +62,11 @@ remove_ap() {
     nmcli connection down "$BRIDGE" >/dev/null 2>&1 || true
     nmcli connection delete "$BRIDGE" >/dev/null
   fi
+  # A bridge port profile cannot carry IP settings. Detach it first, then
+  # restore the original layer-3 settings after it is an ordinary connection.
   nmcli connection modify uuid "$ETH_UUID" \
-    connection.master "$OLD_MASTER" connection.port-type "$OLD_PORT_TYPE" \
+    connection.master "$OLD_MASTER" connection.port-type "$OLD_PORT_TYPE"
+  nmcli connection modify uuid "$ETH_UUID" \
     ipv4.method "$OLD_IPV4" ipv6.method "$OLD_IPV6" \
     connection.autoconnect "$OLD_AUTOCONNECT"
   nmcli general reload
@@ -166,9 +169,9 @@ fi
 nmcli connection add type bridge con-name "$BRIDGE" ifname br0 \
   connection.autoconnect-ports 1 bridge.stp no bridge.mac-address "$ETH_MAC" \
   ipv4.method auto ipv6.method auto >/dev/null
+nmcli connection modify uuid "$ETH_UUID" ipv4.method disabled ipv6.method disabled
 nmcli connection modify uuid "$ETH_UUID" \
-  connection.master "$BRIDGE" connection.port-type bridge \
-  ipv4.method disabled ipv6.method disabled
+  connection.master "$BRIDGE" connection.port-type bridge
 nmcli connection reload
 nmcli connection up "$BRIDGE"
 
