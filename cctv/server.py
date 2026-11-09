@@ -493,8 +493,9 @@ class Handler(BaseHTTPRequestHandler):
                 and (not settings.get("fallback_camera") or settings.get("fallback_camera") in camera_ids)
             )
             valid_types = all(
-                (key in {"width", "height", "refresh_hz", "orientation", "reconnect_seconds", "watchdog_seconds"}
+                (key in {"width", "height", "refresh_hz", "reconnect_seconds", "watchdog_seconds"}
                  and isinstance(value, int) and not isinstance(value, bool) and value > 0)
+                or (key == "orientation" and isinstance(value, int) and not isinstance(value, bool) and value in (0, 90, 180, 270))
                 or (key in {"kiosk", "prevent_blanking", "show_camera_name", "show_timestamp", "schedule_enabled"} and isinstance(value, bool))
                 or (key in {"scale_mode", "fallback_camera"} and isinstance(value, str))
                 for key, value in settings.items()
