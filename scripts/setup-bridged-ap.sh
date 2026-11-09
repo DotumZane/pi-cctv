@@ -95,7 +95,7 @@ printf '\n'
 
 ETH_UUID=$(nmcli -g GENERAL.CON-UUID device show eth0 | head -n1)
 [[ "$ETH_UUID" =~ ^[[:xdigit:]-]{36}$ ]] || { echo "Could not identify the active NetworkManager Ethernet profile on eth0." >&2; exit 1; }
-ETH_MAC=$(nmcli -g GENERAL.HWADDR device show eth0 | head -n1)
+ETH_MAC=$(cat /sys/class/net/eth0/address)
 [[ "$ETH_MAC" =~ ^([[:xdigit:]]{2}:){5}[[:xdigit:]]{2}$ ]] || { echo "Could not read eth0 MAC address." >&2; exit 1; }
 OLD_MASTER=$(nmcli -g connection.master connection show uuid "$ETH_UUID")
 OLD_PORT_TYPE=$(nmcli -g connection.port-type connection show uuid "$ETH_UUID")
