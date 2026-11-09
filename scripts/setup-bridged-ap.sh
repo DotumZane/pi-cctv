@@ -221,6 +221,20 @@ nmcli connection modify uuid "$ETH_UUID" \
   connection.master "$BRIDGE" connection.port-type bridge
 nmcli connection reload
 nmcli connection up "$BRIDGE"
+nmcli connection down uuid "$ETH_UUID" >/dev/null 2>&1 || true
+nmcli connection up uuid "$ETH_UUID" ifname eth0
+nmcli connection up "$BRIDGE"
+
+if ! bridge link show dev eth0 | grep -q 'master br0'; then
+  echo "Ethernet did not attach to the setup bridge; restoring the original wired profile." >&2
+  remove_ap
+  exit 1
+fi
+if ! ip -4 addr show dev br0 | grep -q 'inet '; then
+  echo "The setup bridge did not receive an IPv4 address from the wired LAN; restoring the original wired profile." >&2
+  remove_ap
+  exit 1
+fi
 
 "$RFKILL_BIN" unblock wlan
 systemctl unmask hostapd.service >/dev/null 2>&1 || true
