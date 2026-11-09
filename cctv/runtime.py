@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import glob
 import re
+import fcntl
 import subprocess
 import time
 import urllib.request
@@ -356,6 +357,21 @@ class DeviceRuntime:
         except (OSError, urllib.error.URLError) as exc:
             print(f"Unable to upload monitor preview: {exc}", flush=True)
 
+    def activate_monitor_display(self) -> None:
+        """Move away from the Linux login console before starting the video plane."""
+        if self.role != "monitor":
+            return
+        terminal = None
+        try:
+            terminal = os.open("/dev/tty0", os.O_RDWR | os.O_NOCTTY)
+            fcntl.ioctl(terminal, 0x5606, 7)  # VT_ACTIVATE
+            fcntl.ioctl(terminal, 0x5607, 7)  # VT_WAITACTIVE
+        except OSError as exc:
+            print(f"Unable to switch to the kiosk display VT: {exc}", flush=True)
+        finally:
+            if terminal is not None:
+                os.close(terminal)
+
     def run(self, enroll: bool = True) -> None:
         if enroll:
             while True:
@@ -365,6 +381,7 @@ class DeviceRuntime:
                 except Exception as exc:
                     print(f"Enrollment failed: {exc}; retrying", flush=True)
                     time.sleep(5)
+        self.activate_monitor_display()
         try:
             while True:
                 try:

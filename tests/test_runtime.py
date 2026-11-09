@@ -24,6 +24,16 @@ class RuntimeTests(unittest.TestCase):
     def test_monitor_manual_resolution_remains_available(self):
         self.assertEqual(_monitor_output_size({"auto_resolution": False, "width": 1280, "height": 720}), (1280, 720))
 
+    def test_monitor_activates_kiosk_virtual_terminal(self):
+        runtime = DeviceRuntime("monitor", "mon-1", "Monitor", "", "http://server", "media")
+        with patch("cctv.runtime.os.open", return_value=15) as open_tty, \
+                patch("cctv.runtime.fcntl.ioctl") as ioctl, \
+                patch("cctv.runtime.os.close") as close_tty:
+            runtime.activate_monitor_display()
+        open_tty.assert_called_once_with("/dev/tty0", unittest.mock.ANY)
+        self.assertEqual([call.args[1:] for call in ioctl.call_args_list], [(0x5606, 7), (0x5607, 7)])
+        close_tty.assert_called_once_with(15)
+
     def test_camera_runtime_starts_pipeline_as_one_command(self):
         process = Mock()
         process.poll.return_value = None

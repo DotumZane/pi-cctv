@@ -40,4 +40,5 @@ class MediaTests(unittest.TestCase):
     def test_quad_layout_uses_detected_output_dimensions(self):
         command = quad_pipeline(["rtsp://media:8554/cam-1", "rtsp://media:8554/cam-2"], width=1280, height=720)
         self.assertIn("sink_1::xpos=640 sink_1::ypos=0", command)
-        self.assertIn("width=1280,height=720 ! kmssink", command)
+        self.assertIn("video/x-raw,width=1280,height=720 ! tee name=monitor_out", command)
+        self.assertIn("monitor_out. ! queue max-size-buffers=2 leaky=downstream ! kmssink", command)
