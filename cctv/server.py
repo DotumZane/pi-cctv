@@ -8,6 +8,7 @@ import os
 import re
 import secrets
 import shutil
+import ssl
 import subprocess
 import threading
 from datetime import datetime, timedelta, timezone
@@ -119,6 +120,47 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
+        if parsed.path == "/ca.crt":
+            if not isinstance(self.connection, ssl.SSLSocket):
+                self.send_json({"error": "download the local CA certificate over HTTPS"}, HTTPStatus.UPGRADE_REQUIRED)
+                return
+            ca_path = Path(getattr(self.server, "tls_ca_cert", ""))  # type: ignore[attr-defined]
+            try:
+                content = ca_path.read_bytes()
+            except OSError:
+                self.send_json({"error": "local CA certificate is not configured"}, HTTPStatus.NOT_FOUND)
+                return
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/x-pem-file")
+            self.send_header("Content-Length", str(len(content)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(content)
+            return
+        if parsed.path.startswith("/api/devices/") and parsed.path.endswith("/setup-ap"):
+            device_id = unquote(parsed.path.split("/")[3])
+            supplied = self.headers.get("Authorization", "")
+            if not (supplied.startswith("Bearer ") and self.store.device_token_valid(device_id, supplied[7:])):
+                self.send_json({"error": "device authentication required"}, HTTPStatus.UNAUTHORIZED)
+                return
+            if not isinstance(self.connection, ssl.SSLSocket):
+                self.send_json({"error": "setup Wi-Fi settings require HTTPS"}, HTTPStatus.UPGRADE_REQUIRED)
+                return
+            device = self.store.device(device_id)
+            if not device:
+                self.send_json({"error": "device not found"}, HTTPStatus.NOT_FOUND)
+                return
+            enabled = bool(getattr(self.server, "setup_ap_enabled", False))  # type: ignore[attr-defined]
+            profile = {"enabled": enabled, "revision": getattr(self.server, "setup_ap_revision", "disabled")}  # type: ignore[attr-defined]
+            if enabled:
+                profile.update({
+                    "ssid": getattr(self.server, "setup_ap_ssid", "PiCCTV-Setup"),  # type: ignore[attr-defined]
+                    "password": getattr(self.server, "setup_ap_password", ""),  # type: ignore[attr-defined]
+                    "country": getattr(self.server, "setup_ap_country", "US"),  # type: ignore[attr-defined]
+                    "channel": getattr(self.server, "setup_ap_channel", 6),  # type: ignore[attr-defined]
+                })
+            self.send_json(profile)
+            return
         if parsed.path == "/api/auth/status":
             user = self.session_user()
             self.send_json({"authenticated": bool(user), "setup_required": self.store.user_count() == 0, "user": user})
@@ -159,6 +201,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"devices": self.store.pending_devices()})
             return
         if parsed.path.startswith("/api/enroll/"):
+            if not isinstance(self.connection, ssl.SSLSocket):
+                self.send_json({"error": "device enrollment requires HTTPS"}, HTTPStatus.UPGRADE_REQUIRED)
+                return
             if not self.require_bootstrap():
                 return
             pending_id = parsed.path.split("/")[3]
@@ -372,6 +417,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         try:
+            if parsed.path == "/api/enroll" and not isinstance(self.connection, ssl.SSLSocket):
+                self.send_json({"error": "device enrollment requires HTTPS"}, HTTPStatus.UPGRADE_REQUIRED)
+                return
             if parsed.path == "/api/auth/setup":
                 if self.store.user_count():
                     self.send_json({"error": "setup already completed"}, HTTPStatus.CONFLICT)
@@ -729,15 +777,61 @@ def main() -> None:
     httpd.bootstrap_token = args.bootstrap_token  # type: ignore[attr-defined]
     httpd.public_media_url = args.public_media_url  # type: ignore[attr-defined]
     httpd.public_webrtc_url = args.public_webrtc_url  # type: ignore[attr-defined]
+    setup_ap_enabled = os.getenv("CCTV_SETUP_AP_ENABLED", "false").lower() in {"1", "true", "yes", "on"}
+    setup_ap_password = os.getenv("CCTV_SETUP_AP_PASSWORD", "")
+    if setup_ap_enabled and not re.fullmatch(r"[\x20-\x7e]{8,63}", setup_ap_password):
+        raise SystemExit("CCTV_SETUP_AP_PASSWORD must be 8–63 printable ASCII characters when setup AP is enabled")
+    httpd.setup_ap_enabled = setup_ap_enabled  # type: ignore[attr-defined]
+    httpd.setup_ap_ssid = os.getenv("CCTV_SETUP_AP_SSID", "PiCCTV-Setup")  # type: ignore[attr-defined]
+    httpd.setup_ap_password = setup_ap_password  # type: ignore[attr-defined]
+    httpd.setup_ap_country = os.getenv("CCTV_SETUP_AP_COUNTRY", "US")  # type: ignore[attr-defined]
+    httpd.setup_ap_channel = int(os.getenv("CCTV_SETUP_AP_CHANNEL", "6"))  # type: ignore[attr-defined]
+    httpd.setup_ap_revision = os.getenv("CCTV_SETUP_AP_REVISION", "1")  # type: ignore[attr-defined]
+    if not re.fullmatch(r"[\x20-\x7e]{1,32}", httpd.setup_ap_ssid):
+        raise SystemExit("CCTV_SETUP_AP_SSID must be 1–32 printable ASCII characters")
+    if httpd.setup_ap_country != httpd.setup_ap_country.upper() or not re.fullmatch(r"[A-Z]{2}", httpd.setup_ap_country):
+        raise SystemExit("CCTV_SETUP_AP_COUNTRY must be a two-letter uppercase country code")
+    if httpd.setup_ap_channel not in range(1, 12):
+        raise SystemExit("CCTV_SETUP_AP_CHANNEL must be a 2.4 GHz channel from 1 to 11")
     httpd.recorder_supervisor = RecorderSupervisor(httpd.store, Path(args.recordings_dir))  # type: ignore[attr-defined]
     httpd.recorder_supervisor.start()  # type: ignore[attr-defined]
     print(f"Pi CCTV server listening on http://{args.host}:{args.port}", flush=True)
+    tls_httpd = None
+    tls_thread = None
+    tls_cert = os.getenv("CCTV_TLS_CERT", "")
+    tls_key = os.getenv("CCTV_TLS_KEY", "")
+    httpd.tls_ca_cert = os.getenv("CCTV_TLS_CA_CERT", "")  # type: ignore[attr-defined]
+    if tls_cert or tls_key:
+        if not tls_cert or not tls_key:
+            raise SystemExit("Set both CCTV_TLS_CERT and CCTV_TLS_KEY to enable HTTPS")
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
+        context.load_cert_chain(tls_cert, tls_key)
+        tls_port = int(os.getenv("CCTV_TLS_PORT", "8443"))
+        tls_httpd = ThreadingHTTPServer((args.host, tls_port), Handler)
+        for key in (
+            "store", "admin_token", "read_token", "recordings_dir", "previews_dir",
+            "bootstrap_token", "public_media_url", "public_webrtc_url", "recorder_supervisor",
+            "setup_ap_enabled", "setup_ap_ssid", "setup_ap_password", "setup_ap_country",
+            "setup_ap_channel", "setup_ap_revision",
+            "tls_ca_cert",
+        ):
+            setattr(tls_httpd, key, getattr(httpd, key))
+        tls_httpd.socket = context.wrap_socket(tls_httpd.socket, server_side=True)
+        tls_thread = threading.Thread(target=tls_httpd.serve_forever, name="https-api", daemon=True)
+        tls_thread.start()
+        print(f"Pi CCTV device API listening on https://{args.host}:{tls_port}", flush=True)
+    elif setup_ap_enabled:
+        raise SystemExit("HTTPS must be configured before enabling the server-managed setup Wi-Fi profile")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
         httpd.recorder_supervisor.stop()  # type: ignore[attr-defined]
+        if tls_httpd is not None:
+            tls_httpd.shutdown()
+            tls_httpd.server_close()
         httpd.store.close()  # type: ignore[attr-defined]
         httpd.server_close()
 

@@ -17,6 +17,7 @@ SETUP_AP="false"
 AP_SSID="PiCCTV-Setup"
 AP_COUNTRY="US"
 AP_CHANNEL="6"
+SERVER_CA=""
 
 if [[ "${EUID}" -ne 0 ]]; then
   echo "Run as root: sudo bash install.sh" >&2
@@ -38,6 +39,7 @@ while [[ $# -gt 0 ]]; do
     --ap-ssid) AP_SSID="$2"; shift 2;;
     --ap-country) AP_COUNTRY="$2"; shift 2;;
     --ap-channel) AP_CHANNEL="$2"; shift 2;;
+    --server-ca) SERVER_CA="$2"; shift 2;;
     *) echo "Unknown option: $1" >&2; exit 2;;
   esac
 done
@@ -70,6 +72,12 @@ if [[ "$ROLE" == "camera" ]]; then
   configure_imx477
 fi
 
+if [[ -n "$SERVER_CA" ]]; then
+  [[ -f "$SERVER_CA" ]] || { echo "Local server CA certificate not found: $SERVER_CA" >&2; exit 1; }
+  install -m 0644 "$SERVER_CA" /usr/local/share/ca-certificates/pi-cctv-server-ca.crt
+  update-ca-certificates
+fi
+
 command -v git >/dev/null || { echo "git is required" >&2; exit 1; }
 command -v python3 >/dev/null || { echo "python3 is required" >&2; exit 1; }
 
@@ -89,8 +97,13 @@ configure_setup_ap() {
 
 if [[ "$ENROLL" == "true" || -n "$ROLE" ]]; then
   if [[ "$ENROLL" == "true" ]]; then
-    [[ -n "$SERVER" && -n "$MEDIA_SERVER" && -n "$BOOTSTRAP_TOKEN" ]] || { echo "--enroll requires --server, --media-server, and --bootstrap-token" >&2; exit 2; }
-    AGENT_ARGS="--enroll --server $(printf '%q' "$SERVER") --media-server $(printf '%q' "$MEDIA_SERVER") --bootstrap-token $(printf '%q' "$BOOTSTRAP_TOKEN")"
+    [[ -n "$SERVER" && -n "$MEDIA_SERVER" ]] || { echo "--enroll requires --server and --media-server" >&2; exit 2; }
+    if [[ ! -f /var/lib/pi-cctv/device.json && -z "$BOOTSTRAP_TOKEN" ]]; then
+      echo "First-time --enroll requires --bootstrap-token." >&2
+      exit 2
+    fi
+    AGENT_ARGS="--enroll --server $(printf '%q' "$SERVER") --media-server $(printf '%q' "$MEDIA_SERVER")"
+    [[ -z "$BOOTSTRAP_TOKEN" ]] || AGENT_ARGS+=" --bootstrap-token $(printf '%q' "$BOOTSTRAP_TOKEN")"
   else
     [[ "$ROLE" == "camera" || "$ROLE" == "monitor" ]] || { echo "--role must be camera or monitor" >&2; exit 2; }
     [[ -n "$NAME" && -n "$SERVER" && -n "$MEDIA_SERVER" ]] || { echo "--role requires --name, --server, and --media-server" >&2; exit 2; }

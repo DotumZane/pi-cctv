@@ -27,15 +27,18 @@ Implementation will begin after the architecture and technical design are review
 
 ### Central server
 
-With Docker Compose installed, bootstrap the management API and RTSP relay with:
+With Docker Compose installed, set up local HTTPS and the server-managed setup Wi-Fi profile, then start the management API and RTSP relay:
 
 ```bash
 cp .env.example .env
-# edit .env and replace the example token
-docker compose up -d --build
+# Generate a private local CA and an HTTPS certificate for the server's LAN address.
+sudo bash scripts/generate-local-tls.sh --ip SERVER_LAN_IP
+# Edit .env: set the real tokens, enable the AP, and set a unique shared Wi-Fi password.
+sudo chmod 600 .env
+sudo docker compose up -d --build
 ```
 
-The dashboard is then available at `http://SERVER:8080`. On first visit, create the administrator account with a username and password (minimum 8 characters). Administrators can create additional administrator, operator, and viewer accounts from the **Users** page. Keep the management port restricted to the authorized administration network; the RTSP port must be reachable by cameras and monitors on the CCTV VLAN. The legacy `CCTV_ADMIN_TOKEN` and `CCTV_READ_TOKEN` options remain available for API/agent compatibility.
+The dashboard is available at `http://SERVER:8080`; device enrollment and private setup-Wi-Fi delivery use `https://SERVER:8443`. In `.env`, set `CCTV_TLS_DIR=/etc/pi-cctv/tls`, `CCTV_TLS_CERT=/run/pi-cctv/tls/server.crt`, `CCTV_TLS_KEY=/run/pi-cctv/tls/server.key`, and `CCTV_TLS_CA_CERT=/run/pi-cctv/tls/ca.crt`. Set `CCTV_SETUP_AP_ENABLED=true`, the shared `CCTV_SETUP_AP_SSID`, `CCTV_SETUP_AP_PASSWORD`, country, and channel. Quote the password as a single-quoted Compose `.env` value if it contains `$` or `#`. Keep `.env` and `/etc/pi-cctv/tls/ca.key` private. On first visit, create the dashboard administrator account. The RTSP port must be reachable by cameras and monitors on the CCTV VLAN.
 
 If an administrator password is forgotten, reset it locally on the dashboard server. The command prompts twice without displaying or storing the password:
 
@@ -88,8 +91,9 @@ To install a generic Pi that waits for dashboard adoption instead of choosing a 
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/DotumZane/pi-cctv/main/install.sh | \
-  sudo bash -s -- --enroll --server http://SERVER:8080 \
-  --media-server MEDIA_SERVER --bootstrap-token BOOTSTRAP_TOKEN
+  sudo bash -s -- --enroll --server https://SERVER:8443 \
+  --media-server MEDIA_SERVER --server-ca /path/to/pi-cctv-server-ca.crt \
+  --bootstrap-token BOOTSTRAP_TOKEN
 ```
 
 The dashboard will show the Pi under **Pending devices**. Choose Camera or Monitor, set its name/location, and click **Adopt**.
@@ -103,26 +107,33 @@ sudo bash install.sh --role camera --name "Saw 1" --location "Line 1" \
 
 The installer creates and enables `pi-cctv-agent.service`, which restarts automatically after failures and starts after network-online.
 
-Add `--setup-ap` to the install command when you also want the hidden setup Wi-Fi. Customize it with `--ap-ssid`, `--ap-country`, and `--ap-channel`. The installer prompts for the shared Wi-Fi password and asks for explicit confirmation. To configure an already installed Pi, run:
+### Server-managed phone setup Wi-Fi
+
+Once an adopted Pi is using the server's HTTPS URL, its agent fetches the AP profile automatically and applies it at startup. The profile is delivered only to an authenticated adopted Pi over HTTPS. The Wi-Fi password stays in the server's protected `.env` and the Pi's root-only NetworkManager/hostapd configuration; it is never exposed in the dashboard or agent logs. Changing the SSID/password/profile requires changing the `.env` values and incrementing `CCTV_SETUP_AP_REVISION`, then rebuilding the management service. Agents pick up the change within about one minute.
+
+Before trusting the local CA on a Pi, download the public certificate and compare its fingerprint to the SHA-256 fingerprint printed by the server certificate setup command:
 
 ```bash
-sudo bash /opt/pi-cctv/install.sh --skip-packages --setup-ap \
-  --ap-ssid PiCCTV-Setup --ap-country US --ap-channel 6
+curl -kfsS https://SERVER:8443/ca.crt -o /tmp/pi-cctv-server-ca.crt
+openssl x509 -in /tmp/pi-cctv-server-ca.crt -noout -fingerprint -sha256
 ```
 
-### Optional phone setup Wi-Fi
+After confirming the fingerprint, migrate each already-adopted Pi to HTTPS (the command also installs/trusts the CA and restarts its agent):
 
-An optional hidden, password-protected 2.4 GHz access point can let a phone reach the dashboard at a wired-only location. It bridges Wi-Fi clients onto the Pi's Ethernet LAN; it does not run a DHCP server, NAT, or router. The Ethernet LAN must provide DHCP, allow the phone's additional MAC address on the Pi's switch port, and have a route to the dashboard server. The phone will receive an address from that LAN.
+```bash
+sudo bash /opt/pi-cctv/install.sh --skip-packages --server-ca /tmp/pi-cctv-server-ca.crt \
+  --enroll --server https://SERVER:8443 --media-server SERVER
+```
 
-This is opt-in and is not enabled by the standard installer. Use the same SSID and password on each Pi. The SSID is hidden, so add it manually on the phone. Hidden SSIDs are not an access-control feature; WPA2 protects access. The Pi may briefly disconnect while its Ethernet address moves to the bridge. Use channels 1, 6, or 11 and choose different channels for nearby Pis to reduce interference.
+For a brand-new Pi, download and verify the same CA certificate first, then use the `--enroll` command above; once adopted, it will receive the AP configuration automatically. The network must provide DHCP and allow the phone's additional MAC address on each Pi's Ethernet switch port. The setup SSID is hidden and WPA2 protected, but hiding the name is not an access-control measure. The AP bridges clients to Ethernet; it does not provide DHCP, NAT, or internet routing. Connect the phone manually to the hidden SSID. Use a 2.4 GHz channel from 1 to 11. The Pi may briefly disconnect as its Ethernet address moves onto the bridge.
 
-To remove the setup AP and restore the Pi's saved Ethernet profile:
+To roll back the managed setup AP on a Pi and restore its saved Ethernet profile:
 
 ```bash
 sudo bash /opt/pi-cctv/scripts/setup-bridged-ap.sh --remove
 ```
 
-Test on one Pi first. If the site's switch port enforces a single client MAC or the wired network does not provide DHCP to bridged Wi-Fi clients, the phone will not reach the dashboard until the network policy is adjusted.
+If the site's switch port enforces a single client MAC or the wired network does not provide DHCP to bridged Wi-Fi clients, the phone will not reach the dashboard until network policy is adjusted.
 
 Use `--role monitor` for a monitor Pi. The agent registers the device and retries heartbeats through temporary network outages. Add `--run-media --media-server MEDIA_SERVER` to launch and recover the camera or monitor media process automatically:
 

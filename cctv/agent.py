@@ -61,6 +61,10 @@ def request(url: str, method: str, payload: dict | None = None, token: str = "",
 def run_pending(server: str, bootstrap: str, media_server: str, name: str = "", state_path: Path = DEVICE_STATE_FILE) -> None:
     saved = load_device_state(state_path)
     if saved:
+        if saved.get("server") != server.rstrip("/") or saved.get("media_server") != media_server.rstrip("/"):
+            saved["server"] = server.rstrip("/")
+            saved["media_server"] = media_server.rstrip("/")
+            save_device_state(saved, state_path)
         runtime = DeviceRuntime(saved["kind"], saved["id"], saved["name"], saved["location"], saved["server"], saved["media_server"], token=saved["device_token"])
         runtime.run(enroll=False)
         return
@@ -103,7 +107,7 @@ def main() -> None:
     parser.add_argument("--bootstrap-token", default="", help="pending enrollment token")
     args = parser.parse_args()
     if args.enroll:
-        if not args.bootstrap_token:
+        if not args.bootstrap_token and not load_device_state():
             parser.error("--enroll requires --bootstrap-token")
         run_pending(args.server, args.bootstrap_token, args.media_server, args.name)
         return

@@ -4,15 +4,27 @@ services:
     restart: unless-stopped
     ports:
       - "8080:8080"
+      - "8443:8443"
     environment:
       CCTV_ADMIN_TOKEN: ${CCTV_ADMIN_TOKEN:?set CCTV_ADMIN_TOKEN in .env}
       CCTV_READ_TOKEN: ${CCTV_READ_TOKEN:?set CCTV_READ_TOKEN in .env}
       CCTV_BOOTSTRAP_TOKEN: ${CCTV_BOOTSTRAP_TOKEN:?set CCTV_BOOTSTRAP_TOKEN in .env}
       CCTV_PUBLIC_MEDIA_URL: ${CCTV_PUBLIC_MEDIA_URL:?set CCTV_PUBLIC_MEDIA_URL in .env}
       CCTV_PUBLIC_WEBRTC_URL: ${CCTV_PUBLIC_WEBRTC_URL:?set CCTV_PUBLIC_WEBRTC_URL in .env}
+      CCTV_TLS_PORT: 8443
+      CCTV_TLS_CERT: ${CCTV_TLS_CERT:-}
+      CCTV_TLS_KEY: ${CCTV_TLS_KEY:-}
+      CCTV_TLS_CA_CERT: ${CCTV_TLS_CA_CERT:-}
+      CCTV_SETUP_AP_ENABLED: ${CCTV_SETUP_AP_ENABLED:-false}
+      CCTV_SETUP_AP_SSID: ${CCTV_SETUP_AP_SSID:-PiCCTV-Setup}
+      CCTV_SETUP_AP_PASSWORD: ${CCTV_SETUP_AP_PASSWORD:-}
+      CCTV_SETUP_AP_COUNTRY: ${CCTV_SETUP_AP_COUNTRY:-US}
+      CCTV_SETUP_AP_CHANNEL: ${CCTV_SETUP_AP_CHANNEL:-6}
+      CCTV_SETUP_AP_REVISION: ${CCTV_SETUP_AP_REVISION:-1}
       CCTV_RECORDINGS_DIR: /data/recordings
     volumes:
       - cctv-data:/data
+      - ${CCTV_TLS_DIR:-/etc/pi-cctv/tls}:/run/pi-cctv/tls:ro
     depends_on:
       - media
 

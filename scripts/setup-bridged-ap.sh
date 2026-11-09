@@ -7,6 +7,7 @@ BRIDGE=pi-cctv-setup-bridge
 NM_CONF=/etc/NetworkManager/conf.d/99-pi-cctv-setup-ap.conf
 HOSTAPD_CONF=/etc/hostapd/hostapd.conf
 HOSTAPD_DEFAULTS=/etc/default/hostapd
+HOSTAPD_OVERRIDE=/etc/systemd/system/hostapd.service.d/10-pi-cctv-unblock-wifi.conf
 
 usage() {
   cat <<'EOF'
@@ -26,6 +27,8 @@ MODE=""
 SSID="PiCCTV-Setup"
 COUNTRY="US"
 CHANNEL=6
+CONFIG_FILE=""
+NONINTERACTIVE=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --apply) MODE=apply; shift;;
@@ -33,6 +36,8 @@ while [[ $# -gt 0 ]]; do
     --ssid) [[ $# -ge 2 ]] || { usage >&2; exit 2; }; SSID=$2; shift 2;;
     --country) [[ $# -ge 2 ]] || { usage >&2; exit 2; }; COUNTRY=$2; shift 2;;
     --channel) [[ $# -ge 2 ]] || { usage >&2; exit 2; }; CHANNEL=$2; shift 2;;
+    --config-file) [[ $# -ge 2 ]] || { usage >&2; exit 2; }; CONFIG_FILE=$2; shift 2;;
+    --noninteractive) NONINTERACTIVE=true; shift;;
     -h|--help) usage; exit 0;;
     *) echo "Unknown option: $1" >&2; usage >&2; exit 2;;
   esac
@@ -40,6 +45,30 @@ done
 
 [[ $EUID -eq 0 ]] || { echo "Run with sudo." >&2; exit 1; }
 [[ -n "$MODE" ]] || { usage >&2; exit 2; }
+
+if [[ -n "$CONFIG_FILE" ]]; then
+  [[ -f "$CONFIG_FILE" && ! -L "$CONFIG_FILE" ]] || { echo "AP profile file is missing or is a symlink." >&2; exit 1; }
+  mapfile -t PROFILE_VALUES < <(python3 - "$CONFIG_FILE" <<'PY'
+import base64, json, sys
+from pathlib import Path
+try:
+    value = json.loads(Path(sys.argv[1]).read_text())
+except (OSError, ValueError) as exc:
+    raise SystemExit(f"Invalid AP profile: {exc}")
+for key in ("ssid", "password", "country", "channel"):
+    item = value.get(key)
+    if not isinstance(item, (str, int)):
+        raise SystemExit(f"Invalid AP profile field: {key}")
+    print(base64.b64encode(str(item).encode()).decode())
+PY
+  )
+  [[ ${#PROFILE_VALUES[@]} -eq 4 ]] || { echo "Could not read complete AP profile." >&2; exit 1; }
+  SSID=$(printf '%s' "${PROFILE_VALUES[0]}" | base64 -d)
+  AP_PASSWORD=$(printf '%s' "${PROFILE_VALUES[1]}" | base64 -d)
+  COUNTRY=$(printf '%s' "${PROFILE_VALUES[2]}" | base64 -d)
+  CHANNEL=$(printf '%s' "${PROFILE_VALUES[3]}" | base64 -d)
+  unset PROFILE_VALUES
+fi
 
 remove_ap() {
   [[ -f "$STATE_DIR/state" ]] || { echo "No saved Pi CCTV AP setup was found."; exit 1; }
@@ -53,6 +82,9 @@ remove_ap() {
     *) systemctl disable hostapd.service >/dev/null 2>&1 || true;;
   esac
   rm -f "$HOSTAPD_CONF" "$NM_CONF"
+  rm -f "$HOSTAPD_OVERRIDE"
+  rmdir /etc/systemd/system/hostapd.service.d 2>/dev/null || true
+  systemctl daemon-reload
   if [[ -f "$STATE_DIR/hostapd-defaults" ]]; then
     install -m 0644 "$STATE_DIR/hostapd-defaults" "$HOSTAPD_DEFAULTS"
   else
@@ -73,7 +105,8 @@ remove_ap() {
   nmcli device set wlan0 managed yes
   nmcli connection reload
   nmcli connection up uuid "$ETH_UUID" ifname eth0 || true
-  rm -rf "$STATE_DIR"
+  rm -f "$STATE_DIR/state" "$STATE_DIR/hostapd-defaults"
+  rmdir "$STATE_DIR" 2>/dev/null || true
   echo "Removed the Pi CCTV setup AP and restored the previous Ethernet profile."
 }
 
@@ -90,11 +123,12 @@ fi
 [[ "$CHANNEL" =~ ^([1-9]|1[01])$ ]] || { echo "Use a 2.4 GHz channel from 1 to 11." >&2; exit 2; }
 command -v nmcli >/dev/null || { echo "NetworkManager (nmcli) is required." >&2; exit 1; }
 [[ -e /sys/class/net/eth0 && -e /sys/class/net/wlan0 ]] || { echo "This setup requires built-in eth0 and wlan0 interfaces." >&2; exit 1; }
-[[ -r /dev/tty ]] || { echo "Run this command from an interactive terminal so the shared password can be entered securely." >&2; exit 1; }
-
-read -r -s -p "Shared Wi-Fi password (8–63 characters): " AP_PASSWORD </dev/tty
-printf '\n'
-[[ ${#AP_PASSWORD} -ge 8 && ${#AP_PASSWORD} -le 63 ]] || { echo "Password must be 8–63 characters." >&2; exit 2; }
+if [[ -z "$CONFIG_FILE" ]]; then
+  [[ -r /dev/tty ]] || { echo "Run this command from an interactive terminal so the shared password can be entered securely." >&2; exit 1; }
+  read -r -s -p "Shared Wi-Fi password (8–63 characters): " AP_PASSWORD </dev/tty
+  printf '\n'
+fi
+[[ "$AP_PASSWORD" =~ ^[[:print:]]{8,63}$ ]] || { echo "Password must be 8–63 printable characters." >&2; exit 2; }
 
 ETH_UUID=$(nmcli -g GENERAL.CON-UUID device show eth0 | head -n1)
 [[ "$ETH_UUID" =~ ^[[:xdigit:]-]{36}$ ]] || { echo "Could not identify the active NetworkManager Ethernet profile on eth0." >&2; exit 1; }
@@ -109,10 +143,12 @@ OLD_HOSTAPD_ENABLED=$(systemctl is-enabled hostapd.service 2>/dev/null || true)
 [[ "$OLD_MASTER" == "--" ]] && OLD_MASTER=""
 [[ "$OLD_PORT_TYPE" == "--" ]] && OLD_PORT_TYPE=""
 
-echo "This will bridge the hidden SSID '$SSID' to eth0 and replace the Pi's active Ethernet profile with a bridge profile. The DHCP server on your wired LAN will assign addresses to both the Pi and your phone."
-echo "The Pi may briefly disconnect while networking restarts. It will not provide DHCP, NAT, or internet routing."
-read -r -p "Type APPLY to continue: " CONFIRM </dev/tty
-[[ "$CONFIRM" == APPLY ]] || { echo "No changes made."; exit 1; }
+if [[ "$NONINTERACTIVE" != true ]]; then
+  echo "This will bridge the hidden SSID '$SSID' to eth0 and replace the Pi's active Ethernet profile with a bridge profile. The DHCP server on your wired LAN will assign addresses to both the Pi and your phone."
+  echo "The Pi may briefly disconnect while networking restarts. It will not provide DHCP, NAT, or internet routing."
+  read -r -p "Type APPLY to continue: " CONFIRM </dev/tty
+  [[ "$CONFIRM" == APPLY ]] || { echo "No changes made."; exit 1; }
+fi
 
 install -d -m 0700 "$STATE_DIR"
 printf 'ETH_UUID=%q\nOLD_MASTER=%q\nOLD_PORT_TYPE=%q\nOLD_IPV4=%q\nOLD_IPV6=%q\nOLD_AUTOCONNECT=%q\n' \
@@ -123,11 +159,22 @@ if [[ -f "$HOSTAPD_DEFAULTS" ]]; then
   cp -p "$HOSTAPD_DEFAULTS" "$STATE_DIR/hostapd-defaults"
 fi
 
-export DEBIAN_FRONTEND=noninteractive
-apt-get update
-apt-get install -y hostapd
+if ! command -v hostapd >/dev/null || ! command -v rfkill >/dev/null; then
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update
+  apt-get install -y hostapd rfkill
+fi
 
 install -d -m 0755 /etc/NetworkManager/conf.d /etc/hostapd
+install -d -m 0755 /etc/systemd/system/hostapd.service.d
+RFKILL_BIN=$(command -v rfkill || true)
+[[ -n "$RFKILL_BIN" ]] || { echo "rfkill is required to enable the Pi's Wi-Fi radio." >&2; exit 1; }
+cat > "$HOSTAPD_OVERRIDE" <<EOF
+[Service]
+ExecStartPre=$RFKILL_BIN unblock wlan
+EOF
+chmod 0644 "$HOSTAPD_OVERRIDE"
+systemctl daemon-reload
 cat > "$NM_CONF" <<'EOF'
 [keyfile]
 unmanaged-devices=interface-name:wlan0
@@ -175,6 +222,7 @@ nmcli connection modify uuid "$ETH_UUID" \
 nmcli connection reload
 nmcli connection up "$BRIDGE"
 
+"$RFKILL_BIN" unblock wlan
 systemctl unmask hostapd.service >/dev/null 2>&1 || true
 if ! systemctl enable --now hostapd.service; then
   echo "hostapd failed to start. Recent service logs:" >&2
