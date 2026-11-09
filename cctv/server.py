@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import secrets
 from datetime import datetime, timezone
 from http import HTTPStatus
@@ -212,6 +213,28 @@ class Handler(BaseHTTPRequestHandler):
             except (ValueError, TypeError): logs = []
             self.send_json({"logs": logs[-200:]})
             return
+        if parsed.path.startswith("/api/devices/") and parsed.path.endswith("/preview"):
+            if not self.require_read_auth():
+                return
+            device_id = unquote(parsed.path.split("/")[3])
+            device = self.store.device(device_id)
+            if not device or device.get("kind") != "monitor":
+                self.send_json({"error": "monitor not found"}, HTTPStatus.NOT_FOUND)
+                return
+            filename = re.sub(r"[^A-Za-z0-9_.-]", "_", device_id) + ".jpg"
+            image_path = Path(getattr(self.server, "previews_dir", "monitor-previews")) / filename  # type: ignore[attr-defined]
+            try:
+                image = image_path.read_bytes()
+            except OSError:
+                self.send_json({"error": "monitor preview is not available yet"}, HTTPStatus.NOT_FOUND)
+                return
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "image/jpeg")
+            self.send_header("Cache-Control", "no-store, max-age=0")
+            self.send_header("Content-Length", str(len(image)))
+            self.end_headers()
+            self.wfile.write(image)
+            return
         if parsed.path.startswith("/api/devices/"):
             device_id = parsed.path.split("/")[3]
             if not self.require_device_auth(device_id):
@@ -360,6 +383,34 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 device = self.store.heartbeat(device_id, self.client_address[0], json.dumps(self.body()))
                 self.send_json(device or {"error": "device not found"}, HTTPStatus.OK if device else HTTPStatus.NOT_FOUND)
+                return
+            if parsed.path.startswith("/api/devices/") and parsed.path.endswith("/preview"):
+                device_id = unquote(parsed.path.split("/")[3])
+                if not self.require_device_auth(device_id):
+                    return
+                device = self.store.device(device_id)
+                if not device or device.get("kind") != "monitor":
+                    self.send_json({"error": "monitor not found"}, HTTPStatus.NOT_FOUND)
+                    return
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                except ValueError:
+                    length = 0
+                if self.headers.get_content_type() != "image/jpeg" or not 4 <= length <= 1_500_000:
+                    self.send_json({"error": "a JPEG preview up to 1.5 MB is required"}, HTTPStatus.BAD_REQUEST)
+                    return
+                image = self.rfile.read(length)
+                if len(image) != length or not image.startswith(b"\xff\xd8") or not image.endswith(b"\xff\xd9"):
+                    self.send_json({"error": "preview is not a complete JPEG image"}, HTTPStatus.BAD_REQUEST)
+                    return
+                filename = re.sub(r"[^A-Za-z0-9_.-]", "_", device_id) + ".jpg"
+                root = Path(getattr(self.server, "previews_dir", "monitor-previews"))  # type: ignore[attr-defined]
+                root.mkdir(parents=True, exist_ok=True)
+                target = root / filename
+                temporary = root / (filename + ".tmp")
+                temporary.write_bytes(image)
+                os.replace(temporary, target)
+                self.send_json({"ok": True})
                 return
             if parsed.path.startswith("/api/devices/") and parsed.path.endswith("/diagnostics"):
                 device_id = parsed.path.split("/")[3]
@@ -593,6 +644,7 @@ def main() -> None:
     parser.add_argument("--admin-token", default=os.getenv("CCTV_ADMIN_TOKEN", ""))
     parser.add_argument("--read-token", default=os.getenv("CCTV_READ_TOKEN", ""))
     parser.add_argument("--recordings-dir", default=os.getenv("CCTV_RECORDINGS_DIR", "recordings"))
+    parser.add_argument("--previews-dir", default=os.getenv("CCTV_PREVIEWS_DIR", ""))
     parser.add_argument("--bootstrap-token", default=os.getenv("CCTV_BOOTSTRAP_TOKEN", ""))
     parser.add_argument("--public-media-url", default=os.getenv("CCTV_PUBLIC_MEDIA_URL", "http://127.0.0.1:8888"))
     parser.add_argument("--public-webrtc-url", default=os.getenv("CCTV_PUBLIC_WEBRTC_URL", "http://127.0.0.1:8889"))
@@ -602,6 +654,7 @@ def main() -> None:
     httpd.admin_token = args.admin_token  # type: ignore[attr-defined]
     httpd.read_token = args.read_token  # type: ignore[attr-defined]
     httpd.recordings_dir = args.recordings_dir  # type: ignore[attr-defined]
+    httpd.previews_dir = args.previews_dir or str(Path(args.db).parent / "monitor-previews")  # type: ignore[attr-defined]
     httpd.bootstrap_token = args.bootstrap_token  # type: ignore[attr-defined]
     httpd.public_media_url = args.public_media_url  # type: ignore[attr-defined]
     httpd.public_webrtc_url = args.public_webrtc_url  # type: ignore[attr-defined]

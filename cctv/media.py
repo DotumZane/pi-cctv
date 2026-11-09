@@ -8,6 +8,7 @@ machine before being run on a Raspberry Pi.
 from __future__ import annotations
 
 import argparse
+import re
 from dataclasses import dataclass
 from shlex import quote
 
@@ -61,6 +62,7 @@ class MonitorMedia:
     show_camera_name: bool = False
     show_timestamp: bool = False
     camera_name: str = ""
+    preview_id: str = "default"
 
     def pipeline(self) -> str:
         sink = "kmssink" + (f" connector-id={self.connector_id}" if self.connector_id else "") + " sync=false" if self.fullscreen else "autovideosink sync=false"
@@ -79,15 +81,37 @@ class MonitorMedia:
         if self.show_camera_name and self.camera_name:
             filters.append(f'textoverlay text="{self.camera_name}" halignment=right valignment=top')
         filter_chain = (" ! " + " ! ".join(filters)) if filters else ""
+        preview_width, preview_height = _preview_size(self.width or 1920, self.height or 1080)
+        preview = _preview_branch(self.preview_id, preview_width, preview_height)
         return (
             "gst-launch-1.0 -e "
             f"rtspsrc location={quote(self.stream_url)} protocols=tcp latency=0 drop-on-latency=true ! "
             "rtph264depay ! h264parse ! v4l2h264dec ! queue max-size-buffers=2 leaky=downstream ! "
-            f"videoconvert{filter_chain} ! {sink}"
+            f"videoconvert{filter_chain} ! tee name=monitor_out "
+            f"monitor_out. ! queue max-size-buffers=2 leaky=downstream ! {sink} "
+            f"monitor_out. ! {preview}"
         )
 
 
-def quad_pipeline(stream_urls: list[str], width: int = 1920, height: int = 1080) -> str:
+def _preview_size(width: int, height: int, max_width: int = 640, max_height: int = 360) -> tuple[int, int]:
+    scale = min(max_width / width, max_height / height, 1.0)
+    out_width = max(2, int(width * scale) // 2 * 2)
+    out_height = max(2, int(height * scale) // 2 * 2)
+    return out_width, out_height
+
+
+def _preview_branch(preview_id: str, width: int, height: int) -> str:
+    key = re.sub(r"[^A-Za-z0-9_-]", "_", preview_id)[:48] or "default"
+    path = quote(f"/tmp/pi-cctv-monitor-preview-{key}-%05d.jpg")
+    return (
+        "queue max-size-buffers=2 leaky=downstream ! videorate drop-only=true ! "
+        "video/x-raw,framerate=1/5 ! videoscale add-borders=true ! "
+        f"video/x-raw,width={width},height={height} ! jpegenc quality=55 ! "
+        f"multifilesink location={path} max-files=1"
+    )
+
+
+def quad_pipeline(stream_urls: list[str], width: int = 1920, height: int = 1080, preview_id: str = "default") -> str:
     """Build a 2×2 decoder pipeline for one to four RTSP streams."""
     if not 1 <= len(stream_urls) <= 4:
         raise ValueError("a 2x2 layout requires between one and four streams")
@@ -103,9 +127,12 @@ def quad_pipeline(stream_urls: list[str], width: int = 1920, height: int = 1080)
         f"sink_{i}::xpos={(i % 2) * cell_width} sink_{i}::ypos={(i // 2) * cell_height}"
         for i in range(len(stream_urls))
     )
+    preview_width, preview_height = _preview_size(width, height)
     return (
         "gst-launch-1.0 -e " + " ".join(branches)
-        + f" compositor name=compositor {positions} ! video/x-raw,width={width},height={height} ! kmssink sync=false"
+        + f" compositor name=compositor {positions} ! video/x-raw,width={width},height={height} ! tee name=monitor_out "
+        + "monitor_out. ! queue max-size-buffers=2 leaky=downstream ! kmssink sync=false "
+        + f"monitor_out. ! {_preview_branch(preview_id, preview_width, preview_height)}"
     )
 
 

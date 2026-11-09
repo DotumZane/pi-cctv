@@ -8,6 +8,7 @@ import re
 import subprocess
 import time
 import urllib.request
+import urllib.parse
 import os
 import signal
 import shutil
@@ -146,12 +147,13 @@ def command_for_assignment(assignment: dict, media_server: str, settings: dict |
     urls = [f"rtsp://{media_server}:8554/{camera}" for camera in cameras]
     width, height = _monitor_output_size(settings)
     if assignment.get("layout", "single") == "2x2":
-        return quad_pipeline(urls, width or 1920, height or 1080)
+        return quad_pipeline(urls, width or 1920, height or 1080, preview_id=settings.get("preview_id", "default"))
     return MonitorMedia(
         urls[0], fullscreen=settings.get("kiosk", True), width=width, height=height,
         scale_mode=settings.get("scale_mode", "fit"),
         orientation=settings.get("orientation", 0), show_camera_name=settings.get("show_camera_name", False),
         show_timestamp=settings.get("show_timestamp", False), camera_name=settings.get("camera_name", ""),
+        preview_id=settings.get("preview_id", "default"),
     ).pipeline()
 
 
@@ -165,7 +167,7 @@ def commands_for_assignment(assignment: dict, media_server: str, settings: dict 
         command = command_for_assignment(assignment, media_server, settings)
         return [command] if command else []
     commands = []
-    for output in outputs:
+    for output_index, output in enumerate(outputs):
         cameras = output.get("cameras", []) if isinstance(output, dict) else []
         if cameras:
             connector_id = output.get("connector_id")
@@ -177,6 +179,7 @@ def commands_for_assignment(assignment: dict, media_server: str, settings: dict 
                 scale_mode=settings.get("scale_mode", "fit"),
                 orientation=settings.get("orientation", 0), show_camera_name=settings.get("show_camera_name", False),
                 show_timestamp=settings.get("show_timestamp", False), camera_name=settings.get("camera_name", ""),
+                preview_id=f"{settings.get('preview_id', 'monitor')}-{connector_id or output_index}",
             ).pipeline())
     return commands
 
@@ -215,6 +218,7 @@ class DeviceRuntime:
         self.media_server = self.media_server.rstrip("/")
         self.processes: list[subprocess.Popen] = []
         self.last_command: tuple[str, ...] | None = None
+        self.last_preview_mtime_ns = 0
 
     def enroll(self) -> None:
         http_json(f"{self.server}/api/devices", "POST", {
@@ -277,6 +281,7 @@ class DeviceRuntime:
         except json.JSONDecodeError:
             settings = {}
         settings["camera_name"] = self.name
+        settings["preview_id"] = self.device_id
         assignment = http_json(f"{self.server}/api/monitors/{self.device_id}/assignment", token=self.token)
         displays = connected_displays()
         settings["display_modes"] = {
@@ -317,6 +322,40 @@ class DeviceRuntime:
                 process.wait(timeout=5)
         self.processes = []
 
+    def upload_monitor_preview(self) -> None:
+        """Upload the newest completed, low-rate display pipeline JPEG."""
+        if self.role != "monitor" or not self.token:
+            return
+        candidates = []
+        for filename in glob.glob("/tmp/pi-cctv-monitor-preview-*.jpg"):
+            try:
+                stat = os.stat(filename)
+            except OSError:
+                continue
+            if stat.st_mtime_ns > self.last_preview_mtime_ns and 0 < time.time() - stat.st_mtime < 10 and stat.st_size <= 1_500_000:
+                candidates.append((stat.st_mtime_ns, stat.st_mtime, filename))
+        if not candidates:
+            return
+        mtime_ns, mtime, filename = max(candidates)
+        # multifilesink writes each JPEG at 0.2 fps; avoid reading a file mid-write.
+        if time.time() - mtime < 1:
+            return
+        try:
+            with open(filename, "rb") as preview_file:
+                image = preview_file.read(1_500_001)
+            if len(image) > 1_500_000 or not image.startswith(b"\xff\xd8") or not image.endswith(b"\xff\xd9"):
+                return
+            request = urllib.request.Request(
+                f"{self.server}/api/devices/{urllib.parse.quote(self.device_id, safe='')}/preview",
+                data=image, method="POST",
+                headers={"Content-Type": "image/jpeg", "Authorization": f"Bearer {self.token}"},
+            )
+            with urllib.request.urlopen(request, timeout=10) as response:
+                response.read()
+            self.last_preview_mtime_ns = mtime_ns
+        except (OSError, urllib.error.URLError) as exc:
+            print(f"Unable to upload monitor preview: {exc}", flush=True)
+
     def run(self, enroll: bool = True) -> None:
         if enroll:
             while True:
@@ -332,6 +371,7 @@ class DeviceRuntime:
                     self.heartbeat()
                     self.poll_commands()
                     self.reconcile_media()
+                    self.upload_monitor_preview()
                 except Exception as exc:
                     print(f"Runtime check failed: {exc}; retrying", flush=True)
                 time.sleep(self.heartbeat_interval)
