@@ -103,6 +103,27 @@ sudo bash install.sh --role camera --name "Saw 1" --location "Line 1" \
 
 The installer creates and enables `pi-cctv-agent.service`, which restarts automatically after failures and starts after network-online.
 
+### Optional phone setup Wi-Fi
+
+An optional hidden, password-protected 2.4 GHz access point can let a phone reach the dashboard at a wired-only location. It bridges Wi-Fi clients onto the Pi's Ethernet LAN; it does not run a DHCP server, NAT, or router. The Ethernet LAN must provide DHCP, allow the phone's additional MAC address on the Pi's switch port, and have a route to the dashboard server. The phone will receive an address from that LAN.
+
+This is deliberately not enabled by the standard installer. First install and verify the Pi over Ethernet, then configure one test Pi from its local terminal or an SSH session:
+
+```bash
+sudo bash /opt/pi-cctv/scripts/setup-bridged-ap.sh --apply \
+  --ssid PiCCTV-Setup --country US --channel 6
+```
+
+The script asks for the shared Wi-Fi password without echoing it and requires typing `APPLY` before changing networking. Use the same SSID and password on each Pi. The SSID is hidden, so add it manually on the phone. Hidden SSIDs are not an access-control feature; WPA2 protects access. The Pi may briefly disconnect while its Ethernet address moves to the bridge. Use channels 1, 6, or 11 and choose different channels for nearby Pis to reduce interference.
+
+To remove the setup AP and restore the Pi's saved Ethernet profile:
+
+```bash
+sudo bash /opt/pi-cctv/scripts/setup-bridged-ap.sh --remove
+```
+
+Test on one Pi first. If the site's switch port enforces a single client MAC or the wired network does not provide DHCP to bridged Wi-Fi clients, the phone will not reach the dashboard until the network policy is adjusted.
+
 Use `--role monitor` for a monitor Pi. The agent registers the device and retries heartbeats through temporary network outages. Add `--run-media --media-server MEDIA_SERVER` to launch and recover the camera or monitor media process automatically:
 
 ```bash
