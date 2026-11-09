@@ -6,7 +6,7 @@ from cctv.media import CameraMedia, MonitorMedia, quad_pipeline
 class MediaTests(unittest.TestCase):
     def test_camera_pipeline_uses_native_hardware_encoder_and_rtsp_publish(self):
         command = CameraMedia("rtsp://media:8554/cam-1").pipeline()
-        self.assertIn("rpicam-vid -n -t 0 --inline --codec h264", command)
+        self.assertIn("rpicam-vid -n -t 0 --inline --codec h264 -o -", command)
         self.assertIn("fdsrc fd=0 do-timestamp=true ! h264parse", command)
         self.assertIn("latency=0", command)
         self.assertIn("rtspclientsink", command)

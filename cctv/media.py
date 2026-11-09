@@ -27,7 +27,7 @@ class CameraMedia:
 
     def pipeline(self) -> str:
         camera_args = [
-            "rpicam-vid", "-n", "-t", "0", "--inline", "--codec", "h264",
+            "rpicam-vid", "-n", "-t", "0", "--inline", "--codec", "h264", "-o", "-",
             "--width", str(self.width), "--height", str(self.height),
             "--framerate", str(self.fps), "--bitrate", str(self.bitrate),
         ]
