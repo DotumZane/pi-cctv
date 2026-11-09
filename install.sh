@@ -13,6 +13,10 @@ TOKEN=""
 SKIP_PACKAGES="false"
 ENROLL="false"
 BOOTSTRAP_TOKEN=""
+SETUP_AP="false"
+AP_SSID="PiCCTV-Setup"
+AP_COUNTRY="US"
+AP_CHANNEL="6"
 
 if [[ "${EUID}" -ne 0 ]]; then
   echo "Run as root: sudo bash install.sh" >&2
@@ -30,6 +34,10 @@ while [[ $# -gt 0 ]]; do
     --skip-packages) SKIP_PACKAGES="true"; shift;;
     --enroll) ENROLL="true"; shift;;
     --bootstrap-token) BOOTSTRAP_TOKEN="$2"; shift 2;;
+    --setup-ap) SETUP_AP="true"; shift;;
+    --ap-ssid) AP_SSID="$2"; shift 2;;
+    --ap-country) AP_COUNTRY="$2"; shift 2;;
+    --ap-channel) AP_CHANNEL="$2"; shift 2;;
     *) echo "Unknown option: $1" >&2; exit 2;;
   esac
 done
@@ -67,10 +75,17 @@ command -v python3 >/dev/null || { echo "python3 is required" >&2; exit 1; }
 
 mkdir -p "$(dirname "$INSTALL_DIR")"
 if [[ -d "$INSTALL_DIR/.git" ]]; then
-  git -C "$INSTALL_DIR" pull --ff-only
+  git -c "safe.directory=$INSTALL_DIR" -C "$INSTALL_DIR" pull --ff-only origin main
 else
   git clone "$REPO_URL" "$INSTALL_DIR"
 fi
+
+configure_setup_ap() {
+  [[ "$SETUP_AP" == "true" ]] || return 0
+  [[ -x "$INSTALL_DIR/scripts/setup-bridged-ap.sh" ]] || chmod 0755 "$INSTALL_DIR/scripts/setup-bridged-ap.sh"
+  bash "$INSTALL_DIR/scripts/setup-bridged-ap.sh" --apply \
+    --ssid "$AP_SSID" --country "$AP_COUNTRY" --channel "$AP_CHANNEL"
+}
 
 if [[ "$ENROLL" == "true" || -n "$ROLE" ]]; then
   if [[ "$ENROLL" == "true" ]]; then
@@ -87,8 +102,11 @@ if [[ "$ENROLL" == "true" || -n "$ROLE" ]]; then
   systemctl daemon-reload
   systemctl enable --now pi-cctv-agent.service
   echo "Installed and started pi-cctv-agent.service"
+  configure_setup_ap
   exit 0
 fi
+
+configure_setup_ap
 
 cat <<EOF
 V1 installed at $INSTALL_DIR.

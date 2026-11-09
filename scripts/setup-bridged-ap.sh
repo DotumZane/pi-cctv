@@ -90,9 +90,9 @@ fi
 [[ "$CHANNEL" =~ ^([1-9]|1[01])$ ]] || { echo "Use a 2.4 GHz channel from 1 to 11." >&2; exit 2; }
 command -v nmcli >/dev/null || { echo "NetworkManager (nmcli) is required." >&2; exit 1; }
 [[ -e /sys/class/net/eth0 && -e /sys/class/net/wlan0 ]] || { echo "This setup requires built-in eth0 and wlan0 interfaces." >&2; exit 1; }
-[[ -t 0 ]] || { echo "Run this command in an interactive terminal so the shared password can be entered securely." >&2; exit 1; }
+[[ -r /dev/tty ]] || { echo "Run this command from an interactive terminal so the shared password can be entered securely." >&2; exit 1; }
 
-read -r -s -p "Shared Wi-Fi password (8–63 characters): " AP_PASSWORD
+read -r -s -p "Shared Wi-Fi password (8–63 characters): " AP_PASSWORD </dev/tty
 printf '\n'
 [[ ${#AP_PASSWORD} -ge 8 && ${#AP_PASSWORD} -le 63 ]] || { echo "Password must be 8–63 characters." >&2; exit 2; }
 
@@ -111,7 +111,7 @@ OLD_HOSTAPD_ENABLED=$(systemctl is-enabled hostapd.service 2>/dev/null || true)
 
 echo "This will bridge the hidden SSID '$SSID' to eth0 and replace the Pi's active Ethernet profile with a bridge profile. The DHCP server on your wired LAN will assign addresses to both the Pi and your phone."
 echo "The Pi may briefly disconnect while networking restarts. It will not provide DHCP, NAT, or internet routing."
-read -r -p "Type APPLY to continue: " CONFIRM
+read -r -p "Type APPLY to continue: " CONFIRM </dev/tty
 [[ "$CONFIRM" == APPLY ]] || { echo "No changes made."; exit 1; }
 
 install -d -m 0700 "$STATE_DIR"
@@ -176,6 +176,12 @@ nmcli connection reload
 nmcli connection up "$BRIDGE"
 
 systemctl unmask hostapd.service >/dev/null 2>&1 || true
-systemctl enable --now hostapd.service
+if ! systemctl enable --now hostapd.service; then
+  echo "hostapd failed to start. Recent service logs:" >&2
+  journalctl -u hostapd.service -n 40 --no-pager >&2 || true
+  echo "Restoring the original wired network profile." >&2
+  remove_ap
+  exit 1
+fi
 echo "Setup AP enabled. Connect your phone to the hidden '$SSID' network using the shared password. The phone should receive an address from the wired LAN and reach the dashboard at its usual server address."
 echo "To undo this on the Pi: sudo bash /opt/pi-cctv/scripts/setup-bridged-ap.sh --remove"
