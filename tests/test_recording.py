@@ -7,12 +7,12 @@ from cctv.recording import RecorderConfig, prune_recordings
 
 
 class RecordingTests(unittest.TestCase):
-    def test_uses_stream_copy_and_segmented_mkv_output(self):
+    def test_uses_stream_copy_and_segmented_mp4_output(self):
         command = RecorderConfig("cam-1", "rtsp://media:8554/cam-1", Path("recordings")).ffmpeg_command()
         self.assertIn("-c", command)
         self.assertIn("copy", command)
         self.assertIn("segment", command)
-        self.assertTrue(command[-1].endswith("%H-%M-%S.mkv"))
+        self.assertTrue(command[-1].endswith("%H-%M-%S.mp4"))
 
     def test_prunes_only_expired_recordings(self):
         with tempfile.TemporaryDirectory() as directory:

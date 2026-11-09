@@ -7,7 +7,7 @@ import json
 import os
 import re
 import secrets
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -264,32 +264,68 @@ class Handler(BaseHTTPRequestHandler):
             root = Path(getattr(self.server, "recordings_dir", "recordings"))  # type: ignore[attr-defined]
             camera_id = parse_qs(parsed.query).get("camera_id", [None])[0]
             entries = []
-            for recording in root.glob("**/*.mkv"):
+            recordings = (*root.glob("**/*.mkv"), *root.glob("**/*.mp4"))
+            for recording in recordings:
                 relative = recording.relative_to(root)
                 if camera_id and relative.parts[0] != camera_id:
                     continue
                 stat = recording.stat()
+                modified_at = datetime.fromtimestamp(stat.st_mtime, timezone.utc)
+                if recording.suffix == ".mp4" and datetime.now(timezone.utc) - modified_at < timedelta(seconds=10):
+                    continue
                 start = None
                 try:
                     start = datetime.strptime(f"{relative.parts[-2]} {recording.stem}", "%Y-%m-%d %H-%M-%S").replace(tzinfo=timezone.utc)
                 except (IndexError, ValueError):
                     pass
-                entries.append({"path": str(relative), "camera_id": relative.parts[0] if relative.parts else "", "bytes": stat.st_size, "modified": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(), "start": start.isoformat() if start else None, "url": "/recordings/" + str(relative)})
+                entries.append({"path": str(relative), "camera_id": relative.parts[0] if relative.parts else "", "bytes": stat.st_size, "modified": modified_at.isoformat(), "start": start.isoformat() if start else None, "url": "/recordings/" + str(relative)})
             entries.sort(key=lambda entry: entry["modified"], reverse=True)
             self.send_json({"recordings": entries})
             return
         if parsed.path.startswith("/recordings/"):
             root = Path(getattr(self.server, "recordings_dir", "recordings")).resolve()
             requested = (root / unquote(parsed.path.removeprefix("/recordings/"))).resolve()
-            if root not in requested.parents or not requested.is_file() or requested.suffix != ".mkv":
+            if root not in requested.parents or not requested.is_file() or requested.suffix not in {".mkv", ".mp4"}:
                 self.send_json({"error": "recording not found"}, HTTPStatus.NOT_FOUND)
                 return
-            body = requested.read_bytes()
-            self.send_response(HTTPStatus.OK)
-            self.send_header("Content-Type", "video/x-matroska")
-            self.send_header("Content-Length", str(len(body)))
+            file_size = requested.stat().st_size
+            byte_range = self.headers.get("Range", "")
+            start, end = 0, file_size - 1
+            status = HTTPStatus.OK
+            if byte_range.startswith("bytes="):
+                try:
+                    first, last = byte_range[6:].split("-", 1)
+                    if first:
+                        start = int(first)
+                        end = min(int(last), file_size - 1) if last else file_size - 1
+                    else:
+                        length = int(last)
+                        start = max(0, file_size - length)
+                    if start > end or start >= file_size:
+                        raise ValueError("range outside file")
+                    status = HTTPStatus.PARTIAL_CONTENT
+                except ValueError:
+                    self.send_response(HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE)
+                    self.send_header("Content-Range", f"bytes */{file_size}")
+                    self.end_headers()
+                    return
+            length = end - start + 1
+            self.send_response(status)
+            if status == HTTPStatus.PARTIAL_CONTENT:
+                self.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")
+            self.send_header("Content-Type", "video/mp4" if requested.suffix == ".mp4" else "video/x-matroska")
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Content-Length", str(length))
             self.end_headers()
-            self.wfile.write(body)
+            with requested.open("rb") as recording_file:
+                recording_file.seek(start)
+                remaining = length
+                while remaining:
+                    chunk = recording_file.read(min(64 * 1024, remaining))
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    remaining -= len(chunk)
             return
         if parsed.path.startswith("/api/monitors/") and parsed.path.endswith("/assignment"):
             monitor_id = parsed.path.split("/")[3]

@@ -27,11 +27,11 @@ class RecorderConfig:
     storage_limit_gb: int = 500
 
     def ffmpeg_command(self) -> list[str]:
-        output = self.output_dir / self.camera_id / "%Y-%m-%d" / "%H-%M-%S.mkv"
+        output = self.output_dir / self.camera_id / "%Y-%m-%d" / "%H-%M-%S.mp4"
         return [
             "ffmpeg", "-hide_banner", "-loglevel", "warning", "-nostdin",
             "-rtsp_transport", "tcp", "-fflags", "nobuffer", "-i", self.stream_url,
-            "-map", "0:v:0", "-c", "copy", "-f", "segment",
+            "-map", "0:v:0", "-c", "copy", "-f", "segment", "-segment_format", "mp4",
             "-segment_time", str(self.segment_seconds), "-strftime", "1",
             "-reset_timestamps", "1", str(output),
         ]
@@ -43,7 +43,7 @@ class RecorderConfig:
 def prune_recordings(output_dir: Path, retention_hours: int, now: datetime | None = None) -> int:
     cutoff = (now or datetime.now(timezone.utc)) - timedelta(hours=retention_hours)
     removed = 0
-    for path in output_dir.glob("**/*.mkv"):
+    for path in (*output_dir.glob("**/*.mkv"), *output_dir.glob("**/*.mp4")):
         modified = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
         if modified < cutoff:
             path.unlink()
@@ -52,7 +52,7 @@ def prune_recordings(output_dir: Path, retention_hours: int, now: datetime | Non
 
 
 def enforce_storage_limit(output_dir: Path, limit_gb: int) -> int:
-    files = sorted(output_dir.glob("**/*.mkv"), key=lambda path: path.stat().st_mtime)
+    files = sorted((*output_dir.glob("**/*.mkv"), *output_dir.glob("**/*.mp4")), key=lambda path: path.stat().st_mtime)
     total = sum(path.stat().st_size for path in files)
     removed = 0
     limit = max(1, limit_gb) * 1024**3
