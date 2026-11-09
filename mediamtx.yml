@@ -6,6 +6,9 @@ rtsp: true
 rtspAddress: :8554
 hls: true
 hlsAddress: :8888
+# Safari is used from an HTTP dashboard. Use the broadly compatible HLS
+# transport; Low-Latency HLS on Apple devices requires HTTPS.
+hlsVariant: mpegts
 webrtc: true
 webrtcAddress: :8889
 readTimeout: 5s
