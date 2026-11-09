@@ -223,7 +223,6 @@ class DeviceRuntime:
         self.processes: list[subprocess.Popen] = []
         self.last_command: tuple[str, ...] | None = None
         self.last_preview_mtime_ns = 0
-        self.last_setup_ap_check = 0.0
 
     def enroll(self) -> None:
         http_json(f"{self.server}/api/devices", "POST", {
@@ -240,7 +239,7 @@ class DeviceRuntime:
         http_json(f"{self.server}/api/devices/{self.device_id}/heartbeat", "POST", payload, self.token)
 
     def sync_setup_ap(self) -> None:
-        """Fetch and apply the server-managed bridged Wi-Fi profile over HTTPS."""
+        """Fetch and apply the server-managed bridged Wi-Fi profile at startup."""
         if not self.server.startswith("https://"):
             return
         try:
@@ -473,13 +472,14 @@ class DeviceRuntime:
                     time.sleep(5)
         self.activate_monitor_display()
         try:
+            try:
+                self.sync_setup_ap()
+            except Exception as exc:
+                print(f"Unable to apply setup Wi-Fi profile at startup: {exc}", flush=True)
             while True:
                 try:
                     self.heartbeat()
                     self.poll_commands()
-                    if time.monotonic() - self.last_setup_ap_check >= 60:
-                        self.last_setup_ap_check = time.monotonic()
-                        self.sync_setup_ap()
                     self.reconcile_media()
                     self.upload_monitor_preview()
                 except Exception as exc:

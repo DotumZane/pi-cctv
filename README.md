@@ -109,7 +109,7 @@ The installer creates and enables `pi-cctv-agent.service`, which restarts automa
 
 ### Server-managed phone setup Wi-Fi
 
-Once an adopted Pi is using the server's HTTPS URL, its agent fetches the AP profile automatically and applies it at startup. The profile is delivered only to an authenticated adopted Pi over HTTPS. The Wi-Fi password stays in the server's protected `.env` and the Pi's root-only NetworkManager/hostapd configuration; it is never exposed in the dashboard or agent logs. Changing the SSID/password/profile requires changing the `.env` values and incrementing `CCTV_SETUP_AP_REVISION`, then rebuilding the management service. Agents pick up the change within about one minute.
+Once an adopted Pi is using the server's HTTPS URL, its agent fetches the AP profile once when the agent starts. The profile is delivered only to an authenticated adopted Pi over HTTPS. The Wi-Fi password stays in the server's protected `.env` and the Pi's root-only NetworkManager/hostapd configuration; it is never exposed in the dashboard or agent logs. Changing the SSID/password/profile requires changing the `.env` values and incrementing `CCTV_SETUP_AP_REVISION`, then rebuilding the management service and rebooting each Pi (or restarting its agent service) to apply the change.
 
 Before trusting the local CA on a Pi, download the public certificate and compare its fingerprint to the SHA-256 fingerprint printed by the server certificate setup command:
 
