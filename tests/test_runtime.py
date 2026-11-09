@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -14,6 +14,20 @@ class RuntimeTests(unittest.TestCase):
     def test_single_assignment_targets_camera_path(self):
         command = command_for_assignment({"layout": "single", "cameras": '["cam-7"]'}, "media")
         self.assertIn("rtsp://media:8554/cam-7", command)
+
+    def test_camera_runtime_starts_pipeline_as_one_command(self):
+        process = Mock()
+        process.poll.return_value = None
+        process_factory = Mock(return_value=process)
+        runtime = DeviceRuntime("camera", "cam-7", "Camera", "", "http://server", "media", process_factory=process_factory)
+        with patch("cctv.runtime.http_json", return_value={"metadata": "{}"}):
+            runtime.reconcile_media()
+        process_factory.assert_called_once()
+        command = process_factory.call_args.args[0]
+        self.assertIsInstance(command, str)
+        self.assertTrue(command.startswith("gst-launch-1.0 -e libcamerasrc"))
+        self.assertIn("rtspclientsink location=rtsp://media:8554/cam-7", command)
+        self.assertEqual(process_factory.call_args.kwargs, {"shell": True})
 
     def test_quad_assignment_builds_four_stream_layout(self):
         command = command_for_assignment({"layout": "2x2", "cameras": '["a", "b", "c", "d"]'}, "media")

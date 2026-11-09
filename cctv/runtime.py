@@ -223,13 +223,13 @@ class DeviceRuntime:
                 settings = json.loads(device.get("metadata", "{}")).get("settings", {})
             except json.JSONDecodeError:
                 settings = {}
-            return CameraMedia(
+            return [CameraMedia(
                 f"rtsp://{self.media_server}:8554/{self.device_id}",
                 width=settings.get("width", 1920), height=settings.get("height", 1080),
                 fps=settings.get("fps", 30), bitrate=settings.get("bitrate", 6_000_000),
                 flip_horizontal=settings.get("flip_horizontal", False), flip_vertical=settings.get("flip_vertical", False),
                 brightness=settings.get("brightness", 0.0), contrast=settings.get("contrast", 1.0), saturation=settings.get("saturation", 1.0),
-            ).pipeline()
+            ).pipeline()]
         device = http_json(f"{self.server}/api/devices/{self.device_id}", token=self.token)
         try:
             settings = json.loads(device.get("metadata", "{}")).get("settings", {})
