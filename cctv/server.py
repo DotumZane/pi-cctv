@@ -14,6 +14,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
 from . import __version__
+from .recording import RecorderSupervisor
 from .store import Store
 
 
@@ -659,12 +660,15 @@ def main() -> None:
     httpd.bootstrap_token = args.bootstrap_token  # type: ignore[attr-defined]
     httpd.public_media_url = args.public_media_url  # type: ignore[attr-defined]
     httpd.public_webrtc_url = args.public_webrtc_url  # type: ignore[attr-defined]
+    httpd.recorder_supervisor = RecorderSupervisor(httpd.store, Path(args.recordings_dir))  # type: ignore[attr-defined]
+    httpd.recorder_supervisor.start()  # type: ignore[attr-defined]
     print(f"Pi CCTV server listening on http://{args.host}:{args.port}", flush=True)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
+        httpd.recorder_supervisor.stop()  # type: ignore[attr-defined]
         httpd.store.close()  # type: ignore[attr-defined]
         httpd.server_close()
 

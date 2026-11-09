@@ -110,7 +110,7 @@ python3 -m cctv.agent --role camera --name "Saw 1" --location "Line 1" \
   --server http://SERVER:8080 --media-server MEDIA_SERVER --run-media
 ```
 
-The monitor runtime polls its centrally stored assignment and restarts its pipeline when the assignment changes or the process exits. It reports connected DRM/HDMI displays automatically. A one-display Pi can use a single camera or 2×2 layout; a two-display Pi exposes two independent single-camera outputs. The server supports optional bearer-token authentication through `CCTV_ADMIN_TOKEN` or `--admin-token`. V1 still needs hardware validation, recording, and further production security hardening before deployment.
+The monitor runtime polls its centrally stored assignment and restarts its pipeline when the assignment changes or the process exits. It reports connected DRM/HDMI displays automatically. A one-display Pi can use a single camera or 2×2 layout; a two-display Pi exposes two independent single-camera outputs. The server supports optional bearer-token authentication through `CCTV_ADMIN_TOKEN` or `--admin-token`. V1 still needs hardware validation and further production security hardening before deployment.
 
 ### Optional remote SSH with Tailscale
 
@@ -140,7 +140,7 @@ Pi heartbeats include available CPU temperature, one-minute load, memory-use per
 
 For the IMX477 HQ camera, the camera installer automatically enables `dtoverlay=imx477` in the Pi boot configuration. Set a camera to 2560×1440 in **Camera settings** when 2K/QHD recording is desired. The recorder keeps that source resolution with stream copy, while a 1080p monitor scales the same stream down locally.
 
-The centralized recorder uses FFmpeg stream copy and segmented files, so it does not transcode live video:
+The Compose management service automatically starts an FFmpeg stream-copy recorder for each online camera enabled in **NVR settings**. Recordings are stored persistently in the `cctv-data` volume under `/data/recordings`, and the NVR timeline indexes completed segments. With the default 15-minute segment length, the first completed segment appears after up to 15 minutes. The recorder does not transcode live video. To use the standalone recorder manually:
 
 ```bash
 python3 -m cctv.recording --camera-id cam-1 \

@@ -10,6 +10,7 @@ services:
       CCTV_BOOTSTRAP_TOKEN: ${CCTV_BOOTSTRAP_TOKEN:?set CCTV_BOOTSTRAP_TOKEN in .env}
       CCTV_PUBLIC_MEDIA_URL: ${CCTV_PUBLIC_MEDIA_URL:?set CCTV_PUBLIC_MEDIA_URL in .env}
       CCTV_PUBLIC_WEBRTC_URL: ${CCTV_PUBLIC_WEBRTC_URL:?set CCTV_PUBLIC_WEBRTC_URL in .env}
+      CCTV_RECORDINGS_DIR: /data/recordings
     volumes:
       - cctv-data:/data
     depends_on:

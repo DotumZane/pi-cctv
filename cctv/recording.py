@@ -4,11 +4,17 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import subprocess
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .store import Store
 
 
 @dataclass(frozen=True)
@@ -107,6 +113,93 @@ def run(config: RecorderConfig, cleanup_interval: int = 300) -> None:
             continue
         print(f"Recorder for {config.camera_id} exited with {return_code}; restarting", flush=True)
         time.sleep(3)
+
+
+class RecorderSupervisor:
+    """Keep one stream-copy recorder running for each enabled online camera."""
+
+    def __init__(self, store: Store, output_dir: Path, stream_url_template: str = "rtsp://media:8554/{camera_id}", poll_seconds: int = 5) -> None:
+        self.store = store
+        self.output_dir = output_dir
+        self.stream_url_template = stream_url_template
+        self.poll_seconds = poll_seconds
+        self._stop = threading.Event()
+        self._processes: dict[str, tuple[subprocess.Popen, tuple[int, int, int], str]] = {}
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        if not shutil.which("ffmpeg"):
+            print("FFmpeg is missing; NVR recording is disabled", flush=True)
+            return
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self._thread = threading.Thread(target=self._run, name="cctv-recorder-supervisor", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread:
+            self._thread.join(timeout=10)
+
+    def _settings(self) -> dict:
+        try:
+            return json.loads((self.output_dir / "nvr-settings.json").read_text())
+        except (OSError, ValueError, TypeError):
+            return {}
+
+    def _stop_recorder(self, camera_id: str) -> None:
+        recorder = self._processes.pop(camera_id, None)
+        if not recorder:
+            return
+        process = recorder[0]
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=8)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+
+    def _run(self) -> None:
+        last_cleanup = 0.0
+        while not self._stop.is_set():
+            try:
+                settings = self._settings()
+                retention = int(settings.get("retention_hours", 24))
+                segment_seconds = int(settings.get("segment_seconds", 900))
+                storage_limit_gb = int(settings.get("storage_limit_gb", 500))
+                recording_enabled = settings.get("recording_enabled", True)
+                per_camera = settings.get("camera_recording", {})
+                today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                desired: dict[str, tuple[int, int, int]] = {}
+                if recording_enabled:
+                    for camera in self.store.devices("camera"):
+                        if camera.get("status") == "online" and per_camera.get(camera["id"], True):
+                            desired[camera["id"]] = (segment_seconds, retention, storage_limit_gb)
+
+                for camera_id, (process, current_settings, started_day) in list(self._processes.items()):
+                    if camera_id not in desired or current_settings != desired[camera_id] or started_day != today or process.poll() is not None:
+                        self._stop_recorder(camera_id)
+
+                for camera_id, config_key in desired.items():
+                    if camera_id in self._processes:
+                        continue
+                    camera_dir = self.output_dir / camera_id
+                    (camera_dir / today).mkdir(parents=True, exist_ok=True)
+                    config = RecorderConfig(camera_id, self.stream_url_template.format(camera_id=camera_id), self.output_dir, *config_key)
+                    process = subprocess.Popen(config.ffmpeg_command(), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    self._processes[camera_id] = (process, config_key, today)
+                    print(f"NVR recorder started for {camera_id} (pid {process.pid})", flush=True)
+
+                if time.monotonic() - last_cleanup >= 300:
+                    prune_recordings(self.output_dir, retention)
+                    enforce_storage_limit(self.output_dir, storage_limit_gb)
+                    last_cleanup = time.monotonic()
+            except Exception as exc:
+                print(f"NVR recorder supervisor error: {exc}", flush=True)
+            self._stop.wait(self.poll_seconds)
+
+        for camera_id in list(self._processes):
+            self._stop_recorder(camera_id)
 
 
 def main() -> None:
