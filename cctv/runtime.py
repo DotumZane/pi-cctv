@@ -251,8 +251,18 @@ class DeviceRuntime:
                     print(f"Unable to upload diagnostics: {exc}", flush=True)
             elif command_name == "update":
                 print("Remote update requested", flush=True)
-                subprocess.Popen([sys.executable, "-m", "cctv.update"], start_new_session=True)
-                raise SystemExit("remote update requested")
+                update_unit = f"pi-cctv-agent-update-{os.getpid()}"
+                result = subprocess.run([
+                    "systemd-run", "--quiet", "--no-block", "--collect",
+                    f"--unit={update_unit}", "--working-directory=/opt/pi-cctv",
+                    sys.executable, "-m", "cctv.update",
+                ], check=False, capture_output=True, text=True, timeout=10)
+                if result.returncode:
+                    detail = result.stderr.strip() or result.stdout.strip()
+                    print(f"Unable to start update service: {detail or result.returncode}", flush=True)
+                    continue
+                print(f"Update service started as {update_unit}", flush=True)
+                raise SystemExit(0)
             elif command_name == "restart_agent":
                 self.stop_media()
                 self.last_command = None
