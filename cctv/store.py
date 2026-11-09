@@ -228,11 +228,19 @@ class Store:
             return None
         token = secrets.token_urlsafe(32)
         device_id = pending_id
-        self.db.execute(
-            """INSERT INTO devices(id, kind, name, location, ip_address, status, last_seen, metadata, token_hash)
-               VALUES(?, ?, ?, ?, ?, 'online', ?, ?, ?)""",
-            (device_id, kind, name, location, pending["ip_address"], now(), pending["metadata"], self.hash_token(token)),
-        )
+        existing = self.device(device_id)
+        if existing:
+            self.db.execute(
+                """UPDATE devices SET kind=?, name=?, location=?, ip_address=?, status='online',
+                   last_seen=?, token_hash=? WHERE id=?""",
+                (kind, name, location, pending["ip_address"], now(), self.hash_token(token), device_id),
+            )
+        else:
+            self.db.execute(
+                """INSERT INTO devices(id, kind, name, location, ip_address, status, last_seen, metadata, token_hash)
+                   VALUES(?, ?, ?, ?, ?, 'online', ?, ?, ?)""",
+                (device_id, kind, name, location, pending["ip_address"], now(), pending["metadata"], self.hash_token(token)),
+            )
         self.db.execute("UPDATE pending_devices SET adopted_device_id=?, issued_token=? WHERE id=?", (device_id, token, pending_id))
         self.db.commit()
         return self.device(device_id), token  # type: ignore[return-value]

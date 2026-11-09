@@ -211,7 +211,10 @@ class DeviceRuntime:
                 self.last_command = None
                 raise SystemExit("agent restart requested")
             elif command_name == "reboot":
-                subprocess.Popen(["sudo", "reboot"])
+                print("Reboot requested; stopping media and asking systemd to reboot", flush=True)
+                self.stop_media()
+                subprocess.run(["systemctl", "reboot"], check=True, timeout=10)
+                raise SystemExit("reboot requested")
 
     def desired_command(self) -> list[str]:
         if self.role == "camera":
