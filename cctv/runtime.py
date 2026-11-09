@@ -9,6 +9,7 @@ import subprocess
 import time
 import urllib.request
 import os
+import signal
 import shutil
 import socket
 import platform
@@ -248,17 +249,23 @@ class DeviceRuntime:
         self.last_command = signature
         for command in commands:
             print(f"Starting media pipeline for {self.device_id}", flush=True)
-            self.processes.append(self.process_factory(command, shell=True))
+            self.processes.append(self.process_factory(command, shell=True, start_new_session=True))
 
     def stop_media(self) -> None:
         for process in self.processes:
             if process.poll() is not None:
                 continue
-            process.terminate()
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                process.terminate()
             try:
                 process.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                process.kill()
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    process.kill()
                 process.wait(timeout=5)
         self.processes = []
 

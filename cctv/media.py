@@ -26,22 +26,25 @@ class CameraMedia:
     saturation: float = 1.0
 
     def pipeline(self) -> str:
-        transforms = []
-        if self.flip_horizontal and self.flip_vertical:
-            transforms.append("videoflip method=rotate-180")
-        elif self.flip_horizontal:
-            transforms.append("videoflip method=flip-horiz")
-        elif self.flip_vertical:
-            transforms.append("videoflip method=flip-vert")
-        if self.brightness or self.contrast != 1.0 or self.saturation != 1.0:
-            transforms.append(f"videobalance brightness={self.brightness} contrast={self.contrast} saturation={self.saturation}")
-        transform_chain = (" ! " + " ! ".join(transforms)) if transforms else ""
+        camera_args = [
+            "rpicam-vid", "-n", "-t", "0", "--inline", "--codec", "h264",
+            "--width", str(self.width), "--height", str(self.height),
+            "--framerate", str(self.fps), "--bitrate", str(self.bitrate),
+        ]
+        if self.flip_horizontal:
+            camera_args.append("--hflip")
+        if self.flip_vertical:
+            camera_args.append("--vflip")
+        if self.brightness:
+            camera_args.extend(["--brightness", str(self.brightness)])
+        if self.contrast != 1.0:
+            camera_args.extend(["--contrast", str(self.contrast)])
+        if self.saturation != 1.0:
+            camera_args.extend(["--saturation", str(self.saturation)])
+        camera_command = " ".join(quote(arg) for arg in camera_args)
         return (
-            "gst-launch-1.0 -e "
-            f"libcamerasrc ! video/x-raw,width={self.width},height={self.height},framerate={self.fps}/1 ! "
-            f"queue max-size-buffers=2 leaky=downstream ! videoconvert{transform_chain} ! "
-            f"v4l2h264enc extra-controls=controls,video_bitrate={self.bitrate} ! "
-            "h264parse config-interval=1 ! "
+            f"{camera_command} | gst-launch-1.0 -e "
+            "fdsrc fd=0 do-timestamp=true ! h264parse config-interval=1 ! "
             f"rtspclientsink location={quote(self.publish_url)} protocols=tcp latency=0"
         )
 

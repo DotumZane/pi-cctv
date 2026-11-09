@@ -25,9 +25,9 @@ class RuntimeTests(unittest.TestCase):
         process_factory.assert_called_once()
         command = process_factory.call_args.args[0]
         self.assertIsInstance(command, str)
-        self.assertTrue(command.startswith("gst-launch-1.0 -e libcamerasrc"))
+        self.assertTrue(command.startswith("rpicam-vid -n -t 0 --inline --codec h264"))
         self.assertIn("rtspclientsink location=rtsp://media:8554/cam-7", command)
-        self.assertEqual(process_factory.call_args.kwargs, {"shell": True})
+        self.assertEqual(process_factory.call_args.kwargs, {"shell": True, "start_new_session": True})
 
     def test_quad_assignment_builds_four_stream_layout(self):
         command = command_for_assignment({"layout": "2x2", "cameras": '["a", "b", "c", "d"]'}, "media")
