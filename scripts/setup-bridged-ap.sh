@@ -95,17 +95,22 @@ remove_ap() {
   else
     rm -f "$HOSTAPD_DEFAULTS"
   fi
-  if [[ -n "${PORT_UUID:-}" ]]; then
+  local new_port_profile=false
+  if [[ -n "${PORT_UUID:-}" ]] || nmcli -t -f NAME connection show | grep -Fxq "$BRIDGE_PORT"; then
+    new_port_profile=true
     if nmcli -t -f UUID connection show | grep -Fxq "$PORT_UUID"; then
       nmcli connection down uuid "$PORT_UUID" >/dev/null 2>&1 || true
       nmcli connection delete uuid "$PORT_UUID" >/dev/null
+    elif nmcli -t -f NAME connection show | grep -Fxq "$BRIDGE_PORT"; then
+      nmcli connection down "$BRIDGE_PORT" >/dev/null 2>&1 || true
+      nmcli connection delete "$BRIDGE_PORT" >/dev/null
     fi
   fi
   if nmcli -t -f NAME connection show | grep -Fxq "$BRIDGE"; then
     nmcli connection down "$BRIDGE" >/dev/null 2>&1 || true
     nmcli connection delete "$BRIDGE" >/dev/null
   fi
-  if [[ -n "${PORT_UUID:-}" ]]; then
+  if [[ "$new_port_profile" == true ]]; then
     nmcli connection modify uuid "$ETH_UUID" connection.autoconnect "$OLD_AUTOCONNECT"
   else
     # Older installs modified the original Ethernet profile in place.
@@ -122,6 +127,17 @@ remove_ap() {
   rm -f "$STATE_DIR/state" "$STATE_DIR/hostapd-defaults"
   rmdir "$STATE_DIR" 2>/dev/null || true
   echo "Removed the Pi CCTV setup AP and restored the previous Ethernet profile."
+}
+
+rollback_failed_apply() {
+  local exit_code=$?
+  [[ $exit_code -ne 0 && -f "$STATE_DIR/state" ]] || return 0
+  trap - EXIT
+  echo "Setup AP failed; restoring the previous Ethernet connection." >&2
+  if ! remove_ap; then
+    echo "Automatic rollback did not complete. Keep Ethernet connected and use the saved state in $STATE_DIR/state." >&2
+  fi
+  exit "$exit_code"
 }
 
 ap_is_healthy() {
@@ -199,6 +215,7 @@ printf 'ETH_UUID=%q\nOLD_MASTER=%q\nOLD_PORT_TYPE=%q\nOLD_IPV4=%q\nOLD_IPV6=%q\n
 chmod 0600 "$STATE_DIR/state"
 printf 'OLD_HOSTAPD_ENABLED=%q\n' "$OLD_HOSTAPD_ENABLED" >> "$STATE_DIR/state"
 printf 'PORT_UUID=\n' >> "$STATE_DIR/state"
+trap rollback_failed_apply EXIT
 if [[ -f "$HOSTAPD_DEFAULTS" ]]; then
   cp -p "$HOSTAPD_DEFAULTS" "$STATE_DIR/hostapd-defaults"
 fi
