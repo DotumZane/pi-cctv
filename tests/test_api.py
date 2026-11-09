@@ -1,6 +1,8 @@
 import json
+import os
 import tempfile
 import threading
+import time
 import unittest
 from http.client import HTTPConnection
 from http.server import ThreadingHTTPServer
@@ -131,6 +133,8 @@ class ApiTests(unittest.TestCase):
         recording = Path(self.recordings.name) / "cam-01" / "2026-11-04" / "06-00-00.mkv"
         recording.parent.mkdir(parents=True)
         recording.write_bytes(b"test-video")
+        old_time = time.time() - 20
+        os.utime(recording, (old_time, old_time))
         status, index = self.call("GET", "/api/recordings?camera_id=cam-01")
         self.assertEqual(status, 200)
         self.assertEqual(index["recordings"][0]["path"], "cam-01/2026-11-04/06-00-00.mkv")

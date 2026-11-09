@@ -7,6 +7,9 @@ import json
 import os
 import re
 import secrets
+import shutil
+import subprocess
+import threading
 from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -26,6 +29,7 @@ DEFAULT_NVR_SETTINGS = {
     "storage_limit_gb": 500,
     "camera_recording": {},
 }
+PLAYBACK_CACHE_LOCK = threading.Lock()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -267,11 +271,13 @@ class Handler(BaseHTTPRequestHandler):
             recordings = (*root.glob("**/*.mkv"), *root.glob("**/*.mp4"))
             for recording in recordings:
                 relative = recording.relative_to(root)
+                if any(part.startswith(".") for part in relative.parts):
+                    continue
                 if camera_id and relative.parts[0] != camera_id:
                     continue
                 stat = recording.stat()
                 modified_at = datetime.fromtimestamp(stat.st_mtime, timezone.utc)
-                if recording.suffix == ".mp4" and datetime.now(timezone.utc) - modified_at < timedelta(seconds=10):
+                if datetime.now(timezone.utc) - modified_at < timedelta(seconds=10):
                     continue
                 start = None
                 try:
@@ -288,6 +294,33 @@ class Handler(BaseHTTPRequestHandler):
             if root not in requested.parents or not requested.is_file() or requested.suffix not in {".mkv", ".mp4"}:
                 self.send_json({"error": "recording not found"}, HTTPStatus.NOT_FOUND)
                 return
+            if requested.suffix == ".mkv" and parse_qs(parsed.query).get("format", [""])[0] == "mp4":
+                if not shutil.which("ffmpeg"):
+                    self.send_json({"error": "MP4 playback conversion is unavailable"}, HTTPStatus.NOT_IMPLEMENTED)
+                    return
+                relative = requested.relative_to(root)
+                cache = root / ".playback-cache" / relative.parent / f"{relative.stem}.mp4"
+                cache.parent.mkdir(parents=True, exist_ok=True)
+                with PLAYBACK_CACHE_LOCK:
+                    if not cache.is_file() or cache.stat().st_mtime < requested.stat().st_mtime:
+                        temporary = cache.with_name(f"{cache.stem}.{os.getpid()}.tmp.mp4")
+                        try:
+                            result = subprocess.run(
+                                ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(requested), "-map", "0:v:0", "-c", "copy", "-movflags", "+faststart", str(temporary)],
+                                capture_output=True,
+                                text=True,
+                                timeout=180,
+                            )
+                        except (OSError, subprocess.TimeoutExpired):
+                            temporary.unlink(missing_ok=True)
+                            self.send_json({"error": "Unable to prepare this recording for browser playback"}, HTTPStatus.UNPROCESSABLE_ENTITY)
+                            return
+                        if result.returncode != 0 or not temporary.is_file():
+                            temporary.unlink(missing_ok=True)
+                            self.send_json({"error": "Unable to prepare this recording for browser playback"}, HTTPStatus.UNPROCESSABLE_ENTITY)
+                            return
+                        temporary.replace(cache)
+                requested = cache
             file_size = requested.stat().st_size
             byte_range = self.headers.get("Range", "")
             start, end = 0, file_size - 1
