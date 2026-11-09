@@ -314,6 +314,22 @@ class DeviceRuntime:
             return
         print("Server-managed setup Wi-Fi profile applied.", flush=True)
 
+    def sync_setup_ap_once_per_boot(self) -> None:
+        """Avoid reconfiguring networking when systemd restarts the agent."""
+        safe_device_id = re.sub(r"[^A-Za-z0-9_.-]", "_", self.device_id)[:96] or "device"
+        marker_dir = Path("/run/pi-cctv")
+        marker = marker_dir / f"setup-ap-synced-{safe_device_id}"
+        try:
+            marker_dir.mkdir(mode=0o755, parents=True, exist_ok=True)
+            with marker.open("x", encoding="ascii") as marker_file:
+                marker_file.write("checked\n")
+        except FileExistsError:
+            return
+        except OSError as exc:
+            print(f"Unable to record setup Wi-Fi boot check; skipping network changes: {exc}", flush=True)
+            return
+        self.sync_setup_ap()
+
     def poll_commands(self) -> None:
         commands = http_json(f"{self.server}/api/devices/{self.device_id}/commands", token=self.token).get("commands", [])
         for command in commands:
@@ -473,7 +489,7 @@ class DeviceRuntime:
         self.activate_monitor_display()
         try:
             try:
-                self.sync_setup_ap()
+                self.sync_setup_ap_once_per_boot()
             except Exception as exc:
                 print(f"Unable to apply setup Wi-Fi profile at startup: {exc}", flush=True)
             while True:
