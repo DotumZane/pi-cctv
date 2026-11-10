@@ -14,6 +14,23 @@ class MediaTests(unittest.TestCase):
         self.assertNotIn("rtph264pay", command)
         self.assertNotIn("v4l2h264enc", command)
 
+    def test_camera_controls_are_applied_to_rpicam_encoder(self):
+        command = CameraMedia(
+            "rtsp://media:8554/cam-1", sharpness=0.5, exposure_mode="manual",
+            shutter_us=8000, gain=2.5, exposure_profile="sport",
+            white_balance="daylight", keyframe_interval=45, h264_profile="high",
+        ).pipeline()
+        for option in (
+            "--sharpness 0.5", "--shutter 8000", "--gain 2.5", "--exposure sport",
+            "--awb daylight", "--intra 45", "--profile high",
+        ):
+            self.assertIn(option, command)
+
+    def test_automatic_exposure_does_not_force_manual_shutter_or_gain(self):
+        command = CameraMedia("rtsp://media:8554/cam-1", exposure_mode="auto").pipeline()
+        self.assertNotIn("--shutter", command)
+        self.assertNotIn("--gain", command)
+
     def test_monitor_pipeline_uses_hardware_decode(self):
         command = MonitorMedia("rtsp://media:8554/cam-1").pipeline()
         self.assertIn("v4l2h264dec", command)

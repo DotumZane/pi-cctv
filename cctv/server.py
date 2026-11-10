@@ -1149,25 +1149,29 @@ class Handler(BaseHTTPRequestHandler):
             camera = self.store.device(camera_id)
             settings = self.body()
             allowed = {
-                "width", "height", "fps", "bitrate", "exposure_mode", "shutter_us", "iso",
+                "width", "height", "fps", "bitrate", "exposure_mode", "shutter_us", "gain", "exposure_profile",
                 "white_balance", "brightness", "contrast", "saturation", "sharpness",
-                "flip_horizontal", "flip_vertical", "low_light_mode", "keyframe_interval",
-                "bitrate_mode", "live_profile", "recording_profile",
+                "flip_horizontal", "flip_vertical", "keyframe_interval", "live_profile",
             }
             if not camera or camera["kind"] != "camera":
                 self.send_json({"error": "camera not found"}, HTTPStatus.NOT_FOUND)
             else:
                 invalid = any(key not in allowed for key in settings)
-                integer_ranges = {"width": (320, 7680), "height": (240, 4320), "fps": (1, 120), "bitrate": (100_000, 100_000_000), "shutter_us": (100, 2_000_000), "iso": (0, 3200), "keyframe_interval": (1, 300)}
+                integer_ranges = {"width": (320, 7680), "height": (240, 4320), "fps": (1, 120), "bitrate": (100_000, 100_000_000), "shutter_us": (100, 2_000_000), "keyframe_interval": (1, 300)}
                 for key, (minimum, maximum) in integer_ranges.items():
                     if key in settings and (isinstance(settings[key], bool) or not isinstance(settings[key], int) or not minimum <= settings[key] <= maximum):
                         invalid = True
                 for key in ("brightness", "contrast", "saturation", "sharpness"):
                     if key in settings and (isinstance(settings[key], bool) or not isinstance(settings[key], (int, float)) or not -1.0 <= float(settings[key]) <= 2.0):
                         invalid = True
+                if "gain" in settings and (
+                    isinstance(settings["gain"], bool) or not isinstance(settings["gain"], (int, float))
+                    or not 1.0 <= float(settings["gain"]) <= 16.0
+                ):
+                    invalid = True
                 for key, values in {
                     "exposure_mode": {"auto", "manual"}, "white_balance": {"auto", "daylight", "cloudy", "tungsten", "fluorescent"},
-                    "low_light_mode": {"off", "on"}, "bitrate_mode": {"cbr", "vbr"}, "live_profile": {"baseline", "main", "high"}, "recording_profile": {"baseline", "main", "high"},
+                    "exposure_profile": {"normal", "sport", "long"}, "live_profile": {"baseline", "main", "high"},
                 }.items():
                     if key in settings and settings[key] not in values:
                         invalid = True

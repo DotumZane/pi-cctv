@@ -25,6 +25,14 @@ class CameraMedia:
     brightness: float = 0.0
     contrast: float = 1.0
     saturation: float = 1.0
+    sharpness: float = 1.0
+    exposure_mode: str = "auto"
+    shutter_us: int = 10_000
+    gain: float = 1.0
+    exposure_profile: str = "normal"
+    white_balance: str = "auto"
+    keyframe_interval: int = 30
+    h264_profile: str = "main"
 
     def pipeline(self) -> str:
         camera_args = [
@@ -42,6 +50,18 @@ class CameraMedia:
             camera_args.extend(["--contrast", str(self.contrast)])
         if self.saturation != 1.0:
             camera_args.extend(["--saturation", str(self.saturation)])
+        if self.sharpness != 1.0:
+            camera_args.extend(["--sharpness", str(self.sharpness)])
+        if self.exposure_mode == "manual":
+            camera_args.extend(["--shutter", str(self.shutter_us), "--gain", str(self.gain)])
+        if self.exposure_profile != "normal":
+            camera_args.extend(["--exposure", self.exposure_profile])
+        if self.white_balance != "auto":
+            camera_args.extend(["--awb", self.white_balance])
+        if self.keyframe_interval:
+            camera_args.extend(["--intra", str(self.keyframe_interval)])
+        if self.h264_profile != "main":
+            camera_args.extend(["--profile", self.h264_profile])
         camera_command = " ".join(quote(arg) for arg in camera_args)
         return (
             f"{camera_command} | gst-launch-1.0 -e "

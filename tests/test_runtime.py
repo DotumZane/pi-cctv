@@ -48,6 +48,17 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("rtspclientsink location=rtsp://media:8554/cam-7", command)
         self.assertEqual(process_factory.call_args.kwargs, {"shell": True, "start_new_session": True})
 
+    def test_camera_runtime_applies_saved_encoder_controls(self):
+        runtime = DeviceRuntime("camera", "cam-7", "Camera", "", "http://server", "media")
+        metadata = '{"settings":{"sharpness":0.5,"exposure_mode":"manual","shutter_us":8000,"gain":2.5,"exposure_profile":"sport","white_balance":"daylight","keyframe_interval":45,"live_profile":"high"}}'
+        with patch("cctv.runtime.http_json", return_value={"metadata": metadata}):
+            command = runtime.desired_command()[0]
+        for option in (
+            "--sharpness 0.5", "--shutter 8000", "--gain 2.5", "--exposure sport",
+            "--awb daylight", "--intra 45", "--profile high",
+        ):
+            self.assertIn(option, command)
+
     def test_quad_assignment_builds_four_stream_layout(self):
         command = command_for_assignment({"layout": "2x2", "cameras": '["a", "b", "c", "d"]'}, "media")
         self.assertIn("rtsp://media:8554/a", command)

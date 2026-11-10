@@ -133,10 +133,20 @@ class ApiTests(unittest.TestCase):
 
     def test_camera_settings_are_persisted(self):
         self.call("POST", "/api/devices", {"id": "cam-1", "kind": "camera", "name": "Saw 1"})
-        status, device = self.call("PUT", "/api/cameras/cam-1/settings", {"width": 1280, "height": 720, "fps": 30, "bitrate": 4000000})
+        status, device = self.call("PUT", "/api/cameras/cam-1/settings", {
+            "width": 1280, "height": 720, "fps": 30, "bitrate": 4000000,
+            "gain": 2.5, "exposure_profile": "sport", "live_profile": "high",
+        })
         self.assertEqual(status, 200)
         metadata = json.loads(device["metadata"])
         self.assertEqual(metadata["settings"]["width"], 1280)
+        self.assertEqual(metadata["settings"]["gain"], 2.5)
+        self.assertEqual(metadata["settings"]["exposure_profile"], "sport")
+
+    def test_camera_settings_reject_options_that_the_encoder_does_not_support(self):
+        self.call("POST", "/api/devices", {"id": "cam-1", "kind": "camera", "name": "Saw 1"})
+        status, _ = self.call("PUT", "/api/cameras/cam-1/settings", {"bitrate_mode": "vbr"})
+        self.assertEqual(status, 400)
 
     def test_heartbeat_metrics_do_not_overwrite_camera_settings(self):
         self.call("POST", "/api/devices", {"id": "cam-1", "kind": "camera", "name": "Saw 1"})
@@ -189,7 +199,7 @@ class ApiTests(unittest.TestCase):
         status, health = self.call("GET", "/api/health")
         self.assertEqual(status, 200)
         self.assertEqual(health["version"], "0.1.10")
-        self.assertEqual(health["latest_agent_version"], "0.1.9")
+        self.assertEqual(health["latest_agent_version"], "0.1.10")
 
     def test_recording_download_requires_read_authorization(self):
         recording = Path(self.recordings.name) / "cam-01" / "2026-11-04" / "06-00-00.mp4"
@@ -516,7 +526,7 @@ class ApiTests(unittest.TestCase):
         admin_token = self.httpd.store.create_session("admin")
 
         self.assertEqual(self.call("POST", "/api/devices/cam-1/commands", {"command": "update_os"}, admin_token)[0], 409)
-        self.call("POST", "/api/devices/cam-1/heartbeat", {"agent_version": "0.1.9"}, device_token)
+        self.call("POST", "/api/devices/cam-1/heartbeat", {"agent_version": "0.1.10"}, device_token)
         self.assertEqual(self.call("POST", "/api/devices/cam-1/commands", {"command": "update_os"}, admin_token)[0], 202)
         self.assertEqual(self.call("POST", "/api/devices/cam-1/commands", {"command": "update_os"}, admin_token)[0], 409)
         self.assertEqual(self.call("POST", "/api/devices/cam-1/maintenance/os-update", {

@@ -419,12 +419,24 @@ class DeviceRuntime:
                 settings = json.loads(device.get("metadata", "{}")).get("settings", {})
             except json.JSONDecodeError:
                 settings = {}
+            legacy_iso = settings.get("iso", 0)
+            gain = settings.get("gain")
+            if gain is None:
+                gain = max(1.0, float(legacy_iso) / 100.0) if legacy_iso else 1.0
+            exposure_profile = settings.get("exposure_profile")
+            if exposure_profile is None:
+                exposure_profile = "long" if settings.get("low_light_mode") == "on" else "normal"
             return [CameraMedia(
                 f"rtsp://{self.media_server}:8554/{self.device_id}",
                 width=settings.get("width", 1920), height=settings.get("height", 1080),
                 fps=settings.get("fps", 30), bitrate=settings.get("bitrate", 6_000_000),
                 flip_horizontal=settings.get("flip_horizontal", False), flip_vertical=settings.get("flip_vertical", False),
                 brightness=settings.get("brightness", 0.0), contrast=settings.get("contrast", 1.0), saturation=settings.get("saturation", 1.0),
+                sharpness=settings.get("sharpness", 1.0), exposure_mode=settings.get("exposure_mode", "auto"),
+                shutter_us=settings.get("shutter_us", 10_000), gain=gain, exposure_profile=exposure_profile,
+                white_balance=settings.get("white_balance", "auto"),
+                keyframe_interval=settings.get("keyframe_interval", settings.get("fps", 30)),
+                h264_profile=settings.get("live_profile", "main"),
             ).pipeline()]
         device = http_json(f"{self.server}/api/devices/{self.device_id}", token=self.token)
         try:
