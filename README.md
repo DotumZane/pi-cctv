@@ -52,6 +52,8 @@ python3 -m cctv.reset_password --username Admin
 
 Use `--db /path/to/cctv.db` when the server uses a non-default database path. Resetting a password signs out all existing sessions for that user.
 
+Administrators can rename an adopted Pi and update its location from **Devices → Open → Device identity**. This changes only the dashboard name and location; the stable device ID, role, and agent settings remain intact.
+
 For adoption-based provisioning, `CCTV_BOOTSTRAP_TOKEN` is used only to place generic Pis into the pending-device list. It is not an administrator token. After adoption, the Pi receives a device-specific credential and the dashboard-selected role. Set `CCTV_PUBLIC_MEDIA_URL` and `CCTV_PUBLIC_WEBRTC_URL` to URLs reachable from the administrator's browser for live previews.
 
 The V1 management API uses Python's standard library and SQLite. Docker installs FFmpeg in the management container for NVR recording:

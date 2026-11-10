@@ -348,6 +348,15 @@ class Store:
         return self.device(device_id)  # type: ignore[return-value]
 
     @serialized
+    def update_profile(self, device_id: str, name: str, location: str) -> dict[str, Any] | None:
+        cursor = self.db.execute(
+            "UPDATE devices SET name=?, location=? WHERE id=?",
+            (name, location, device_id),
+        )
+        self.db.commit()
+        return self.device(device_id) if cursor.rowcount else None
+
+    @serialized
     def heartbeat(self, device_id: str, ip_address: str = "", metadata: str = "{}") -> dict[str, Any] | None:
         existing = self.device(device_id)
         try:

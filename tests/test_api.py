@@ -56,6 +56,26 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(assignment["layout"], "single")
         self.assertEqual(json.loads(assignment["cameras"]), ["cam-1"])
 
+    def test_admin_can_update_device_name_and_location_without_overwriting_metadata(self):
+        self.httpd.store.create_user("admin", "correct-horse-battery")
+        token = self.httpd.store.create_session("admin")
+        self.call("POST", "/api/devices", {
+            "id": "cam-1", "kind": "camera", "name": "Camera 1", "metadata": json.dumps({"agent_version": "0.1.8"})
+        }, token)
+        status, _ = self.call("PUT", "/api/devices/cam-1/profile", {"name": "Saw Entrance", "location": "North line"})
+        self.assertEqual(status, 401)
+        status, device = self.call("PUT", "/api/devices/cam-1/profile", {"name": "Saw Entrance", "location": "North line"}, token)
+        self.assertEqual(status, 200)
+        self.assertEqual(device["name"], "Saw Entrance")
+        self.assertEqual(device["location"], "North line")
+        self.assertEqual(device["kind"], "camera")
+        self.assertEqual(json.loads(device["metadata"])["agent_version"], "0.1.8")
+        self.assertEqual(self.httpd.store.audit_entries(1)[0]["action"], "device.profile.update")
+        status, _ = self.call("PUT", "/api/devices/cam-1/profile", {"name": "  ", "location": "North line"}, token)
+        self.assertEqual(status, 400)
+        status, _ = self.call("PUT", "/api/devices/missing/profile", {"name": "Missing", "location": ""}, token)
+        self.assertEqual(status, 404)
+
     def test_rejects_unknown_camera(self):
         self.call("POST", "/api/devices", {"id": "mon-1", "kind": "monitor", "name": "Control"})
         status, _ = self.call("PUT", "/api/monitors/mon-1/assignment", {"layout": "single", "cameras": ["missing"]})

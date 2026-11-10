@@ -1044,6 +1044,33 @@ class Handler(BaseHTTPRequestHandler):
             self.store.audit("nvr.settings.update", "nvr", self.client_address[0], saved)
             self.send_json({"settings": saved})
             return
+        if parsed.path.startswith("/api/devices/") and parsed.path.endswith("/profile"):
+            if not self.require_auth():
+                return
+            device_id = unquote(parsed.path[len("/api/devices/"):-len("/profile")].strip("/"))
+            device = self.store.device(device_id)
+            if not device:
+                self.send_json({"error": "device not found"}, HTTPStatus.NOT_FOUND)
+                return
+            payload = self.body()
+            name = payload.get("name")
+            location = payload.get("location", "")
+            name = name.strip() if isinstance(name, str) else ""
+            location = location.strip() if isinstance(location, str) else None
+            valid_name = 1 <= len(name) <= 80
+            valid_location = isinstance(location, str) and len(location) <= 120
+            if (not valid_name or not valid_location
+                    or any(ord(char) < 32 or ord(char) == 127 for char in name)
+                    or any(ord(char) < 32 or ord(char) == 127 for char in location or "")):
+                self.send_json({"error": "device name must be 1–80 characters and location must be 0–120 characters without control characters"}, HTTPStatus.BAD_REQUEST)
+                return
+            updated = self.store.update_profile(device_id, name, location)
+            if not updated:
+                self.send_json({"error": "device not found"}, HTTPStatus.NOT_FOUND)
+                return
+            self.store.audit("device.profile.update", device_id, self.client_address[0], {"name": name, "location": location})
+            self.send_json(updated)
+            return
         if parsed.path.startswith("/api/cameras/") and parsed.path.endswith("/settings"):
             if not self.require_auth():
                 return
