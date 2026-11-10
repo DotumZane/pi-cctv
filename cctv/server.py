@@ -1400,7 +1400,7 @@ class Handler(BaseHTTPRequestHandler):
             allowed = {
                 "scale_mode", "orientation", "width", "height", "refresh_hz", "auto_resolution", "kiosk",
                 "prevent_blanking", "show_camera_name", "show_timestamp", "reconnect_seconds",
-                "watchdog_seconds", "fallback_camera", "schedule_enabled", "schedules",
+                "fallback_camera", "schedule_enabled", "schedules",
             }
             camera_ids = {device["id"] for device in self.store.devices("camera")}
             valid_enums = (
@@ -1409,7 +1409,7 @@ class Handler(BaseHTTPRequestHandler):
                 and (not settings.get("fallback_camera") or settings.get("fallback_camera") in camera_ids)
             )
             valid_types = all(
-                (key in {"width", "height", "refresh_hz", "reconnect_seconds", "watchdog_seconds"}
+                (key in {"width", "height", "refresh_hz", "reconnect_seconds"}
                  and isinstance(value, int) and not isinstance(value, bool) and value > 0)
                 or (key == "orientation" and isinstance(value, int) and not isinstance(value, bool) and value in (0, 90, 180, 270))
                 or (key in {"kiosk", "prevent_blanking", "show_camera_name", "show_timestamp", "schedule_enabled"} and isinstance(value, bool))
@@ -1419,10 +1419,8 @@ class Handler(BaseHTTPRequestHandler):
                 for key, value in settings.items()
             )
             reconnect_seconds = settings.get("reconnect_seconds", 5)
-            watchdog_seconds = settings.get("watchdog_seconds", 30)
             valid_ranges = (
                 isinstance(reconnect_seconds, int) and not isinstance(reconnect_seconds, bool) and 1 <= reconnect_seconds <= 120
-                and isinstance(watchdog_seconds, int) and not isinstance(watchdog_seconds, bool) and 5 <= watchdog_seconds <= 600
             )
             schedules = settings.get("schedules", [])
             valid_schedules = (

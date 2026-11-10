@@ -119,24 +119,35 @@ class RuntimeTests(unittest.TestCase):
             runtime.reconcile_media()
         process_factory.assert_not_called()
 
-    def test_monitor_watchdog_restarts_live_pipeline_without_preview_progress(self):
+    def test_stalled_dashboard_preview_does_not_restart_live_monitor_pipeline(self):
         process = Mock()
         process.poll.return_value = None
-        new_process = Mock()
-        new_process.poll.return_value = None
-        process_factory = Mock(return_value=new_process)
+        process_factory = Mock()
         runtime = DeviceRuntime("monitor", "mon-1", "Monitor", "", "http://server", "media", process_factory=process_factory)
         runtime.last_command = ("pipeline",)
         runtime.processes = [process]
-        runtime.last_preview_progress_at = 1
-        runtime.monitor_watchdog_seconds = 5
         runtime.next_media_retry = 999
         with patch.object(runtime, "desired_command", return_value=["pipeline"]), \
                 patch.object(runtime, "stop_media") as stop_media, \
-                patch("cctv.runtime.time.monotonic", return_value=10):
+                patch("cctv.runtime.time.monotonic", return_value=10_000):
             runtime.reconcile_media()
-        stop_media.assert_called_once_with()
-        process_factory.assert_called_once()
+        stop_media.assert_not_called()
+        process_factory.assert_not_called()
+
+    def test_exited_monitor_pipeline_is_restarted_after_retry_delay(self):
+        process = Mock()
+        process.poll.return_value = 1
+        replacement = Mock()
+        replacement.poll.return_value = None
+        process_factory = Mock(return_value=replacement)
+        runtime = DeviceRuntime("monitor", "mon-1", "Monitor", "", "http://server", "media", process_factory=process_factory)
+        runtime.last_command = ("pipeline",)
+        runtime.processes = [process]
+        runtime.next_media_retry = 10
+        with patch.object(runtime, "desired_command", return_value=["pipeline"]), \
+                patch("cctv.runtime.time.monotonic", return_value=11):
+            runtime.reconcile_media()
+        process_factory.assert_called_once_with("pipeline", shell=True, start_new_session=True)
 
     def test_monitor_schedule_selects_weekday_route_and_handles_overnight(self):
         assignment = {"layout": "single", "cameras": '["cam-default"]', "outputs": "[]"}

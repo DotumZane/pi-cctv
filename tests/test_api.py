@@ -132,7 +132,7 @@ class ApiTests(unittest.TestCase):
             "scale_mode": "fill", "orientation": 0, "width": 1920, "height": 1080,
             "refresh_hz": 60, "auto_resolution": True, "kiosk": True, "prevent_blanking": True,
             "show_camera_name": True, "show_timestamp": True,
-            "reconnect_seconds": 5, "watchdog_seconds": 30,
+            "reconnect_seconds": 5,
             "fallback_camera": "", "schedule_enabled": True,
             "schedules": [{"day": 0, "start": "09:00", "end": "17:00", "layout": "single", "cameras": ["cam-1"]}],
         })

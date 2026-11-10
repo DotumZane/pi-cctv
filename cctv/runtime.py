@@ -279,9 +279,7 @@ class DeviceRuntime:
         self.last_command: tuple[str, ...] | None = None
         self.last_preview_mtime_ns = 0
         self.media_retry_seconds = 5
-        self.monitor_watchdog_seconds = 30
         self.next_media_retry = 0.0
-        self.last_preview_progress_at = 0.0
         self.last_preview_seen_mtime_ns = 0
         self.monitor_blanking_value: bool | None = None
 
@@ -617,10 +615,6 @@ class DeviceRuntime:
             self.media_retry_seconds = max(1, min(120, int(settings.get("reconnect_seconds", 5))))
         except (TypeError, ValueError):
             self.media_retry_seconds = 5
-        try:
-            self.monitor_watchdog_seconds = max(5, min(600, int(settings.get("watchdog_seconds", 30))))
-        except (TypeError, ValueError):
-            self.monitor_watchdog_seconds = 30
         self.apply_monitor_blanking(settings.get("prevent_blanking", True))
         settings["camera_name"] = self.name
         settings["preview_id"] = self.device_id
@@ -660,14 +654,11 @@ class DeviceRuntime:
     def reconcile_media(self) -> None:
         commands = self.desired_command()
         signature = tuple(commands)
-        watchdog_stalled = False
         if signature == self.last_command and self.processes and all(process.poll() is None for process in self.processes):
-            if (self.role != "monitor" or not commands
-                    or time.monotonic() - self.last_preview_progress_at < self.monitor_watchdog_seconds):
-                return
-            watchdog_stalled = True
-            print(f"Monitor preview stalled for {self.monitor_watchdog_seconds}s; restarting media pipeline", flush=True)
-        if signature == self.last_command and not watchdog_stalled and time.monotonic() < self.next_media_retry:
+            # A missing dashboard JPEG is not proof that the monitor's display
+            # stream has failed. Restarting here blanks the physical display.
+            return
+        if signature == self.last_command and time.monotonic() < self.next_media_retry:
             return
         self.stop_media()
         self.last_command = signature
@@ -676,7 +667,6 @@ class DeviceRuntime:
             self.processes.append(self.process_factory(command, shell=True, start_new_session=True))
         if commands:
             self.next_media_retry = time.monotonic() + self.media_retry_seconds
-            self.last_preview_progress_at = time.monotonic()
             self.last_preview_seen_mtime_ns = 0
 
     def apply_monitor_blanking(self, prevent_blanking: bool) -> None:
@@ -742,7 +732,6 @@ class DeviceRuntime:
             if len(image) > 1_500_000 or not image.startswith(b"\xff\xd8") or not image.endswith(b"\xff\xd9"):
                 return
             self.last_preview_seen_mtime_ns = mtime_ns
-            self.last_preview_progress_at = time.monotonic()
             request = urllib.request.Request(
                 f"{self.server}/api/devices/{urllib.parse.quote(self.device_id, safe='')}/preview",
                 data=image, method="POST",
