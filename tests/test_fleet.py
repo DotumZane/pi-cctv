@@ -2,6 +2,7 @@ import json
 import threading
 import time
 import unittest
+from datetime import datetime, timezone
 
 from cctv.fleet import FleetAgentUpdateCoordinator, FleetOsUpdateCoordinator
 from cctv.store import Store
@@ -37,6 +38,39 @@ class FleetOsUpdateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "No online Pis"):
             self.store.delete_device("cam-1")
             self.coordinator.start()
+
+    def test_os_update_waits_for_completion_after_pi_temporarily_goes_offline(self):
+        coordinator = FleetOsUpdateCoordinator(self.store, "0.1.4", poll_seconds=0.01, timeout_seconds=1)
+        coordinator._launch = lambda: None
+        job, _ = coordinator.start()
+        command = self.store.queue_command("cam-1", "update_os")
+        self.store.set_maintenance_run("cam-1", "os_update", "running", {})
+        job["targets"][0].update({
+            "command_id": command["id"],
+            "queued_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "state": "running",
+        })
+        coordinator._save(job)
+
+        original_devices = self.store.devices
+        self.store.devices = lambda kind=None: [
+            {**device, "status": "offline"} for device in original_devices(kind)
+        ]
+        timer = threading.Timer(
+            0.03,
+            lambda: self.store.set_maintenance_run("cam-1", "os_update", "succeeded", {"reboot_required": False}),
+        )
+        try:
+            timer.start()
+            coordinator._run_job()
+            result = coordinator.status()
+            self.assertEqual(result["state"], "succeeded")
+            self.assertEqual(result["targets"][0]["state"], "succeeded")
+            self.assertEqual(result["completed"], 1)
+        finally:
+            timer.cancel()
+            self.store.devices = original_devices
+            coordinator.stop()
 
     def test_agent_update_worker_queues_and_waits_for_latest_agent_heartbeat(self):
         coordinator = FleetAgentUpdateCoordinator(self.store, "0.1.5", poll_seconds=0.01, timeout_seconds=1)

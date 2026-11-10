@@ -133,10 +133,19 @@ class FleetOsUpdateCoordinator:
                 return
             target = targets[index]
             device = self.store.device(target["device_id"])
-            online_ids = {row["id"] for row in self.store.devices() if row.get("status") == "online"}
-            if not device or target["device_id"] not in online_ids:
+            if not device:
                 target["state"] = "skipped"
-                target["message"] = "Pi is offline"
+                target["message"] = "Pi is no longer registered"
+                job["current_index"] += 1
+                self._save(job)
+                continue
+            maintenance = self.store.maintenance_run(target["device_id"], "os_update")
+            command = self._command_for_target(target, job)
+            online_ids = {row["id"] for row in self.store.devices() if row.get("status") == "online"}
+            update_in_progress = bool(command) or bool(maintenance and maintenance.get("state") in {"queued", "running"})
+            if target["device_id"] not in online_ids and not update_in_progress:
+                target["state"] = "skipped"
+                target["message"] = "Pi went offline before its update started"
                 job["current_index"] += 1
                 self._save(job)
                 continue
@@ -144,15 +153,13 @@ class FleetOsUpdateCoordinator:
                 metadata = json.loads(device.get("metadata", "{}"))
             except (TypeError, ValueError):
                 metadata = {}
-            if metadata.get("agent_version") != self.agent_version:
+            if target["device_id"] in online_ids and metadata.get("agent_version") != self.agent_version and not update_in_progress:
                 target["state"] = "skipped"
                 target["message"] = "CCTV agent version changed; update the agent first"
                 job["current_index"] += 1
                 self._save(job)
                 continue
 
-            maintenance = self.store.maintenance_run(target["device_id"], "os_update")
-            command = self._command_for_target(target, job)
             if not command and (not maintenance or maintenance.get("state") not in {"queued", "running"}):
                 target["state"] = "queueing"
                 target["queued_at"] = _now()
