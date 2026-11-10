@@ -63,6 +63,25 @@ class RuntimeTests(unittest.TestCase):
             runtime.reconcile_media()
         process_factory.assert_not_called()
 
+    def test_monitor_watchdog_restarts_live_pipeline_without_preview_progress(self):
+        process = Mock()
+        process.poll.return_value = None
+        new_process = Mock()
+        new_process.poll.return_value = None
+        process_factory = Mock(return_value=new_process)
+        runtime = DeviceRuntime("monitor", "mon-1", "Monitor", "", "http://server", "media", process_factory=process_factory)
+        runtime.last_command = ("pipeline",)
+        runtime.processes = [process]
+        runtime.last_preview_progress_at = 1
+        runtime.monitor_watchdog_seconds = 5
+        runtime.next_media_retry = 999
+        with patch.object(runtime, "desired_command", return_value=["pipeline"]), \
+                patch.object(runtime, "stop_media") as stop_media, \
+                patch("cctv.runtime.time.monotonic", return_value=10):
+            runtime.reconcile_media()
+        stop_media.assert_called_once_with()
+        process_factory.assert_called_once()
+
     def test_monitor_activates_kiosk_virtual_terminal(self):
         runtime = DeviceRuntime("monitor", "mon-1", "Monitor", "", "http://server", "media")
         with patch("cctv.runtime.os.open", return_value=15) as open_tty, \
