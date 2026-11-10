@@ -71,9 +71,13 @@ class RuntimeTests(unittest.TestCase):
     def test_dashboard_can_request_setup_ap_sync(self):
         runtime = DeviceRuntime("camera", "cam-1", "Camera", "", "https://server", "media")
         with patch("cctv.runtime.http_json", return_value={"commands": [{"command": "sync_setup_ap"}]}), \
-                patch.object(runtime, "sync_setup_ap") as sync:
+                patch.object(runtime, "sync_setup_ap", return_value=(True, "Applied")) as sync, \
+                patch.object(runtime, "report_maintenance") as report:
             runtime.poll_commands()
         sync.assert_called_once_with()
+        self.assertEqual([call.args[:2] for call in report.call_args_list], [
+            ("setup-ap-sync", "running"), ("setup-ap-sync", "succeeded"),
+        ])
 
     def test_pi_os_update_runs_in_detached_systemd_unit(self):
         runtime = DeviceRuntime("camera", "cam-1", "Camera", "", "https://server", "media")

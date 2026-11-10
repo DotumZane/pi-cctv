@@ -60,7 +60,7 @@ class ApiTests(unittest.TestCase):
         self.httpd.store.create_user("admin", "correct-horse-battery")
         token = self.httpd.store.create_session("admin")
         self.call("POST", "/api/devices", {
-            "id": "cam-1", "kind": "camera", "name": "Camera 1", "metadata": json.dumps({"agent_version": "0.1.8"})
+            "id": "cam-1", "kind": "camera", "name": "Camera 1", "metadata": json.dumps({"agent_version": "0.1.9"})
         }, token)
         status, _ = self.call("PUT", "/api/devices/cam-1/profile", {"name": "Saw Entrance", "location": "North line"})
         self.assertEqual(status, 401)
@@ -69,7 +69,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(device["name"], "Saw Entrance")
         self.assertEqual(device["location"], "North line")
         self.assertEqual(device["kind"], "camera")
-        self.assertEqual(json.loads(device["metadata"])["agent_version"], "0.1.8")
+        self.assertEqual(json.loads(device["metadata"])["agent_version"], "0.1.9")
         self.assertEqual(self.httpd.store.audit_entries(1)[0]["action"], "device.profile.update")
         status, _ = self.call("PUT", "/api/devices/cam-1/profile", {"name": "  ", "location": "North line"}, token)
         self.assertEqual(status, 400)
@@ -418,9 +418,32 @@ class ApiTests(unittest.TestCase):
 
     def test_setup_ap_sync_command_is_allowlisted(self):
         self.call("POST", "/api/devices", {"id": "cam-1", "kind": "camera", "name": "Saw 1"})
-        status, command = self.call("POST", "/api/devices/cam-1/commands", {"command": "sync_setup_ap"})
+        device_token = "device-setup-token"
+        self.httpd.store.db.execute(
+            "UPDATE devices SET token_hash=? WHERE id=?",
+            (self.httpd.store.hash_token(device_token), "cam-1"),
+        )
+        self.httpd.store.db.commit()
+        self.httpd.store.create_user("admin", "correct-horse", "admin")
+        admin_token = self.httpd.store.create_session("admin")
+        status, command = self.call("POST", "/api/devices/cam-1/commands", {"command": "sync_setup_ap"}, admin_token)
         self.assertEqual(status, 202)
         self.assertEqual(command["command"], "sync_setup_ap")
+        self.assertEqual(self.httpd.store.maintenance_run("cam-1", "setup_ap_sync")["state"], "queued")
+        self.assertEqual(self.call("POST", "/api/devices/cam-1/maintenance/setup-ap-sync", {
+            "state": "running", "details": {"message": "Checking profile"},
+        })[0], 401)
+        status, _ = self.call("POST", "/api/devices/cam-1/maintenance/setup-ap-sync", {
+            "state": "running", "details": {"message": "Checking profile"},
+        }, device_token)
+        self.assertEqual(status, 200)
+        status, result = self.call("GET", "/api/devices/cam-1/maintenance/setup-ap-sync", token=admin_token)
+        self.assertEqual(status, 200)
+        self.assertEqual(result["maintenance"]["state"], "running")
+        self.assertEqual(result["maintenance"]["details"]["message"], "Checking profile")
+        self.assertEqual(self.call("POST", "/api/devices/cam-1/maintenance/setup-ap-sync", {
+            "state": "mystery", "details": {},
+        }, device_token)[0], 400)
 
     def test_pi_os_update_is_allowlisted_and_reports_authenticated_status(self):
         self.httpd.store.register({"id": "cam-1", "kind": "camera", "name": "Saw 1"})
@@ -434,7 +457,7 @@ class ApiTests(unittest.TestCase):
         admin_token = self.httpd.store.create_session("admin")
 
         self.assertEqual(self.call("POST", "/api/devices/cam-1/commands", {"command": "update_os"}, admin_token)[0], 409)
-        self.call("POST", "/api/devices/cam-1/heartbeat", {"agent_version": "0.1.8"}, device_token)
+        self.call("POST", "/api/devices/cam-1/heartbeat", {"agent_version": "0.1.9"}, device_token)
         self.assertEqual(self.call("POST", "/api/devices/cam-1/commands", {"command": "update_os"}, admin_token)[0], 202)
         self.assertEqual(self.call("POST", "/api/devices/cam-1/commands", {"command": "update_os"}, admin_token)[0], 409)
         self.assertEqual(self.call("POST", "/api/devices/cam-1/maintenance/os-update", {

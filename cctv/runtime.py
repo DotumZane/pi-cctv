@@ -238,10 +238,20 @@ class DeviceRuntime:
             payload["displays"] = connected_displays()
         http_json(f"{self.server}/api/devices/{self.device_id}/heartbeat", "POST", payload, self.token)
 
-    def sync_setup_ap(self) -> None:
+    def report_maintenance(self, task: str, state: str, message: str) -> None:
+        """Report an allowlisted maintenance task result to the dashboard."""
+        try:
+            http_json(
+                f"{self.server}/api/devices/{urllib.parse.quote(self.device_id, safe='')}/maintenance/{task}",
+                "POST", {"state": state, "details": {"message": message[:1000]}}, self.token,
+            )
+        except Exception as exc:
+            print(f"Unable to report {task} status to dashboard: {exc}", flush=True)
+
+    def sync_setup_ap(self) -> tuple[bool, str]:
         """Fetch and apply the server-managed bridged Wi-Fi profile at startup."""
         if not self.server.startswith("https://"):
-            return
+            return False, "Setup Wi-Fi profile sync requires an HTTPS server connection."
         try:
             profile = http_json(
                 f"{self.server}/api/devices/{urllib.parse.quote(self.device_id, safe='')}/setup-ap",
@@ -249,10 +259,10 @@ class DeviceRuntime:
             )
         except Exception as exc:
             print(f"Unable to sync setup Wi-Fi profile: {exc}", flush=True)
-            return
+            return False, f"Could not download the server profile: {exc}"
         if not isinstance(profile, dict):
             print("Server returned an invalid setup Wi-Fi profile; it was not applied.", flush=True)
-            return
+            return False, "The server returned an invalid setup Wi-Fi profile."
 
         state_dir = Path("/var/lib/pi-cctv/setup-ap")
         profile_path = Path("/var/lib/pi-cctv/setup-ap-profile.json")
@@ -263,9 +273,9 @@ class DeviceRuntime:
                 result = subprocess.run(["bash", str(helper), "--remove"], capture_output=True, text=True, timeout=90)
                 if result.returncode:
                     print("Unable to remove disabled setup Wi-Fi profile; check NetworkManager logs.", flush=True)
-                    return
+                    return False, "Could not remove the setup Wi-Fi bridge. Check NetworkManager and hostapd."
             profile_path.unlink(missing_ok=True)
-            return
+            return True, "The server profile is disabled; the Pi setup access point is removed."
 
         ssid = profile.get("ssid")
         password = profile.get("password")
@@ -276,7 +286,7 @@ class DeviceRuntime:
                 or not isinstance(country, str) or len(country) != 2
                 or not isinstance(channel, int) or not 1 <= channel <= 11):
             print("Server returned an invalid setup Wi-Fi profile; it was not applied.", flush=True)
-            return
+            return False, "The server returned invalid Wi-Fi settings; nothing was applied."
 
         serialized = json.dumps(profile, sort_keys=True, separators=(",", ":")) + "\n"
         try:
@@ -286,7 +296,7 @@ class DeviceRuntime:
                     capture_output=True, text=True, timeout=15,
                 )
                 if health.returncode == 0:
-                    return
+                    return True, "The saved setup Wi-Fi profile is already active and healthy."
                 print("Saved setup Wi-Fi profile is present but its bridge is unhealthy; repairing it.", flush=True)
         except OSError:
             pass
@@ -310,15 +320,16 @@ class DeviceRuntime:
             result = subprocess.run(["bash", str(helper), "--remove"], capture_output=True, text=True, timeout=90)
             if result.returncode:
                 print("Unable to replace previous setup Wi-Fi profile; check NetworkManager logs.", flush=True)
-                return
+                return False, "Could not remove the previous setup Wi-Fi profile. Check NetworkManager and hostapd."
         result = subprocess.run(
             ["bash", str(helper), "--apply", "--config-file", str(profile_path), "--noninteractive"],
             capture_output=True, text=True, timeout=180,
         )
         if result.returncode:
             print("Setup Wi-Fi profile could not be applied; inspect hostapd and NetworkManager service logs.", flush=True)
-            return
+            return False, "Setup Wi-Fi could not be applied. Check NetworkManager and hostapd."
         print("Server-managed setup Wi-Fi profile applied.", flush=True)
+        return True, "Server-managed setup Wi-Fi profile applied successfully."
 
     def sync_setup_ap_once_per_boot(self) -> None:
         """Avoid reconfiguring networking when systemd restarts the agent."""
@@ -334,7 +345,9 @@ class DeviceRuntime:
         except OSError as exc:
             print(f"Unable to record setup Wi-Fi boot check; skipping network changes: {exc}", flush=True)
             return
-        self.sync_setup_ap()
+        self.report_maintenance("setup-ap-sync", "running", "Checking the saved server profile.")
+        ok, message = self.sync_setup_ap()
+        self.report_maintenance("setup-ap-sync", "succeeded" if ok else "failed", message)
 
     def poll_commands(self) -> None:
         commands = http_json(f"{self.server}/api/devices/{self.device_id}/commands", token=self.token).get("commands", [])
@@ -345,7 +358,9 @@ class DeviceRuntime:
                 self.last_command = None
             elif command_name == "sync_setup_ap":
                 print("Dashboard requested setup Wi-Fi synchronization", flush=True)
-                self.sync_setup_ap()
+                self.report_maintenance("setup-ap-sync", "running", "Checking the saved server profile.")
+                ok, message = self.sync_setup_ap()
+                self.report_maintenance("setup-ap-sync", "succeeded" if ok else "failed", message)
             elif command_name == "diagnostics":
                 report = collect_diagnostics(self.role, self.device_id, self.media_server, self.processes)
                 try:
