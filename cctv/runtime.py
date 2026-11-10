@@ -26,6 +26,12 @@ from typing import Callable
 from .media import CameraMedia, MonitorMedia, quad_pipeline
 
 
+def _command_output(result: subprocess.CompletedProcess, limit: int = 700) -> str:
+    """Return a short diagnostic tail from a fixed local helper command."""
+    output = "\n".join(part.strip() for part in (result.stdout, result.stderr) if part and part.strip())
+    return output[-limit:]
+
+
 def system_metrics() -> dict[str, float | int]:
     metrics: dict[str, float | int] = {}
     try:
@@ -362,8 +368,9 @@ class DeviceRuntime:
             if state_path.exists():
                 result = subprocess.run(["bash", str(helper), "--remove"], capture_output=True, text=True, timeout=90)
                 if result.returncode:
-                    print("Unable to remove disabled setup Wi-Fi profile; check NetworkManager logs.", flush=True)
-                    return False, "Could not remove the setup Wi-Fi bridge. Check NetworkManager and hostapd."
+                    detail = _command_output(result)
+                    print(f"Unable to remove disabled setup Wi-Fi profile: {detail or result.returncode}", flush=True)
+                    return False, f"Could not remove the setup Wi-Fi bridge (exit {result.returncode}). {detail}".strip()
             profile_path.unlink(missing_ok=True)
             return True, "The server profile is disabled; the Pi setup access point is removed."
 
@@ -409,15 +416,17 @@ class DeviceRuntime:
         if state_path.exists():
             result = subprocess.run(["bash", str(helper), "--remove"], capture_output=True, text=True, timeout=90)
             if result.returncode:
-                print("Unable to replace previous setup Wi-Fi profile; check NetworkManager logs.", flush=True)
-                return False, "Could not remove the previous setup Wi-Fi profile. Check NetworkManager and hostapd."
+                detail = _command_output(result)
+                print(f"Unable to replace previous setup Wi-Fi profile: {detail or result.returncode}", flush=True)
+                return False, f"Could not remove the previous setup Wi-Fi profile (exit {result.returncode}). {detail}".strip()
         result = subprocess.run(
             ["bash", str(helper), "--apply", "--config-file", str(profile_path), "--noninteractive"],
             capture_output=True, text=True, timeout=180,
         )
         if result.returncode:
-            print("Setup Wi-Fi profile could not be applied; inspect hostapd and NetworkManager service logs.", flush=True)
-            return False, "Setup Wi-Fi could not be applied. Check NetworkManager and hostapd."
+            detail = _command_output(result)
+            print(f"Setup Wi-Fi profile could not be applied: {detail or result.returncode}", flush=True)
+            return False, f"Setup Wi-Fi could not be applied (exit {result.returncode}). {detail}".strip()
         print("Server-managed setup Wi-Fi profile applied.", flush=True)
         return True, "Server-managed setup Wi-Fi profile applied successfully."
 
