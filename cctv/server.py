@@ -1531,7 +1531,7 @@ def main() -> None:
         for key in (
             "store", "admin_token", "read_token", "recordings_dir", "previews_dir",
             "bootstrap_token", "public_media_url", "public_webrtc_url", "recorder_supervisor",
-            "setup_ap_enabled", "tls_enabled",
+            "tls_enabled",
             "tls_ca_cert", "host_update_dir", "started_monotonic",
             "fleet_os_updater",
             "fleet_agent_updater",
