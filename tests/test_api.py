@@ -149,10 +149,25 @@ class ApiTests(unittest.TestCase):
 
     def test_device_delete_removes_device_and_assignment(self):
         self.call("POST", "/api/devices", {"id": "mon-1", "kind": "monitor", "name": "Control"})
+        self.httpd.store.set_assignment("mon-1", "single", ["cam-1"])
         status, result = self.call("DELETE", "/api/devices/mon-1")
         self.assertEqual(status, 200)
         self.assertEqual(result["deleted"], "mon-1")
         self.assertEqual(self.call("GET", "/api/devices/mon-1")[0], 404)
+        self.assertEqual(self.httpd.store.all_assignments(), [])
+
+    def test_deleting_camera_clears_it_from_monitor_routes(self):
+        self.call("POST", "/api/devices", {"id": "cam-1", "kind": "camera", "name": "Camera"})
+        self.call("POST", "/api/devices", {"id": "mon-1", "kind": "monitor", "name": "Monitor"})
+        self.httpd.store.set_assignment("mon-1", "single", ["cam-1"], [{"cameras": ["cam-1"]}])
+
+        status, result = self.call("DELETE", "/api/devices/cam-1")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(result["deleted"], "cam-1")
+        assignment = self.httpd.store.assignment("mon-1")
+        self.assertEqual(json.loads(assignment["cameras"]), [])
+        self.assertEqual(json.loads(assignment["outputs"]), [{"cameras": []}])
 
     def test_recording_index_and_safe_download(self):
         recording = Path(self.recordings.name) / "cam-01" / "2026-11-04" / "06-00-00.mkv"

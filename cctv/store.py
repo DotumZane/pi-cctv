@@ -295,6 +295,24 @@ class Store:
 
     @serialized
     def delete_device(self, device_id: str) -> bool:
+        self.db.execute("DELETE FROM assignments WHERE monitor_id = ?", (device_id,))
+        assignments = self.db.execute("SELECT monitor_id, layout, cameras, outputs FROM assignments").fetchall()
+        for assignment in assignments:
+            try:
+                cameras = json.loads(assignment["cameras"] or "[]")
+                outputs = json.loads(assignment["outputs"] or "[]")
+            except (json.JSONDecodeError, TypeError):
+                continue
+            updated_cameras = [camera for camera in cameras if camera != device_id] if isinstance(cameras, list) else []
+            if isinstance(outputs, list):
+                for output in outputs:
+                    if isinstance(output, dict) and isinstance(output.get("cameras"), list):
+                        output["cameras"] = [camera for camera in output["cameras"] if camera != device_id]
+            if updated_cameras != cameras or outputs != json.loads(assignment["outputs"] or "[]"):
+                self.db.execute(
+                    "UPDATE assignments SET cameras = ?, outputs = ?, updated_at = ? WHERE monitor_id = ?",
+                    (json.dumps(updated_cameras), json.dumps(outputs), now(), assignment["monitor_id"]),
+                )
         result = self.db.execute("DELETE FROM devices WHERE id = ?", (device_id,))
         self.db.commit()
         return result.rowcount > 0
