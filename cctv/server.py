@@ -474,6 +474,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"recordings": entries})
             return
         if parsed.path.startswith("/recordings/"):
+            if not self.require_read_auth():
+                return
             root = Path(getattr(self.server, "recordings_dir", "recordings")).resolve()
             requested = (root / unquote(parsed.path.removeprefix("/recordings/"))).resolve()
             if root not in requested.parents or not requested.is_file() or requested.suffix not in {".mkv", ".mp4"}:

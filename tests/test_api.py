@@ -60,7 +60,7 @@ class ApiTests(unittest.TestCase):
         self.httpd.store.create_user("admin", "correct-horse-battery")
         token = self.httpd.store.create_session("admin")
         self.call("POST", "/api/devices", {
-            "id": "cam-1", "kind": "camera", "name": "Camera 1", "metadata": json.dumps({"agent_version": "0.1.9"})
+            "id": "cam-1", "kind": "camera", "name": "Camera 1", "metadata": json.dumps({"agent_version": "0.1.10"})
         }, token)
         status, _ = self.call("PUT", "/api/devices/cam-1/profile", {"name": "Saw Entrance", "location": "North line"})
         self.assertEqual(status, 401)
@@ -69,7 +69,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(device["name"], "Saw Entrance")
         self.assertEqual(device["location"], "North line")
         self.assertEqual(device["kind"], "camera")
-        self.assertEqual(json.loads(device["metadata"])["agent_version"], "0.1.9")
+        self.assertEqual(json.loads(device["metadata"])["agent_version"], "0.1.10")
         self.assertEqual(self.httpd.store.audit_entries(1)[0]["action"], "device.profile.update")
         status, _ = self.call("PUT", "/api/devices/cam-1/profile", {"name": "  ", "location": "North line"}, token)
         self.assertEqual(status, 400)
@@ -178,6 +178,24 @@ class ApiTests(unittest.TestCase):
         status, index = self.call("GET", "/api/recordings?camera_id=cam-01")
         self.assertEqual(status, 200)
         self.assertEqual(index["recordings"][0]["path"], "cam-01/2026-11-04/06-00-00.mkv")
+
+    def test_recording_download_requires_read_authorization(self):
+        recording = Path(self.recordings.name) / "cam-01" / "2026-11-04" / "06-00-00.mp4"
+        recording.parent.mkdir(parents=True)
+        recording.write_bytes(b"test-video")
+        self.httpd.store.create_user("admin", "correct-horse", "admin")
+        self.assertEqual(self.call("GET", "/recordings/cam-01/2026-11-04/06-00-00.mp4")[0], 401)
+
+        self.httpd.read_token = "read-only-token"
+        connection = HTTPConnection(*self.base)
+        connection.request(
+            "GET", "/recordings/cam-01/2026-11-04/06-00-00.mp4",
+            headers={"Authorization": "Bearer read-only-token"},
+        )
+        response = connection.getresponse()
+        self.assertEqual(response.status, 200)
+        self.assertEqual(response.read(), b"test-video")
+        connection.close()
 
     def test_restart_media_command_is_queued_and_consumed(self):
         self.call("POST", "/api/devices", {"id": "cam-1", "kind": "camera", "name": "Saw 1"})
@@ -457,7 +475,7 @@ class ApiTests(unittest.TestCase):
         admin_token = self.httpd.store.create_session("admin")
 
         self.assertEqual(self.call("POST", "/api/devices/cam-1/commands", {"command": "update_os"}, admin_token)[0], 409)
-        self.call("POST", "/api/devices/cam-1/heartbeat", {"agent_version": "0.1.9"}, device_token)
+        self.call("POST", "/api/devices/cam-1/heartbeat", {"agent_version": "0.1.10"}, device_token)
         self.assertEqual(self.call("POST", "/api/devices/cam-1/commands", {"command": "update_os"}, admin_token)[0], 202)
         self.assertEqual(self.call("POST", "/api/devices/cam-1/commands", {"command": "update_os"}, admin_token)[0], 409)
         self.assertEqual(self.call("POST", "/api/devices/cam-1/maintenance/os-update", {
