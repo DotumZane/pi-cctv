@@ -223,6 +223,9 @@ class DeviceRuntime:
         self.processes: list[subprocess.Popen] = []
         self.last_command: tuple[str, ...] | None = None
         self.last_preview_mtime_ns = 0
+        self.media_retry_seconds = 5
+        self.next_media_retry = 0.0
+        self.monitor_blanking_value: bool | None = None
 
     def enroll(self) -> None:
         http_json(f"{self.server}/api/devices", "POST", {
@@ -443,6 +446,11 @@ class DeviceRuntime:
             settings = json.loads(device.get("metadata", "{}")).get("settings", {})
         except json.JSONDecodeError:
             settings = {}
+        try:
+            self.media_retry_seconds = max(1, min(120, int(settings.get("reconnect_seconds", 5))))
+        except (TypeError, ValueError):
+            self.media_retry_seconds = 5
+        self.apply_monitor_blanking(settings.get("prevent_blanking", True))
         settings["camera_name"] = self.name
         settings["preview_id"] = self.device_id
         assignment = http_json(f"{self.server}/api/monitors/{self.device_id}/assignment", token=self.token)
@@ -461,11 +469,36 @@ class DeviceRuntime:
         signature = tuple(commands)
         if signature == self.last_command and self.processes and all(process.poll() is None for process in self.processes):
             return
+        if signature == self.last_command and time.monotonic() < self.next_media_retry:
+            return
         self.stop_media()
         self.last_command = signature
         for command in commands:
             print(f"Starting media pipeline for {self.device_id}", flush=True)
             self.processes.append(self.process_factory(command, shell=True, start_new_session=True))
+        if commands:
+            self.next_media_retry = time.monotonic() + self.media_retry_seconds
+
+    def apply_monitor_blanking(self, prevent_blanking: bool) -> None:
+        """Apply the saved console blanking policy on the monitor's active VT."""
+        if self.role != "monitor":
+            return
+        prevent_blanking = bool(prevent_blanking)
+        if self.monitor_blanking_value is prevent_blanking:
+            return
+        self.monitor_blanking_value = prevent_blanking
+        terminal = None
+        try:
+            terminal = os.open("/dev/tty0", os.O_WRONLY | os.O_NOCTTY)
+            args = ["setterm", "--blank", "0" if prevent_blanking else "10"]
+            if prevent_blanking:
+                args.extend(["--powerdown", "0", "--powersave", "off"])
+            subprocess.run(args, check=True, stdout=terminal, stderr=subprocess.PIPE, timeout=5)
+        except (OSError, subprocess.SubprocessError) as exc:
+            print(f"Unable to apply monitor screen blanking setting: {exc}", flush=True)
+        finally:
+            if terminal is not None:
+                os.close(terminal)
 
     def stop_media(self) -> None:
         for process in self.processes:

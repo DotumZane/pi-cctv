@@ -24,6 +24,31 @@ class RuntimeTests(unittest.TestCase):
     def test_monitor_manual_resolution_remains_available(self):
         self.assertEqual(_monitor_output_size({"auto_resolution": False, "width": 1280, "height": 720}), (1280, 720))
 
+    def test_monitor_applies_saved_reconnect_and_blanking_settings(self):
+        runtime = DeviceRuntime("monitor", "mon-1", "Monitor", "", "http://server", "media")
+        device = {"metadata": '{"settings":{"reconnect_seconds":17,"prevent_blanking":false}}'}
+        assignment = {"layout": "single", "cameras": '["cam-1"]'}
+        with patch("cctv.runtime.http_json", side_effect=[device, assignment]), \
+                patch("cctv.runtime.connected_displays", return_value=[]), \
+                patch.object(runtime, "apply_monitor_blanking") as apply_blanking:
+            runtime.desired_command()
+        self.assertEqual(runtime.media_retry_seconds, 17)
+        apply_blanking.assert_called_once_with(False)
+
+    def test_monitor_retries_failed_pipeline_after_configured_delay(self):
+        process = Mock()
+        process.poll.return_value = 1
+        process_factory = Mock(return_value=process)
+        runtime = DeviceRuntime("monitor", "mon-1", "Monitor", "", "http://server", "media", process_factory=process_factory)
+        runtime.media_retry_seconds = 10
+        runtime.last_command = ("pipeline",)
+        runtime.processes = [process]
+        with patch.object(runtime, "desired_command", return_value=["pipeline"]), \
+                patch("cctv.runtime.time.monotonic", return_value=100):
+            runtime.next_media_retry = 105
+            runtime.reconcile_media()
+        process_factory.assert_not_called()
+
     def test_monitor_activates_kiosk_virtual_terminal(self):
         runtime = DeviceRuntime("monitor", "mon-1", "Monitor", "", "http://server", "media")
         with patch("cctv.runtime.os.open", return_value=15) as open_tty, \
