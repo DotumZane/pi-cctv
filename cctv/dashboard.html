@@ -312,4 +312,49 @@ document.querySelector('#stream-endpoints-form').addEventListener('submit',async
 document.querySelector('#system-settings-form').addEventListener('submit',async event=>{event.preventDefault();const notice=document.querySelector('#system-settings-notice');if(location.protocol!=='https:'){notice.textContent='Settings were not saved. Open the secure dashboard link below first.';return}notice.textContent='Saving profile…';const response=await api('/api/server/setup-ap',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:document.querySelector('#setup-ap-enabled').checked,ssid:document.querySelector('#setup-ap-ssid').value,country:document.querySelector('#setup-ap-country').value.toUpperCase(),channel:Number(document.querySelector('#setup-ap-channel').value),password:document.querySelector('#setup-ap-password').value})});const result=await response.json().catch(()=>({}));if(!response.ok){notice.textContent=result.error||'Profile save failed.';return}document.querySelector('#setup-ap-password').value='';notice.textContent='Saved · '+(result.enabled?'enabled':'disabled')+' · revision '+result.revision+' · use “Apply to online Pis” to sync now.';await loadSystemSettings()});
 async function applySetupProfile(){if(location.protocol!=='https:'){document.querySelector('#system-settings-notice').textContent='Open the secure dashboard link below before applying Wi-Fi settings.';return}const online=state.devices.filter(device=>device.status==='online');if(!online.length){alert('No online Pis are available. They will fetch the saved profile at their next reboot.');return}if(!confirm('Queue the current setup Wi-Fi profile for '+online.length+' online Pi(s)? Applying may briefly interrupt a Pi network connection; the helper will roll back if the wired LAN address is lost.'))return;const results=await Promise.all(online.map(async device=>({device,response:await api('/api/devices/'+encodeURIComponent(device.id)+'/commands',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command:'sync_setup_ap'})})})));const queued=results.filter(item=>item.response.ok).length;document.querySelector('#system-settings-notice').textContent='Wi-Fi sync queued for '+queued+' of '+online.length+' online Pi(s). Progress and completion are shown below.';await loadSetupApStatuses()}
 setInterval(()=>{if(document.querySelector('#view-system.active'))loadSetupApStatuses()},5000);
+const compactPhoneStyle=document.createElement('style');compactPhoneStyle.textContent=`
+@media(max-width:600px){
+ html,body{width:100%;height:100%;min-height:100%;overflow:hidden}
+ .app{display:flex!important;flex-direction:column!important;width:100%;height:100dvh;min-height:0;max-width:100vw}
+ .sidebar{position:fixed!important;inset:auto 0 0!important;z-index:30;display:block!important;width:100%;height:auto!important;padding:6px 8px calc(6px + env(safe-area-inset-bottom))!important;border:0;border-top:1px solid var(--line);overflow:hidden!important;background:var(--panel)}
+ .sidebar .brand,.sidebar-foot{display:none!important}
+ .nav{display:flex!important;flex-wrap:nowrap!important;gap:4px;width:100%;max-width:100%;overflow-x:auto!important;overflow-y:hidden!important;overscroll-behavior-x:contain;-webkit-overflow-scrolling:touch;scrollbar-width:none}
+ .nav::-webkit-scrollbar{display:none}
+ .nav button{flex:0 0 auto!important;min-width:max-content!important;max-width:none!important;padding:9px 10px!important;font-size:12px!important;white-space:nowrap!important;text-align:center!important}
+ .main{display:flex;flex:1 1 auto;width:100%;height:100%;min-height:0;overflow:hidden}
+ .topbar{flex:0 0 auto;min-height:54px;padding:9px 12px!important;align-items:center!important;gap:8px}
+ .topbar h1{font-size:17px!important;line-height:1.2}
+ .top-actions{margin-left:auto;flex-wrap:nowrap!important}
+ #refresh-status{display:none!important}
+ .content{flex:1 1 auto;width:100%;min-height:0;overflow:auto!important;padding:10px 9px calc(82px + env(safe-area-inset-bottom))!important;-webkit-overflow-scrolling:touch}
+ .view,.view>*,.view>.panel>*,.panel,.panel-head,.grid,.table-wrap,#assignments,#settings{min-width:0;max-width:100%}
+ .panel{padding:11px;margin-top:10px}
+ .panel-head{flex-direction:column!important;align-items:stretch!important;gap:8px}
+ .panel-head input{width:100%!important;max-width:none!important}
+ .stats,.grid.two,.device-detail,.device-grid{grid-template-columns:minmax(0,1fr)!important}
+ .stat{padding:12px}
+ .value{font-size:22px}
+ .table-wrap,.routing-table-wrap,.timeline-wrap,.workspace-timeline-scroll{max-width:100%;overflow:auto!important;overscroll-behavior-x:contain;-webkit-overflow-scrolling:touch}
+ .table-wrap table,.routing-table{min-width:680px}
+ .live-grid{grid-template-columns:minmax(0,1fr)!important;max-height:none;overflow:visible;padding:0}
+ #assignments>div,#settings>div,.routing-layout{display:grid!important;grid-template-columns:minmax(0,1fr)!important;gap:10px!important;min-height:0!important;width:100%;max-width:100%}
+ #assignments>div>.panel,#settings>div>.panel,.routing-layout>.panel{grid-column:1;width:100%;min-width:0;max-width:100%;max-height:none!important;overflow:visible!important}
+ #view-routing .routing-monitor-list{max-height:160px;overflow:auto!important}
+ #view-routing .routing-monitor-editor select,#view-routing .routing-monitor-editor input,#settings select,#settings input{width:100%;min-width:0;max-width:100%}
+ #view-routing .routing-monitor-editor .grid.two,#settings .camera-editor .grid.two{grid-template-columns:minmax(0,1fr)!important}
+ #view-routing .routing-monitor-editor .slots{grid-template-columns:minmax(0,1fr)!important}
+ .camera-preview{grid-template-columns:minmax(0,1fr)!important}
+ .camera-preview video,.camera-preview img{width:100%;height:auto;max-width:100%}
+ .device-detail{width:100%;padding-bottom:14px}
+ .device-detail .panel{min-width:0;padding:11px}
+ .device-detail dl{grid-template-columns:minmax(0,1fr)!important;gap:4px;padding:10px}
+ .device-detail dd,.command-output,.device-detail pre{max-width:100%;overflow-wrap:anywhere}
+ .command-output,.device-detail pre{overflow:auto}
+ .action-row,.diag-actions,.system-settings-actions,.device-hero-actions{display:flex;flex-wrap:wrap;gap:7px}
+ .recording-row{align-items:stretch;flex-direction:column}
+ .nvr-global-settings,.nvr-filters,.system-settings-form{display:grid;grid-template-columns:minmax(0,1fr)!important;gap:9px}
+ .nvr-global-settings>*,.nvr-filters>*,.system-settings-form input,.system-settings-form select{width:100%;min-width:0;max-width:100%}
+}
+`;
+document.head.appendChild(compactPhoneStyle);
 </script>
