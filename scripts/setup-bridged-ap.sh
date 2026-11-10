@@ -279,9 +279,11 @@ nmcli connection add type bridge con-name "$BRIDGE" ifname br0 \
   ipv4.method auto ipv6.method auto >/dev/null
 BRIDGE_UUID=$(nmcli -g connection.uuid connection show "$BRIDGE")
 nmcli connection modify uuid "$ETH_UUID" connection.autoconnect no
+# NetworkManager bridge-port profiles do not support IPv4/IPv6 settings; the
+# bridge master owns the LAN address and DHCP configuration.
 nmcli connection add type ethernet con-name "$BRIDGE_PORT" ifname eth0 \
   connection.master "$BRIDGE_UUID" connection.port-type bridge \
-  ipv4.method disabled ipv6.method disabled connection.autoconnect yes >/dev/null
+  connection.autoconnect yes >/dev/null
 PORT_UUID=$(nmcli -g connection.uuid connection show "$BRIDGE_PORT")
 printf 'PORT_UUID=%q\n' "$PORT_UUID" >> "$STATE_DIR/state"
 nmcli connection reload
