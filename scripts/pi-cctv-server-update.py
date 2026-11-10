@@ -116,7 +116,14 @@ def main() -> int:
             if compose_code:
                 raise RuntimeError("Docker Compose could not build and start the management service")
             final_code, final = run(["git", "rev-parse", "--short=12", "HEAD"], repo, timeout=30)
-            status.update(state="succeeded", finished_at=now(), updated_commit=final if not final_code else target[:12])
+            final_commit = final if not final_code else target[:12]
+            status.update(
+                state="succeeded",
+                finished_at=now(),
+                updated_commit=final_commit,
+                current_commit=final_commit,
+                available_commit=final_commit,
+            )
             write_status(status)
             return 0
         except Exception as exc:  # status is the dashboard's recovery detail
