@@ -1,7 +1,9 @@
 import json
+import threading
+import time
 import unittest
 
-from cctv.fleet import FleetOsUpdateCoordinator
+from cctv.fleet import FleetAgentUpdateCoordinator, FleetOsUpdateCoordinator
 from cctv.store import Store
 
 
@@ -35,6 +37,38 @@ class FleetOsUpdateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "No online Pis"):
             self.store.delete_device("cam-1")
             self.coordinator.start()
+
+    def test_agent_update_worker_queues_and_waits_for_latest_agent_heartbeat(self):
+        coordinator = FleetAgentUpdateCoordinator(self.store, "0.1.5", poll_seconds=0.01, timeout_seconds=1)
+        queue_command = self.store.queue_command
+
+        def queue_and_report(device_id, command):
+            queued = queue_command(device_id, command)
+            self.store.heartbeat(device_id, "192.0.2.1", json.dumps({"agent_version": "0.1.5"}))
+            return queued
+
+        self.store.queue_command = queue_and_report
+        try:
+            coordinator.start()
+            deadline = time.monotonic() + 2
+            while coordinator.status()["state"] in {"queued", "running"} and time.monotonic() < deadline:
+                time.sleep(0.01)
+            job = coordinator.status()
+            self.assertEqual(job["state"], "succeeded")
+            self.assertEqual(job["completed"], 1)
+            self.assertEqual(self.store.command_history("cam-1", 1)[0]["command"], "update")
+        finally:
+            coordinator.stop()
+
+    def test_fleet_agent_and_os_jobs_share_the_same_serial_execution_lock(self):
+        lock = threading.Lock()
+        agent = FleetAgentUpdateCoordinator(self.store, "0.1.5", execution_lock=lock)
+        operating_system = FleetOsUpdateCoordinator(self.store, "0.1.4", execution_lock=lock)
+        try:
+            self.assertIs(agent.execution_lock, operating_system.execution_lock)
+        finally:
+            agent.stop()
+            operating_system.stop()
 
 
 if __name__ == "__main__":

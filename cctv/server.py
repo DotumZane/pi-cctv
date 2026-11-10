@@ -20,7 +20,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
 from . import __agent_version__, __version__
-from .fleet import FleetOsUpdateCoordinator
+from .fleet import FleetAgentUpdateCoordinator, FleetOsUpdateCoordinator
 from .recording import RecorderSupervisor
 from .store import Store
 
@@ -270,6 +270,11 @@ class Handler(BaseHTTPRequestHandler):
             if not self.require_auth():
                 return
             self.send_json({"job": self.server.fleet_os_updater.status()})  # type: ignore[attr-defined]
+            return
+        if parsed.path == "/api/fleet/agent-update":
+            if not self.require_auth():
+                return
+            self.send_json({"job": self.server.fleet_agent_updater.status()})  # type: ignore[attr-defined]
             return
         if parsed.path == "/api/server/health":
             if not self.require_read_auth():
@@ -574,6 +579,19 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json({"error": str(exc)}, HTTPStatus.CONFLICT)
                     return
                 self.store.audit("fleet.os_update.request", job["id"], self.client_address[0], {
+                    "targets": [target["device_id"] for target in job["targets"]],
+                })
+                self.send_json({"job": job, "started": started}, HTTPStatus.ACCEPTED)
+                return
+            if parsed.path == "/api/fleet/agent-update":
+                if not self.require_auth():
+                    return
+                try:
+                    job, started = self.server.fleet_agent_updater.start()  # type: ignore[attr-defined]
+                except ValueError as exc:
+                    self.send_json({"error": str(exc)}, HTTPStatus.CONFLICT)
+                    return
+                self.store.audit("fleet.agent_update.request", job["id"], self.client_address[0], {
                     "targets": [target["device_id"] for target in job["targets"]],
                 })
                 self.send_json({"job": job, "started": started}, HTTPStatus.ACCEPTED)
@@ -1289,7 +1307,9 @@ def main() -> None:
     httpd = ThreadingHTTPServer((args.host, args.port), Handler)
     httpd.started_monotonic = time.monotonic()  # type: ignore[attr-defined]
     httpd.store = Store(args.db)  # type: ignore[attr-defined]
-    httpd.fleet_os_updater = FleetOsUpdateCoordinator(httpd.store, __agent_version__)  # type: ignore[attr-defined]
+    fleet_update_lock = threading.Lock()
+    httpd.fleet_agent_updater = FleetAgentUpdateCoordinator(httpd.store, __agent_version__, execution_lock=fleet_update_lock)  # type: ignore[attr-defined]
+    httpd.fleet_os_updater = FleetOsUpdateCoordinator(httpd.store, __agent_version__, execution_lock=fleet_update_lock)  # type: ignore[attr-defined]
     httpd.admin_token = args.admin_token  # type: ignore[attr-defined]
     httpd.read_token = args.read_token  # type: ignore[attr-defined]
     httpd.recordings_dir = args.recordings_dir  # type: ignore[attr-defined]
@@ -1346,6 +1366,7 @@ def main() -> None:
             "setup_ap_enabled", "tls_enabled",
             "tls_ca_cert", "host_update_dir", "started_monotonic",
             "fleet_os_updater",
+            "fleet_agent_updater",
         ):
             setattr(tls_httpd, key, getattr(httpd, key))
         tls_httpd.socket = context.wrap_socket(tls_httpd.socket, server_side=True)
@@ -1359,6 +1380,7 @@ def main() -> None:
     except KeyboardInterrupt:
         pass
     finally:
+        httpd.fleet_agent_updater.stop()  # type: ignore[attr-defined]
         httpd.fleet_os_updater.stop()  # type: ignore[attr-defined]
         httpd.recorder_supervisor.stop()  # type: ignore[attr-defined]
         if tls_httpd is not None:
