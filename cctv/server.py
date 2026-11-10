@@ -204,13 +204,13 @@ class Handler(BaseHTTPRequestHandler):
                 return
             host_update_dir = Path(getattr(self.server, "host_update_dir", "/host-update"))  # type: ignore[attr-defined]
             if not (host_update_dir / "installed").is_file():
-                self.send_json({"installed": False, "state": "not_installed"})
+                self.send_json({"installed": False, "state": "not_installed", "running_version": __version__})
                 return
             try:
                 status = json.loads((host_update_dir / "status.json").read_text())
             except (OSError, json.JSONDecodeError):
                 status = {"state": "idle"}
-            self.send_json({"installed": True, **status})
+            self.send_json({"installed": True, "running_version": __version__, **status})
             return
         if parsed.path == "/api/server/os-update":
             if not self.store.user_count():

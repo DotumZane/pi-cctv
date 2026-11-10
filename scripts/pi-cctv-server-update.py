@@ -68,6 +68,14 @@ def run(command: list[str], cwd: Path | None = None, timeout: int = 1800) -> tup
     return result.returncode, output[-12000:]
 
 
+def version_at(repo: Path, ref: str) -> str | None:
+    code, source = run(["git", "show", f"{ref}:cctv/__init__.py"], repo, timeout=30)
+    if code:
+        return None
+    match = re.search(r"^__version__\s*=\s*['\"]([^'\"]+)['\"]", source, re.MULTILINE)
+    return match.group(1) if match else None
+
+
 def main() -> int:
     LOCK.parent.mkdir(parents=True, exist_ok=True)
     with LOCK.open("w") as lock:
@@ -106,6 +114,8 @@ def main() -> int:
                 raise RuntimeError("Could not resolve local or remote Git commit")
             status["current_commit"] = before[:12]
             status["available_commit"] = target[:12]
+            status["current_version"] = version_at(repo, "HEAD")
+            status["available_version"] = version_at(repo, "origin/main")
             if before != target:
                 merge_code, merge_log = run(["git", "merge", "--ff-only", "origin/main"], repo, timeout=60)
                 status["log"] = (status["log"] + "\n" + merge_log).strip()[-12000:]
@@ -123,6 +133,7 @@ def main() -> int:
                 updated_commit=final_commit,
                 current_commit=final_commit,
                 available_commit=final_commit,
+                current_version=status.get("available_version") or status.get("current_version"),
             )
             write_status(status)
             return 0
