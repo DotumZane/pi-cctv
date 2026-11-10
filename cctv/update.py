@@ -37,21 +37,30 @@ def service_main_pid() -> int:
 
 
 def wait_for_healthy_service() -> bool:
-    """Require the restarted agent to keep one live systemd main process."""
+    """Accept one start attempt only when its systemd process stays alive."""
+    stable_pid = service_main_pid()
+    if not stable_pid:
+        return False
     deadline = time.monotonic() + HEALTH_TIMEOUT_SECONDS
-    stable_pid = 0
-    stable_since = 0.0
+    stable_since = time.monotonic()
     while time.monotonic() < deadline:
         pid = service_main_pid()
-        now = time.monotonic()
-        if pid and pid == stable_pid:
-            if now - stable_since >= STABLE_SECONDS:
-                return True
-        else:
-            stable_pid = pid
-            stable_since = now
+        if pid != stable_pid:
+            return False
+        if time.monotonic() - stable_since >= STABLE_SECONDS:
+            return True
         time.sleep(POLL_SECONDS)
     return False
+
+
+def stop_service() -> bool:
+    """Stop a failed agent explicitly so Restart=always cannot loop forever."""
+    stopped = run(["systemctl", "stop", SERVICE], timeout=30)
+    if stopped.returncode:
+        print(f"Could not stop {SERVICE}: {stopped.stderr[-1000:]}", flush=True)
+        return False
+    active = run(["systemctl", "is-active", SERVICE], timeout=10)
+    return active.stdout.strip() in {"inactive", "failed"}
 
 
 def current_commit() -> str:
@@ -72,9 +81,15 @@ def rollback(previous_commit: str) -> bool:
         print(f"Automatic rollback could not restore {previous_commit[:12]}: {reset.stderr[-1000:]}", flush=True)
         return False
     daemon_reload = run(["systemctl", "daemon-reload"], timeout=30)
-    restart = run(["systemctl", "restart", SERVICE], timeout=30) if not daemon_reload.returncode else daemon_reload
+    if daemon_reload.returncode:
+        print("Previous software was restored, but systemd could not reload its service configuration.", flush=True)
+        stop_service()
+        return False
+    reset_failed = run(["systemctl", "reset-failed", SERVICE], timeout=30)
+    restart = run(["systemctl", "restart", SERVICE], timeout=30) if not reset_failed.returncode else reset_failed
     if restart.returncode or not wait_for_healthy_service():
         print("Previous software was restored, but its agent did not pass the health check.", flush=True)
+        stop_service()
         return False
     return True
 
@@ -154,11 +169,12 @@ def main() -> int:
         except Exception:
             installed_commit = ""
         if "previous_commit" in locals() and installed_commit and installed_commit != previous_commit:
-            print(f"Update failed: {message}. Restoring the previous software version.", flush=True)
+            print(f"Update failed: {message}. Stopping the failed agent and trying one rollback.", flush=True)
+            stop_service()
             if rollback(previous_commit):
                 message += f" Automatic rollback restored the previous version ({previous_commit[:12]}), and the agent is healthy."
             else:
-                message += f" Automatic rollback attempted to restore {previous_commit[:12]}, but health could not be confirmed; SSH recovery may be needed."
+                message += f" Automatic rollback was attempted once for {previous_commit[:12]}; the agent was stopped to prevent a restart loop. SSH recovery may be needed."
         report_status("failed", message)
         print(message, flush=True)
         return 1

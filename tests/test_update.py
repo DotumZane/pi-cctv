@@ -26,12 +26,32 @@ class UpdateTests(unittest.TestCase):
                 patch.object(update, "run", return_value=Mock(returncode=0, stdout="", stderr="")), \
                 patch.object(update, "current_commit", side_effect=[old, new, new]), \
                 patch.object(update, "wait_for_healthy_service", return_value=False), \
+                patch.object(update, "stop_service", return_value=True) as stop_service, \
                 patch.object(update, "rollback", return_value=True) as rollback, \
                 patch.object(update, "report_status") as report:
             self.assertEqual(update.main(), 1)
         rollback.assert_called_once_with(old)
+        stop_service.assert_called_once_with()
         self.assertEqual(report.call_args_list[-1].args[0], "failed")
         self.assertIn("Automatic rollback restored the previous version", report.call_args_list[-1].args[1])
+
+    def test_rollback_failure_stops_agent_after_one_attempt(self):
+        old, new = "a" * 40, "b" * 40
+        with patch.object(update, "mark_setup_ap_checked_this_boot"), \
+                patch.object(update, "run", return_value=Mock(returncode=0, stdout="", stderr="")), \
+                patch.object(update, "current_commit", side_effect=[old, new, new]), \
+                patch.object(update, "wait_for_healthy_service", return_value=False), \
+                patch.object(update, "stop_service", return_value=True) as stop_service, \
+                patch.object(update, "report_status") as report:
+            self.assertEqual(update.main(), 1)
+        self.assertEqual(stop_service.call_count, 2)
+        self.assertIn("stopped to prevent a restart loop", report.call_args_list[-1].args[1])
+
+    def test_health_check_fails_immediately_when_agent_process_restarts(self):
+        with patch.object(update, "service_main_pid", side_effect=[123, 123, 456]), \
+                patch.object(update.time, "sleep") as sleep:
+            self.assertFalse(update.wait_for_healthy_service())
+        sleep.assert_called_once_with(update.POLL_SECONDS)
 
     def test_failed_pull_does_not_attempt_rollback(self):
         old = "a" * 40
