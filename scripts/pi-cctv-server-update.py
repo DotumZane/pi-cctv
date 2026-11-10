@@ -111,7 +111,7 @@ def main() -> int:
                 status["log"] = (status["log"] + "\n" + merge_log).strip()[-12000:]
                 if merge_code:
                     raise RuntimeError("Update is not a fast-forward; manual recovery is required")
-            compose_code, compose_log = run(["docker", "compose", "up", "-d", "--build", "management", "discovery"], repo, timeout=1800)
+            compose_code, compose_log = run(["docker", "compose", "up", "-d", "--build", "management", "discovery", "media"], repo, timeout=1800)
             status["log"] = (status["log"] + "\n" + compose_log).strip()[-12000:]
             if compose_code:
                 raise RuntimeError("Docker Compose could not build and start the management service")

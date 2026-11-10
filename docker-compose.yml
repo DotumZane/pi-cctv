@@ -47,10 +47,13 @@ services:
   media:
     image: bluenviron/mediamtx:latest
     restart: unless-stopped
+    environment:
+      MTX_WEBRTCADDITIONALHOSTS: ${CCTV_WEBRTC_ADDITIONAL_HOSTS:-192.168.10.10,100.118.121.50}
     ports:
       - "8554:8554"
       - "8888:8888"
       - "8889:8889"
+      - "8189:8189/udp"
     volumes:
       - ./mediamtx.yml:/mediamtx.yml:ro
 
