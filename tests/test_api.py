@@ -62,6 +62,27 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(assignment["layout"], "single")
         self.assertEqual(json.loads(assignment["cameras"]), ["cam-1"])
 
+    def test_monitor_assignment_includes_offline_routes_and_online_fallback(self):
+        self.httpd.store.register({"id": "cam-primary", "kind": "camera", "name": "Primary"})
+        self.httpd.store.register({"id": "cam-backup", "kind": "camera", "name": "Backup"})
+        self.httpd.store.register({"id": "mon-1", "kind": "monitor", "name": "Monitor"})
+        self.httpd.store.db.execute("UPDATE devices SET last_seen=? WHERE id=?", ("2000-01-01T00:00:00+00:00", "cam-primary"))
+        self.httpd.store.db.commit()
+        self.httpd.store.heartbeat("cam-backup", "192.0.2.20", json.dumps({"agent_version": "0.1.12"}))
+        self.httpd.store.update_settings("mon-1", {"fallback_camera": "cam-backup"})
+        self.httpd.store.set_assignment("mon-1", "single", ["cam-primary"])
+        device_token = "monitor-runtime-token"
+        self.httpd.store.db.execute(
+            "UPDATE devices SET token_hash=? WHERE id=?",
+            (self.httpd.store.hash_token(device_token), "mon-1"),
+        )
+        self.httpd.store.db.commit()
+
+        status, assignment = self.call("GET", "/api/monitors/mon-1/assignment", token=device_token)
+        self.assertEqual(status, 200)
+        self.assertEqual(assignment["offline_cameras"], ["cam-primary"])
+        self.assertEqual(assignment["fallback_camera"], "cam-backup")
+
     def test_admin_can_update_device_name_and_location_without_overwriting_metadata(self):
         self.httpd.store.create_user("admin", "correct-horse-battery")
         token = self.httpd.store.create_session("admin")
@@ -198,8 +219,8 @@ class ApiTests(unittest.TestCase):
     def test_health_reports_server_and_agent_versions_separately(self):
         status, health = self.call("GET", "/api/health")
         self.assertEqual(status, 200)
-        self.assertEqual(health["version"], "0.1.11")
-        self.assertEqual(health["latest_agent_version"], "0.1.11")
+        self.assertEqual(health["version"], "0.1.12")
+        self.assertEqual(health["latest_agent_version"], "0.1.12")
 
     def test_recording_download_requires_read_authorization(self):
         recording = Path(self.recordings.name) / "cam-01" / "2026-11-04" / "06-00-00.mp4"
@@ -526,7 +547,7 @@ class ApiTests(unittest.TestCase):
         admin_token = self.httpd.store.create_session("admin")
 
         self.assertEqual(self.call("POST", "/api/devices/cam-1/commands", {"command": "update_os"}, admin_token)[0], 409)
-        self.call("POST", "/api/devices/cam-1/heartbeat", {"agent_version": "0.1.11"}, device_token)
+        self.call("POST", "/api/devices/cam-1/heartbeat", {"agent_version": "0.1.12"}, device_token)
         self.assertEqual(self.call("POST", "/api/devices/cam-1/commands", {"command": "update_os"}, admin_token)[0], 202)
         self.assertEqual(self.call("POST", "/api/devices/cam-1/commands", {"command": "update_os"}, admin_token)[0], 409)
         self.assertEqual(self.call("POST", "/api/devices/cam-1/maintenance/os-update", {

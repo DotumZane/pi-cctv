@@ -35,6 +35,20 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(runtime.media_retry_seconds, 17)
         apply_blanking.assert_called_once_with(False)
 
+    def test_monitor_routes_offline_camera_to_available_fallback(self):
+        runtime = DeviceRuntime("monitor", "mon-1", "Monitor", "", "http://server", "media")
+        device = {"metadata": '{"settings":{"fallback_camera":"cam-backup"}}'}
+        assignment = {
+            "layout": "single", "cameras": '["cam-primary"]', "outputs": "[]",
+            "offline_cameras": ["cam-primary"], "fallback_camera": "cam-backup",
+        }
+        with patch("cctv.runtime.http_json", side_effect=[device, assignment]), \
+                patch("cctv.runtime.connected_displays", return_value=[]), \
+                patch.object(runtime, "apply_monitor_blanking"):
+            command = runtime.desired_command()[0]
+        self.assertIn("rtsp://media:8554/cam-backup", command)
+        self.assertNotIn("rtsp://media:8554/cam-primary", command)
+
     def test_monitor_retries_failed_pipeline_after_configured_delay(self):
         process = Mock()
         process.poll.return_value = 1

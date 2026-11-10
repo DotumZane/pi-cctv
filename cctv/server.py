@@ -562,8 +562,28 @@ class Handler(BaseHTTPRequestHandler):
             monitor_id = parsed.path.split("/")[3]
             if not self.require_device_auth(monitor_id):
                 return
-            assignment = self.store.assignment(monitor_id)
-            self.send_json(assignment or {"monitor_id": monitor_id, "layout": "single", "cameras": "[]", "outputs": "[]"})
+            assignment = self.store.assignment(monitor_id) or {"monitor_id": monitor_id, "layout": "single", "cameras": "[]", "outputs": "[]"}
+            monitor = self.store.device(monitor_id)
+            try:
+                monitor_settings = json.loads(monitor.get("metadata", "{}")).get("settings", {}) if monitor else {}
+            except (TypeError, json.JSONDecodeError):
+                monitor_settings = {}
+            cameras = {device["id"]: device for device in self.store.devices("camera")}
+            assigned_ids = set()
+            try:
+                assigned_ids.update(json.loads(assignment.get("cameras", "[]")))
+                for output in json.loads(assignment.get("outputs", "[]")):
+                    assigned_ids.update(output.get("cameras", []))
+            except (AttributeError, TypeError, json.JSONDecodeError):
+                pass
+            fallback_id = monitor_settings.get("fallback_camera", "")
+            fallback = cameras.get(fallback_id)
+            assignment["offline_cameras"] = sorted(
+                camera_id for camera_id in assigned_ids
+                if camera_id in cameras and cameras[camera_id].get("status") != "online"
+            )
+            assignment["fallback_camera"] = fallback_id if fallback and fallback.get("status") == "online" else ""
+            self.send_json(assignment)
             return
         self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
 

@@ -454,6 +454,25 @@ class DeviceRuntime:
         settings["camera_name"] = self.name
         settings["preview_id"] = self.device_id
         assignment = http_json(f"{self.server}/api/monitors/{self.device_id}/assignment", token=self.token)
+        offline_cameras = set(assignment.get("offline_cameras", []))
+        fallback_camera = assignment.get("fallback_camera")
+        if fallback_camera and offline_cameras:
+            try:
+                assigned_cameras = json.loads(assignment.get("cameras", "[]"))
+                assignment["cameras"] = json.dumps([
+                    fallback_camera if camera_id in offline_cameras else camera_id
+                    for camera_id in assigned_cameras
+                ])
+                outputs = json.loads(assignment.get("outputs", "[]"))
+                for output in outputs:
+                    output["cameras"] = [
+                        fallback_camera if camera_id in offline_cameras else camera_id
+                        for camera_id in output.get("cameras", [])
+                    ]
+                assignment["outputs"] = json.dumps(outputs)
+                print(f"Using fallback camera {fallback_camera} for offline route(s)", flush=True)
+            except (TypeError, json.JSONDecodeError):
+                print("Could not apply monitor fallback camera to the current assignment", flush=True)
         displays = connected_displays()
         settings["display_modes"] = {
             str(display.get("connector_id", display.get("id"))): {
