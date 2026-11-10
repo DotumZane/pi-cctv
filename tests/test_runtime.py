@@ -1,10 +1,12 @@
 import unittest
+import datetime
+import json
 from unittest.mock import Mock, patch
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from cctv.agent import run_pending
-from cctv.runtime import DeviceRuntime, _monitor_output_size, command_for_assignment, commands_for_assignment
+from cctv.runtime import DeviceRuntime, _monitor_output_size, apply_monitor_schedule, command_for_assignment, commands_for_assignment
 
 
 class RuntimeTests(unittest.TestCase):
@@ -81,6 +83,19 @@ class RuntimeTests(unittest.TestCase):
             runtime.reconcile_media()
         stop_media.assert_called_once_with()
         process_factory.assert_called_once()
+
+    def test_monitor_schedule_selects_weekday_route_and_handles_overnight(self):
+        assignment = {"layout": "single", "cameras": '["cam-default"]', "outputs": "[]"}
+        settings = {"schedule_enabled": True, "schedules": [
+            {"day": 0, "start": "09:00", "end": "17:00", "layout": "single", "cameras": ["cam-day"]},
+        ]}
+        daytime = apply_monitor_schedule(assignment, settings, datetime.datetime(2026, 11, 9, 10, 0))
+        self.assertEqual(json.loads(daytime["cameras"]), ["cam-day"])
+        overnight_settings = {"schedule_enabled": True, "schedules": [
+            {"day": 0, "start": "22:00", "end": "02:00", "layout": "single", "cameras": ["cam-night"]},
+        ]}
+        overnight = apply_monitor_schedule(assignment, overnight_settings, datetime.datetime(2026, 11, 10, 1, 0))
+        self.assertEqual(json.loads(overnight["cameras"]), ["cam-night"])
 
     def test_monitor_activates_kiosk_virtual_terminal(self):
         runtime = DeviceRuntime("monitor", "mon-1", "Monitor", "", "http://server", "media")

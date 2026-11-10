@@ -569,18 +569,11 @@ class Handler(BaseHTTPRequestHandler):
             except (TypeError, json.JSONDecodeError):
                 monitor_settings = {}
             cameras = {device["id"]: device for device in self.store.devices("camera")}
-            assigned_ids = set()
-            try:
-                assigned_ids.update(json.loads(assignment.get("cameras", "[]")))
-                for output in json.loads(assignment.get("outputs", "[]")):
-                    assigned_ids.update(output.get("cameras", []))
-            except (AttributeError, TypeError, json.JSONDecodeError):
-                pass
             fallback_id = monitor_settings.get("fallback_camera", "")
             fallback = cameras.get(fallback_id)
             assignment["offline_cameras"] = sorted(
-                camera_id for camera_id in assigned_ids
-                if camera_id in cameras and cameras[camera_id].get("status") != "online"
+                camera_id for camera_id, camera in cameras.items()
+                if camera.get("status") != "online"
             )
             assignment["fallback_camera"] = fallback_id if fallback and fallback.get("status") == "online" else ""
             self.send_json(assignment)
@@ -1214,7 +1207,7 @@ class Handler(BaseHTTPRequestHandler):
             allowed = {
                 "scale_mode", "orientation", "width", "height", "refresh_hz", "auto_resolution", "kiosk",
                 "prevent_blanking", "show_camera_name", "show_timestamp", "reconnect_seconds",
-                "watchdog_seconds", "fallback_camera", "schedule_enabled",
+                "watchdog_seconds", "fallback_camera", "schedule_enabled", "schedules",
             }
             camera_ids = {device["id"] for device in self.store.devices("camera")}
             valid_enums = (
@@ -1229,6 +1222,7 @@ class Handler(BaseHTTPRequestHandler):
                 or (key in {"kiosk", "prevent_blanking", "show_camera_name", "show_timestamp", "schedule_enabled"} and isinstance(value, bool))
                 or (key == "auto_resolution" and isinstance(value, bool))
                 or (key in {"scale_mode", "fallback_camera"} and isinstance(value, str))
+                or (key == "schedules" and isinstance(value, list))
                 for key, value in settings.items()
             )
             reconnect_seconds = settings.get("reconnect_seconds", 5)
@@ -1237,9 +1231,29 @@ class Handler(BaseHTTPRequestHandler):
                 isinstance(reconnect_seconds, int) and not isinstance(reconnect_seconds, bool) and 1 <= reconnect_seconds <= 120
                 and isinstance(watchdog_seconds, int) and not isinstance(watchdog_seconds, bool) and 5 <= watchdog_seconds <= 600
             )
+            schedules = settings.get("schedules", [])
+            valid_schedules = (
+                isinstance(schedules, list) and len(schedules) <= 42
+                and all(
+                    isinstance(row, dict)
+                    and set(row) == {"day", "start", "end", "layout", "cameras"}
+                    and isinstance(row["day"], int) and not isinstance(row["day"], bool) and 0 <= row["day"] <= 6
+                    and isinstance(row["start"], str) and re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", row["start"])
+                    and isinstance(row["end"], str) and re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", row["end"])
+                    and row["start"] != row["end"]
+                    and row["layout"] in ("single", "2x2")
+                    and isinstance(row["cameras"], list)
+                    and len(row["cameras"]) <= (1 if row["layout"] == "single" else 4)
+                    and (row["layout"] != "2x2" or len(row["cameras"]) == 4)
+                    and all(isinstance(camera, str) and camera in camera_ids for camera in row["cameras"])
+                    and len(set(row["cameras"])) == len(row["cameras"])
+                    for row in schedules
+                )
+                and (not settings.get("schedule_enabled") or bool(schedules))
+            )
             if not monitor or monitor["kind"] != "monitor":
                 self.send_json({"error": "monitor not found"}, HTTPStatus.NOT_FOUND)
-            elif not settings or any(key not in allowed for key in settings) or not valid_types or not valid_enums or not valid_ranges:
+            elif not settings or any(key not in allowed for key in settings) or not valid_types or not valid_enums or not valid_ranges or not valid_schedules:
                 self.send_json({"error": "invalid monitor settings"}, HTTPStatus.BAD_REQUEST)
             else:
                 device = self.store.update_settings(monitor_id, settings)

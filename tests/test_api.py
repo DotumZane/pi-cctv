@@ -68,7 +68,7 @@ class ApiTests(unittest.TestCase):
         self.httpd.store.register({"id": "mon-1", "kind": "monitor", "name": "Monitor"})
         self.httpd.store.db.execute("UPDATE devices SET last_seen=? WHERE id=?", ("2000-01-01T00:00:00+00:00", "cam-primary"))
         self.httpd.store.db.commit()
-        self.httpd.store.heartbeat("cam-backup", "192.0.2.20", json.dumps({"agent_version": "0.1.13"}))
+        self.httpd.store.heartbeat("cam-backup", "192.0.2.20", json.dumps({"agent_version": "0.1.14"}))
         self.httpd.store.update_settings("mon-1", {"fallback_camera": "cam-backup"})
         self.httpd.store.set_assignment("mon-1", "single", ["cam-primary"])
         device_token = "monitor-runtime-token"
@@ -127,16 +127,19 @@ class ApiTests(unittest.TestCase):
 
     def test_monitor_settings_are_persisted(self):
         self.call("POST", "/api/devices", {"id": "mon-1", "kind": "monitor", "name": "Control"})
+        self.call("POST", "/api/devices", {"id": "cam-1", "kind": "camera", "name": "Camera 1"})
         status, device = self.call("PUT", "/api/monitors/mon-1/settings", {
             "scale_mode": "fill", "orientation": 0, "width": 1920, "height": 1080,
             "refresh_hz": 60, "auto_resolution": True, "kiosk": True, "prevent_blanking": True,
             "show_camera_name": True, "show_timestamp": True,
             "reconnect_seconds": 5, "watchdog_seconds": 30,
-            "fallback_camera": "", "schedule_enabled": False,
+            "fallback_camera": "", "schedule_enabled": True,
+            "schedules": [{"day": 0, "start": "09:00", "end": "17:00", "layout": "single", "cameras": ["cam-1"]}],
         })
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(device["metadata"])["settings"]["orientation"], 0)
         self.assertTrue(json.loads(device["metadata"])["settings"]["auto_resolution"])
+        self.assertEqual(json.loads(device["metadata"])["settings"]["schedules"][0]["cameras"], ["cam-1"])
         status, device = self.call("PUT", "/api/monitors/mon-1/settings", {"orientation": 90})
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(device["metadata"])["settings"]["orientation"], 90)
@@ -219,8 +222,8 @@ class ApiTests(unittest.TestCase):
     def test_health_reports_server_and_agent_versions_separately(self):
         status, health = self.call("GET", "/api/health")
         self.assertEqual(status, 200)
-        self.assertEqual(health["version"], "0.1.13")
-        self.assertEqual(health["latest_agent_version"], "0.1.13")
+        self.assertEqual(health["version"], "0.1.14")
+        self.assertEqual(health["latest_agent_version"], "0.1.14")
 
     def test_recording_download_requires_read_authorization(self):
         recording = Path(self.recordings.name) / "cam-01" / "2026-11-04" / "06-00-00.mp4"
@@ -547,7 +550,7 @@ class ApiTests(unittest.TestCase):
         admin_token = self.httpd.store.create_session("admin")
 
         self.assertEqual(self.call("POST", "/api/devices/cam-1/commands", {"command": "update_os"}, admin_token)[0], 409)
-        self.call("POST", "/api/devices/cam-1/heartbeat", {"agent_version": "0.1.13"}, device_token)
+        self.call("POST", "/api/devices/cam-1/heartbeat", {"agent_version": "0.1.14"}, device_token)
         self.assertEqual(self.call("POST", "/api/devices/cam-1/commands", {"command": "update_os"}, admin_token)[0], 202)
         self.assertEqual(self.call("POST", "/api/devices/cam-1/commands", {"command": "update_os"}, admin_token)[0], 409)
         self.assertEqual(self.call("POST", "/api/devices/cam-1/maintenance/os-update", {

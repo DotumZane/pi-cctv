@@ -205,6 +205,36 @@ def _monitor_output_size(settings: dict | None, connector_id: str | None = None)
     return settings.get("width"), settings.get("height")
 
 
+def apply_monitor_schedule(assignment: dict, settings: dict, now: datetime.datetime | None = None) -> dict:
+    """Return the schedule-selected camera layout, if an active weekly row matches."""
+    if not settings.get("schedule_enabled"):
+        return assignment
+    current = now or datetime.datetime.now().astimezone()
+    weekday = current.weekday()
+    clock = current.strftime("%H:%M")
+    for row in settings.get("schedules", []):
+        if not isinstance(row, dict):
+            continue
+        day = row.get("day")
+        start = row.get("start", "")
+        end = row.get("end", "")
+        if day == weekday and start < end and start <= clock < end:
+            active = True
+        elif start > end and ((day == weekday and clock >= start)
+                              or (day == (weekday - 1) % 7 and clock < end)):
+            active = True
+        else:
+            active = False
+        if active:
+            return {
+                **assignment,
+                "layout": row["layout"],
+                "cameras": json.dumps(row["cameras"]),
+                "outputs": "[]",
+            }
+    return assignment
+
+
 @dataclass
 class DeviceRuntime:
     role: str
@@ -461,6 +491,7 @@ class DeviceRuntime:
         settings["camera_name"] = self.name
         settings["preview_id"] = self.device_id
         assignment = http_json(f"{self.server}/api/monitors/{self.device_id}/assignment", token=self.token)
+        assignment = apply_monitor_schedule(assignment, settings)
         offline_cameras = set(assignment.get("offline_cameras", []))
         fallback_camera = assignment.get("fallback_camera")
         if fallback_camera and offline_cameras:
