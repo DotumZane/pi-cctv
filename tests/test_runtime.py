@@ -1,15 +1,40 @@
 import unittest
 import datetime
 import json
+import shlex
 from unittest.mock import Mock, patch
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from cctv.agent import run_pending
-from cctv.runtime import DeviceRuntime, _monitor_output_size, apply_monitor_schedule, command_for_assignment, commands_for_assignment
+from cctv.runtime import DeviceRuntime, _monitor_output_size, apply_monitor_schedule, command_for_assignment, commands_for_assignment, managed_monitor_commands
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_monitor_media_is_wrapped_in_controllable_player(self):
+        command = managed_monitor_commands(['gst-launch-1.0 -e videotestsrc ! textoverlay text="camera name" ! fakesink'], "monitor-01")
+        self.assertEqual(len(command), 1)
+        self.assertIn("cctv.monitor_player --control-file", command[0])
+        self.assertIn("monitor-stats-monitor-01.json", command[0])
+        self.assertIn("--pipeline", command[0])
+        self.assertIn("textoverlay", command[0])
+        parts = shlex.split(command[0])
+        self.assertIn('textoverlay text="camera name"', parts[parts.index("--pipeline") + 1])
+
+    def test_show_stats_writes_atomic_control_request_for_monitor_only(self):
+        runtime = DeviceRuntime("monitor", "mon-1", "Monitor", "", "http://server", "media")
+        with TemporaryDirectory() as directory, patch.dict("os.environ", {"CCTV_MONITOR_STATS_DIR": directory}), \
+                patch("cctv.runtime.http_json", return_value={"commands": [{"command": "show_stats"}]}):
+            runtime.poll_commands()
+            control = Path(directory) / "monitor-stats-mon-1.json"
+            request = json.loads(control.read_text())
+            self.assertTrue(request["request_id"])
+            self.assertEqual(control.stat().st_mode & 0o777, 0o600)
+
+        camera = DeviceRuntime("camera", "cam-1", "Camera", "", "http://server", "media")
+        with patch("cctv.runtime.http_json", return_value={"commands": [{"command": "show_stats"}]}):
+            camera.poll_commands()
+
     def test_server_address_change_verifies_before_persisting(self):
         runtime = DeviceRuntime("camera", "cam-1", "Camera", "", "https://old.example", "old-media", token="device-token")
         with TemporaryDirectory() as directory:

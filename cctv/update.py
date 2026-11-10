@@ -131,6 +131,34 @@ def mark_setup_ap_checked_this_boot() -> None:
         pass
 
 
+def install_monitor_stats_dependencies() -> None:
+    """Install optional Python GStreamer bindings required by the monitor stats overlay."""
+    try:
+        if json.loads(DEVICE_STATE.read_text()).get("kind") != "monitor":
+            return
+    except (OSError, ValueError):
+        return
+    probe = run([
+        "python3", "-c",
+        "import gi; gi.require_version('Gst', '1.0'); from gi.repository import Gst",
+    ], timeout=15)
+    if probe.returncode == 0:
+        return
+    print("Installing optional monitor stats overlay bindings.", flush=True)
+    try:
+        refreshed = run(["apt-get", "update"], timeout=180)
+        installed = run([
+            "apt-get", "install", "-y", "--no-install-recommends",
+            "python3-gi", "gir1.2-gstreamer-1.0",
+        ], timeout=180) if refreshed.returncode == 0 else refreshed
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"Stats overlay bindings unavailable; monitor video will continue without the overlay: {exc}", flush=True)
+        return
+    if installed.returncode:
+        detail = (installed.stderr or installed.stdout).strip()[-1000:]
+        print(f"Stats overlay bindings unavailable; monitor video will continue without the overlay: {detail}", flush=True)
+
+
 def main() -> int:
     report_status("running", "Downloading the approved CCTV software update.")
     try:
@@ -148,6 +176,8 @@ def main() -> int:
         if updated_commit == previous_commit:
             report_status("succeeded", "Pi CCTV software is already current; no restart was needed.")
             return 0
+
+        install_monitor_stats_dependencies()
 
         print("Running: systemctl daemon-reload", flush=True)
         daemon_reload = run(["systemctl", "daemon-reload"], timeout=30)

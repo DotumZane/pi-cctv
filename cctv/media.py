@@ -100,6 +100,10 @@ class MonitorMedia:
             filters.append('clockoverlay time-format="%Y-%m-%d %H:%M:%S" halignment=left valignment=top')
         if self.show_camera_name and self.camera_name:
             filters.append(f'textoverlay text="{self.camera_name}" halignment=right valignment=top')
+        filters.append(
+            'textoverlay name=cctv_stats text="" silent=true font-desc="Sans 12" '
+            'halignment=left valignment=top xpad=18 ypad=18 shaded-background=true'
+        )
         filter_chain = (" ! " + " ! ".join(filters)) if filters else ""
         preview_width, preview_height = _preview_size(self.width or 1920, self.height or 1080)
         preview = _preview_branch(self.preview_id, preview_width, preview_height)
@@ -150,7 +154,9 @@ def quad_pipeline(stream_urls: list[str], width: int = 1920, height: int = 1080,
     preview_width, preview_height = _preview_size(width, height)
     return (
         "gst-launch-1.0 -e " + " ".join(branches)
-        + f" compositor name=compositor {positions} ! video/x-raw,width={width},height={height} ! tee name=monitor_out "
+        + f" compositor name=compositor {positions} ! video/x-raw,width={width},height={height} ! "
+        + 'textoverlay name=cctv_stats text="" silent=true font-desc="Sans 12" '
+        + "halignment=left valignment=top xpad=18 ypad=18 shaded-background=true ! tee name=monitor_out "
         + "monitor_out. ! queue max-size-buffers=2 leaky=downstream ! kmssink sync=false "
         + f"monitor_out. ! {_preview_branch(preview_id, preview_width, preview_height)}"
     )

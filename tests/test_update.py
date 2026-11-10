@@ -1,11 +1,28 @@
 import subprocess
 import unittest
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 from cctv import update
 
 
 class UpdateTests(unittest.TestCase):
+    def test_monitor_stats_dependencies_are_installed_only_for_monitor_pi(self):
+        with patch.object(update, "DEVICE_STATE", Path("/nonexistent")), patch.object(update, "run") as run:
+            update.install_monitor_stats_dependencies()
+        run.assert_not_called()
+
+        with patch.object(update, "DEVICE_STATE") as state, patch.object(update, "run") as run:
+            state.read_text.return_value = '{"kind":"monitor"}'
+            run.side_effect = [
+                update.subprocess.CompletedProcess([], 1, "", "missing bindings"),
+                update.subprocess.CompletedProcess([], 0, "", ""),
+                update.subprocess.CompletedProcess([], 0, "", ""),
+            ]
+            update.install_monitor_stats_dependencies()
+        self.assertEqual(run.call_args_list[1].args[0], ["apt-get", "update"])
+        self.assertIn("gir1.2-gstreamer-1.0", run.call_args_list[2].args[0])
+
     def test_update_checks_service_health_before_reporting_success(self):
         old, new = "a" * 40, "b" * 40
         with patch.object(update, "mark_setup_ap_checked_this_boot") as mark_checked, \

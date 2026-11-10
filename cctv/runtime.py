@@ -19,6 +19,8 @@ import platform
 import datetime
 import sys
 import tempfile
+import secrets
+from shlex import quote
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Callable
@@ -192,6 +194,23 @@ def commands_for_assignment(assignment: dict, media_server: str, settings: dict 
                 preview_id=f"{settings.get('preview_id', 'monitor')}-{connector_id or output_index}",
             ).pipeline())
     return commands
+
+
+def managed_monitor_commands(commands: list[str], device_id: str) -> list[str]:
+    """Run monitor pipelines in the controllable GStreamer player process."""
+    safe_id = re.sub(r"[^A-Za-z0-9_.-]", "_", device_id)[:80] or "monitor"
+    control_file = f"/run/pi-cctv/monitor-stats-{safe_id}.json"
+    wrapped = []
+    for command in commands:
+        prefix = "gst-launch-1.0 -e "
+        if not command.startswith(prefix):
+            raise ValueError("monitor pipeline must start with gst-launch-1.0 -e")
+        pipeline = command[len(prefix):]
+        wrapped.append(
+            "python3 -m cctv.monitor_player --control-file "
+            f"{quote(control_file)} --pipeline {quote(pipeline)}"
+        )
+    return wrapped
 
 
 def _monitor_output_size(settings: dict | None, connector_id: str | None = None) -> tuple[int | None, int | None]:
@@ -474,6 +493,19 @@ class DeviceRuntime:
                 self.report_maintenance("setup-ap-sync", "running", "Checking the saved server profile.")
                 ok, message = self.sync_setup_ap()
                 self.report_maintenance("setup-ap-sync", "succeeded" if ok else "failed", message)
+            elif command_name == "show_stats":
+                if self.role != "monitor":
+                    print("Ignoring monitor stats request on a non-monitor device", flush=True)
+                    continue
+                safe_id = re.sub(r"[^A-Za-z0-9_.-]", "_", self.device_id)[:80] or "monitor"
+                control_dir = Path(os.environ.get("CCTV_MONITOR_STATS_DIR", "/run/pi-cctv"))
+                control_dir.mkdir(mode=0o755, parents=True, exist_ok=True)
+                control_path = control_dir / f"monitor-stats-{safe_id}.json"
+                temporary_path = control_path.with_suffix(f".json.{os.getpid()}.tmp")
+                temporary_path.write_text(json.dumps({"request_id": secrets.token_urlsafe(18)}) + "\n")
+                temporary_path.chmod(0o600)
+                temporary_path.replace(control_path)
+                print("Monitor stats overlay requested for 60 seconds", flush=True)
             elif command_name == "change_server_address":
                 payload = command.get("payload", {})
                 new_server = payload.get("server") if isinstance(payload, dict) else None
@@ -621,7 +653,9 @@ class DeviceRuntime:
             for display in displays if display.get("width") and display.get("height")
         }
         settings["display_mode"] = next(iter(settings["display_modes"].values()), None)
-        return commands_for_assignment(assignment, self.media_server, settings)
+        return managed_monitor_commands(
+            commands_for_assignment(assignment, self.media_server, settings), self.device_id,
+        )
 
     def reconcile_media(self) -> None:
         commands = self.desired_command()

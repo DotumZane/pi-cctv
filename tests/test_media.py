@@ -35,6 +35,7 @@ class MediaTests(unittest.TestCase):
         command = MonitorMedia("rtsp://media:8554/cam-1").pipeline()
         self.assertIn("v4l2h264dec", command)
         self.assertIn("drop-on-latency=true", command)
+        self.assertIn('textoverlay name=cctv_stats text="" silent=true', command)
 
     def test_monitor_fits_video_to_detected_display_aspect(self):
         command = MonitorMedia("rtsp://media:8554/cam-1", width=800, height=480).pipeline()
@@ -57,5 +58,7 @@ class MediaTests(unittest.TestCase):
     def test_quad_layout_uses_detected_output_dimensions(self):
         command = quad_pipeline(["rtsp://media:8554/cam-1", "rtsp://media:8554/cam-2"], width=1280, height=720)
         self.assertIn("sink_1::xpos=640 sink_1::ypos=0", command)
-        self.assertIn("video/x-raw,width=1280,height=720 ! tee name=monitor_out", command)
+        self.assertIn("video/x-raw,width=1280,height=720 ! textoverlay name=cctv_stats", command)
+        self.assertIn("tee name=monitor_out", command)
+        self.assertIn('textoverlay name=cctv_stats text="" silent=true', command)
         self.assertIn("monitor_out. ! queue max-size-buffers=2 leaky=downstream ! kmssink", command)

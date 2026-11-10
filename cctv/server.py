@@ -1073,10 +1073,13 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json({"error": "device not found"}, HTTPStatus.NOT_FOUND)
                     return
                 payload = self.body()
-                allowed_commands = {"restart_media", "diagnostics", "restart_agent", "reboot", "update", "update_os", "sync_setup_ap", "change_server_address"}
+                allowed_commands = {"restart_media", "diagnostics", "restart_agent", "reboot", "update", "update_os", "sync_setup_ap", "change_server_address", "show_stats"}
                 command_name = str(payload.get("command", ""))
                 if command_name not in allowed_commands:
                     self.send_json({"error": "unsupported diagnostic command"}, HTTPStatus.BAD_REQUEST)
+                    return
+                if command_name == "show_stats" and self.store.device(device_id).get("kind") != "monitor":
+                    self.send_json({"error": "the stats overlay is only available on monitor Pis"}, HTTPStatus.BAD_REQUEST)
                     return
                 if command_name == "update_os":
                     try:

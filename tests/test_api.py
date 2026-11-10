@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from cctv.server import Handler
-from cctv import __agent_version__
+from cctv import __agent_version__, __version__
 from cctv.fleet import FleetAgentUpdateCoordinator, FleetOsUpdateCoordinator
 from cctv.store import Store
 
@@ -222,8 +222,8 @@ class ApiTests(unittest.TestCase):
     def test_health_reports_server_and_agent_versions_separately(self):
         status, health = self.call("GET", "/api/health")
         self.assertEqual(status, 200)
-        self.assertEqual(health["version"], "0.1.18")
-        self.assertEqual(health["latest_agent_version"], "0.1.18")
+        self.assertEqual(health["version"], __version__)
+        self.assertEqual(health["latest_agent_version"], __agent_version__)
 
     def test_recording_download_requires_read_authorization(self):
         recording = Path(self.recordings.name) / "cam-01" / "2026-11-04" / "06-00-00.mp4"
@@ -252,6 +252,15 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(pending["commands"][0]["id"], command["id"])
         self.assertEqual(self.call("GET", "/api/devices/cam-1/commands")[1]["commands"], [])
+
+    def test_stats_overlay_command_is_monitor_only(self):
+        self.call("POST", "/api/devices", {"id": "cam-1", "kind": "camera", "name": "Camera"})
+        self.call("POST", "/api/devices", {"id": "mon-1", "kind": "monitor", "name": "Monitor"})
+        status, _ = self.call("POST", "/api/devices/cam-1/commands", {"command": "show_stats"})
+        self.assertEqual(status, 400)
+        status, command = self.call("POST", "/api/devices/mon-1/commands", {"command": "show_stats"})
+        self.assertEqual(status, 202)
+        self.assertEqual(command["command"], "show_stats")
 
     def test_server_address_change_is_admin_only_validated_and_delivered_as_json(self):
         self.httpd.store.register({"id": "cam-1", "kind": "camera", "name": "Saw 1"})
