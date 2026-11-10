@@ -1,0 +1,13 @@
+[Unit]
+Description=Apply an allowlisted Pi CCTV server update requested from the dashboard
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=@CCTVOPS_USER@
+SupplementaryGroups=docker
+WorkingDirectory=@CCTVOPS_REPO@
+ExecStart=/usr/bin/python3 @CCTVOPS_REPO@/scripts/pi-cctv-server-update.py
+TimeoutStartSec=1900
+UMask=0007

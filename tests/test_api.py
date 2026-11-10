@@ -20,6 +20,8 @@ class ApiTests(unittest.TestCase):
         self.httpd.store = Store(":memory:")
         self.httpd.bootstrap_token = "bootstrap-token"
         self.recordings = tempfile.TemporaryDirectory()
+        self.host_updates = tempfile.TemporaryDirectory()
+        self.httpd.host_update_dir = self.host_updates.name
         self.httpd.recordings_dir = self.recordings.name
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
         self.thread.start()
@@ -30,6 +32,7 @@ class ApiTests(unittest.TestCase):
         self.httpd.server_close()
         self.httpd.store.close()
         self.recordings.cleanup()
+        self.host_updates.cleanup()
 
     def call(self, method, path, payload=None, token="", bootstrap=""):
         connection = HTTPConnection(*self.base)
@@ -198,6 +201,38 @@ class ApiTests(unittest.TestCase):
         self.assertNotIn("password", saved)
         self.assertEqual(saved["revision"], "2")
         self.assertEqual(self.httpd.store.system_setting("setup_ap_profile")["password"], "new-password")
+
+    def test_server_update_requires_https_and_queues_only_when_helper_is_installed(self):
+        self.httpd.store.create_user("admin", "correct-horse-battery")
+        token = self.httpd.store.create_session("admin")
+        status, body = self.call("POST", "/api/server/update", {}, token)
+        self.assertEqual(status, 426)
+        self.assertIn("HTTPS", body["error"])
+
+        state_dir = Path(self.host_updates.name)
+        (state_dir / "installed").touch()
+        (state_dir / "status.json").write_text('{"state":"idle"}\n')
+        with patch.object(Handler, "secure_connection", return_value=True):
+            status, body = self.call("POST", "/api/server/update", {}, token)
+        self.assertEqual(status, 202)
+        self.assertEqual(body["state"], "queued")
+        request = json.loads((state_dir / "request.json").read_text())
+        self.assertEqual(request, {"id": body["request_id"], "action": "update"})
+        self.assertEqual(self.httpd.store.audit_entries(1)[0]["action"], "server.update.request")
+
+        (state_dir / "status.json").write_text('{"state":"running"}\n')
+        with patch.object(Handler, "secure_connection", return_value=True):
+            status, body = self.call("POST", "/api/server/update", {}, token)
+        self.assertEqual(status, 409)
+        self.assertEqual(body["state"], "running")
+
+    def test_server_update_reports_missing_host_helper(self):
+        self.httpd.store.create_user("admin", "correct-horse-battery")
+        token = self.httpd.store.create_session("admin")
+        status, body = self.call("GET", "/api/server/update", token=token)
+        self.assertEqual(status, 200)
+        self.assertFalse(body["installed"])
+        self.assertEqual(body["state"], "not_installed")
 
     def test_setup_ap_sync_command_is_allowlisted(self):
         self.call("POST", "/api/devices", {"id": "cam-1", "kind": "camera", "name": "Saw 1"})

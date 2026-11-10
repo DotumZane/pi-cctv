@@ -25,6 +25,7 @@ services:
     volumes:
       - cctv-data:/data
       - ${CCTV_TLS_DIR:-/etc/pi-cctv/tls}:/run/pi-cctv/tls:ro
+      - /var/lib/pi-cctv-host-update:/host-update
     depends_on:
       - media
 

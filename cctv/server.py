@@ -10,6 +10,7 @@ import secrets
 import shutil
 import ssl
 import subprocess
+import tempfile
 import threading
 from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
@@ -88,6 +89,9 @@ class Handler(BaseHTTPRequestHandler):
             return True
         self.send_json({"error": "authentication required"}, HTTPStatus.UNAUTHORIZED)
         return False
+
+    def secure_connection(self) -> bool:
+        return isinstance(self.connection, ssl.SSLSocket)
 
     def require_read_auth(self) -> bool:
         if self.authorized():
@@ -177,6 +181,22 @@ class Handler(BaseHTTPRequestHandler):
                 "password_configured": bool(profile.get("password")),
                 "revision": profile.get("revision", "disabled"),
             })
+            return
+        if parsed.path == "/api/server/update":
+            if not self.store.user_count():
+                self.send_json({"error": "create an administrator account before using server updates"}, HTTPStatus.UNAUTHORIZED)
+                return
+            if not self.require_auth():
+                return
+            host_update_dir = Path(getattr(self.server, "host_update_dir", "/host-update"))  # type: ignore[attr-defined]
+            if not (host_update_dir / "installed").is_file():
+                self.send_json({"installed": False, "state": "not_installed"})
+                return
+            try:
+                status = json.loads((host_update_dir / "status.json").read_text())
+            except (OSError, json.JSONDecodeError):
+                status = {"state": "idle"}
+            self.send_json({"installed": True, **status})
             return
         if parsed.path == "/api/auth/status":
             user = self.session_user()
@@ -434,6 +454,56 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         try:
+            if parsed.path == "/api/server/update":
+                if not self.store.user_count():
+                    self.send_json({"error": "create an administrator account before using server updates"}, HTTPStatus.UNAUTHORIZED)
+                    return
+                if not self.require_auth():
+                    return
+                if not self.secure_connection():
+                    self.send_json({"error": "server updates can only be requested over HTTPS"}, HTTPStatus.UPGRADE_REQUIRED)
+                    return
+                host_update_dir = Path(getattr(self.server, "host_update_dir", "/host-update"))  # type: ignore[attr-defined]
+                if not (host_update_dir / "installed").is_file():
+                    self.send_json({"error": "The host update helper is not installed"}, HTTPStatus.SERVICE_UNAVAILABLE)
+                    return
+                try:
+                    current = json.loads((host_update_dir / "status.json").read_text())
+                except (OSError, json.JSONDecodeError):
+                    current = {}
+                if current.get("state") in {"queued", "running"}:
+                    self.send_json({"error": "A server update is already in progress", "state": current["state"]}, HTTPStatus.CONFLICT)
+                    return
+                host_update_dir.mkdir(parents=True, exist_ok=True)
+                request_id = secrets.token_hex(16)
+                request_path = host_update_dir / "request.json"
+                if request_path.exists():
+                    self.send_json({"error": "A server update request is already queued"}, HTTPStatus.CONFLICT)
+                    return
+                descriptor, temporary = tempfile.mkstemp(prefix=".update-request-", dir=host_update_dir, text=True)
+                try:
+                    os.fchown(descriptor, -1, host_update_dir.stat().st_gid)
+                    os.fchmod(descriptor, 0o640)
+                    with os.fdopen(descriptor, "w") as stream:
+                        json.dump({"id": request_id, "action": "update"}, stream)
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                    status = {"request_id": request_id, "state": "queued", "requested_at": datetime.now(timezone.utc).isoformat()}
+                    (host_update_dir / "status.json").write_text(json.dumps(status) + "\n")
+                    os.replace(temporary, request_path)
+                except OSError:
+                    try:
+                        (host_update_dir / "status.json").write_text(json.dumps({"state": "idle"}) + "\n")
+                    except OSError:
+                        pass
+                    self.send_json({"error": "The host update request could not be written"}, HTTPStatus.SERVICE_UNAVAILABLE)
+                    return
+                finally:
+                    if os.path.exists(temporary):
+                        os.unlink(temporary)
+                self.store.audit("server.update.request", "server", self.client_address[0], {"request_id": request_id})
+                self.send_json({"ok": True, **status}, HTTPStatus.ACCEPTED)
+                return
             if parsed.path == "/api/enroll" and not isinstance(self.connection, ssl.SSLSocket):
                 self.send_json({"error": "device enrollment requires HTTPS"}, HTTPStatus.UPGRADE_REQUIRED)
                 return
@@ -845,6 +915,7 @@ def main() -> None:
     httpd.public_media_url = args.public_media_url  # type: ignore[attr-defined]
     httpd.public_webrtc_url = args.public_webrtc_url  # type: ignore[attr-defined]
     httpd.tls_enabled = bool(os.getenv("CCTV_TLS_CERT") and os.getenv("CCTV_TLS_KEY"))  # type: ignore[attr-defined]
+    httpd.host_update_dir = os.getenv("CCTV_HOST_UPDATE_DIR", "/host-update")  # type: ignore[attr-defined]
     ap_profile = httpd.store.system_setting("setup_ap_profile")  # type: ignore[attr-defined]
     if ap_profile is None:
         initial_ap_profile = {
@@ -890,7 +961,7 @@ def main() -> None:
             "store", "admin_token", "read_token", "recordings_dir", "previews_dir",
             "bootstrap_token", "public_media_url", "public_webrtc_url", "recorder_supervisor",
             "setup_ap_enabled", "tls_enabled",
-            "tls_ca_cert",
+            "tls_ca_cert", "host_update_dir",
         ):
             setattr(tls_httpd, key, getattr(httpd, key))
         tls_httpd.socket = context.wrap_socket(tls_httpd.socket, server_side=True)
