@@ -69,6 +69,7 @@ class Store:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
                 command TEXT NOT NULL,
+                payload TEXT NOT NULL DEFAULT '{}',
                 created_at TEXT NOT NULL,
                 consumed_at TEXT
             );
@@ -114,6 +115,9 @@ class Store:
         assignment_columns = {row[1] for row in self.db.execute("PRAGMA table_info(assignments)").fetchall()}
         if "outputs" not in assignment_columns:
             self.db.execute("ALTER TABLE assignments ADD COLUMN outputs TEXT NOT NULL DEFAULT '[]'")
+        command_columns = {row[1] for row in self.db.execute("PRAGMA table_info(device_commands)").fetchall()}
+        if "payload" not in command_columns:
+            self.db.execute("ALTER TABLE device_commands ADD COLUMN payload TEXT NOT NULL DEFAULT '{}'")
         self.db.commit()
 
     @serialized
@@ -439,10 +443,10 @@ class Store:
         return [dict(row) for row in self.db.execute("SELECT * FROM audit_log ORDER BY id DESC LIMIT ?", (limit,)).fetchall()]
 
     @serialized
-    def queue_command(self, device_id: str, command: str) -> dict[str, Any]:
+    def queue_command(self, device_id: str, command: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         cursor = self.db.execute(
-            "INSERT INTO device_commands(device_id, command, created_at) VALUES(?, ?, ?)",
-            (device_id, command, now()),
+            "INSERT INTO device_commands(device_id, command, payload, created_at) VALUES(?, ?, ?, ?)",
+            (device_id, command, json.dumps(payload or {}), now()),
         )
         self.db.commit()
         return dict(self.db.execute("SELECT * FROM device_commands WHERE id = ?", (cursor.lastrowid,)).fetchone())
@@ -453,7 +457,13 @@ class Store:
         if rows:
             self.db.execute("UPDATE device_commands SET consumed_at=? WHERE device_id=? AND consumed_at IS NULL", (now(), device_id))
             self.db.commit()
-        return [dict(row) for row in rows]
+        commands = [dict(row) for row in rows]
+        for command in commands:
+            try:
+                command["payload"] = json.loads(command.get("payload") or "{}")
+            except (json.JSONDecodeError, TypeError):
+                command["payload"] = {}
+        return commands
 
     @serialized
     def command_history(self, device_id: str, limit: int = 30) -> list[dict[str, Any]]:

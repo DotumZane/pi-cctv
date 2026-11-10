@@ -10,6 +10,35 @@ from cctv.runtime import DeviceRuntime, _monitor_output_size, apply_monitor_sche
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_server_address_change_verifies_before_persisting(self):
+        runtime = DeviceRuntime("camera", "cam-1", "Camera", "", "https://old.example", "old-media", token="device-token")
+        with TemporaryDirectory() as directory:
+            state_path = Path(directory) / "device.json"
+            with patch.dict("os.environ", {"CCTV_AGENT_STATE_FILE": str(state_path)}), \
+                    patch("cctv.runtime.http_json", return_value={"ok": True}) as request:
+                ok, message = runtime.change_server_address("https://new.example:8443", "192.168.10.10")
+            self.assertTrue(ok, message)
+            self.assertEqual(runtime.server, "https://new.example:8443")
+            self.assertEqual(runtime.media_server, "192.168.10.10")
+            saved = json.loads(state_path.read_text())
+            self.assertEqual(saved["server"], runtime.server)
+            self.assertEqual(saved["media_server"], runtime.media_server)
+            self.assertEqual(state_path.stat().st_mode & 0o777, 0o600)
+            self.assertIn("https://new.example:8443/api/devices/cam-1/heartbeat", request.call_args.args[0])
+
+    def test_server_address_change_keeps_current_endpoint_when_verification_fails(self):
+        runtime = DeviceRuntime("camera", "cam-1", "Camera", "", "https://old.example", "old-media", token="device-token")
+        with TemporaryDirectory() as directory:
+            state_path = Path(directory) / "device.json"
+            with patch.dict("os.environ", {"CCTV_AGENT_STATE_FILE": str(state_path)}), \
+                    patch("cctv.runtime.http_json", side_effect=OSError("certificate verify failed")):
+                ok, message = runtime.change_server_address("https://new.example", "new-media")
+            self.assertFalse(ok)
+            self.assertIn("current server address", message)
+            self.assertEqual(runtime.server, "https://old.example")
+            self.assertEqual(runtime.media_server, "old-media")
+            self.assertFalse(state_path.exists())
+
     def test_empty_assignment_stops_monitor_pipeline(self):
         self.assertIsNone(command_for_assignment({"layout": "single", "cameras": "[]"}, "media"))
 

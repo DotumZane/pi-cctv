@@ -284,6 +284,60 @@ class DeviceRuntime:
         except Exception as exc:
             print(f"Unable to report {task} status to dashboard: {exc}", flush=True)
 
+    def change_server_address(self, new_server: str, new_media_server: str | None = None) -> tuple[bool, str]:
+        """Verify the new dashboard with this device credential, then persist endpoints."""
+        try:
+            parsed = urllib.parse.urlsplit(new_server)
+            if (parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password
+                    or parsed.path not in ("", "/") or parsed.query or parsed.fragment):
+                return False, "The management address must be an HTTPS origin, such as https://cctv.example:8443."
+            parsed.port
+            if new_media_server is not None:
+                media = urllib.parse.urlsplit("//" + new_media_server)
+                if (not media.hostname or media.username or media.password or media.path or media.query or media.fragment
+                        or not re.fullmatch(r"[A-Za-z0-9.-]+", new_media_server)
+                        or new_media_server.startswith(".") or new_media_server.endswith(".")
+                        or ".." in new_media_server):
+                    return False, "The media server must be a hostname or IP address without a scheme or path."
+            target = new_server.rstrip("/")
+            target_media = new_media_server or self.media_server
+            payload = {
+                "runtime": "v1", "agent_version": __agent_version__, "metrics": system_metrics(),
+                "recent_logs": recent_logs(),
+            }
+            if self.role == "monitor":
+                payload["displays"] = connected_displays()
+            http_json(
+                f"{target}/api/devices/{urllib.parse.quote(self.device_id, safe='')}/heartbeat",
+                "POST", payload, self.token,
+            )
+            state_path = Path(os.environ.get("CCTV_AGENT_STATE_FILE", "/var/lib/pi-cctv/device.json"))
+            state = {
+                "kind": self.role, "id": self.device_id, "name": self.name,
+                "location": self.location, "server": target,
+                "media_server": target_media, "device_token": self.token,
+            }
+            state_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            os.chmod(state_path.parent, 0o700)
+            descriptor, temporary = tempfile.mkstemp(prefix=".device-", dir=state_path.parent, text=True)
+            try:
+                os.fchmod(descriptor, 0o600)
+                with os.fdopen(descriptor, "w") as stream:
+                    json.dump(state, stream)
+                    stream.write("\n")
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(temporary, state_path)
+                os.chmod(state_path, 0o600)
+            finally:
+                if os.path.exists(temporary):
+                    os.unlink(temporary)
+            self.server = target
+            self.media_server = target_media
+            return True, f"Management and media addresses updated; authenticated heartbeat reached {target}."
+        except Exception as exc:
+            return False, f"The Pi stayed on its current server address: {exc}"
+
     def sync_setup_ap(self) -> tuple[bool, str]:
         """Fetch and apply the server-managed bridged Wi-Fi profile at startup."""
         if not self.server.startswith("https://"):
@@ -397,6 +451,23 @@ class DeviceRuntime:
                 self.report_maintenance("setup-ap-sync", "running", "Checking the saved server profile.")
                 ok, message = self.sync_setup_ap()
                 self.report_maintenance("setup-ap-sync", "succeeded" if ok else "failed", message)
+            elif command_name == "change_server_address":
+                payload = command.get("payload", {})
+                new_server = payload.get("server") if isinstance(payload, dict) else None
+                new_media_server = payload.get("media_server") if isinstance(payload, dict) else None
+                previous_server = self.server
+                self.report_maintenance("server-address", "running", "Checking the new dashboard address.")
+                ok, message = self.change_server_address(new_server, new_media_server) if isinstance(new_server, str) else (False, "The command did not include a valid server address.")
+                if ok:
+                    try:
+                        http_json(
+                            f"{previous_server}/api/devices/{urllib.parse.quote(self.device_id, safe='')}/maintenance/server-address",
+                            "POST", {"state": "succeeded", "details": {"message": message[:1000]}}, self.token,
+                        )
+                    except Exception as exc:
+                        print(f"Unable to report server-address status to previous dashboard: {exc}", flush=True)
+                else:
+                    self.report_maintenance("server-address", "failed", message)
             elif command_name == "diagnostics":
                 report = collect_diagnostics(self.role, self.device_id, self.media_server, self.processes)
                 try:

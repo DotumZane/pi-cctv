@@ -61,10 +61,6 @@ def request(url: str, method: str, payload: dict | None = None, token: str = "",
 def run_pending(server: str, bootstrap: str, media_server: str, name: str = "", state_path: Path = DEVICE_STATE_FILE) -> None:
     saved = load_device_state(state_path)
     if saved:
-        if saved.get("server") != server.rstrip("/") or saved.get("media_server") != media_server.rstrip("/"):
-            saved["server"] = server.rstrip("/")
-            saved["media_server"] = media_server.rstrip("/")
-            save_device_state(saved, state_path)
         runtime = DeviceRuntime(saved["kind"], saved["id"], saved["name"], saved["location"], saved["server"], saved["media_server"], token=saved["device_token"])
         runtime.run(enroll=False)
         return
@@ -114,7 +110,18 @@ def main() -> None:
     if not args.role or not args.name:
         parser.error("--role and --name are required unless --enroll is used")
     if args.run_media:
-        DeviceRuntime(args.role, args.id, args.name, args.location, args.server, args.media_server, args.interval, token=args.token).run()
+        saved = load_device_state()
+        if saved:
+            runtime = DeviceRuntime(saved["kind"], saved["id"], saved["name"], saved["location"], saved["server"], saved["media_server"], args.interval, token=saved["device_token"])
+        else:
+            saved = {
+                "kind": args.role, "id": args.id, "name": args.name,
+                "location": args.location, "server": args.server.rstrip("/"),
+                "media_server": args.media_server.rstrip("/"), "device_token": args.token,
+            }
+            save_device_state(saved)
+            runtime = DeviceRuntime(args.role, args.id, args.name, args.location, args.server, args.media_server, args.interval, token=args.token)
+        runtime.run()
         return
     base = args.server.rstrip("/")
     payload = {"id": args.id, "kind": args.role, "name": args.name, "location": args.location}

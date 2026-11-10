@@ -415,6 +415,15 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self.send_json({"maintenance": self.store.maintenance_run(device_id, "setup_ap_sync")})
             return
+        if parsed.path.startswith("/api/devices/") and parsed.path.endswith("/maintenance/server-address"):
+            if not self.require_auth():
+                return
+            device_id = unquote(parsed.path.split("/")[3])
+            if not self.store.device(device_id):
+                self.send_json({"error": "device not found"}, HTTPStatus.NOT_FOUND)
+                return
+            self.send_json({"maintenance": self.store.maintenance_run(device_id, "server_address")})
+            return
         if parsed.path.startswith("/api/devices/") and parsed.path.endswith("/preview"):
             if not self.require_read_auth():
                 return
@@ -909,6 +918,23 @@ class Handler(BaseHTTPRequestHandler):
                 result = self.store.set_maintenance_run(device_id, "setup_ap_sync", state, safe_details)
                 self.send_json({"ok": True, "maintenance": result})
                 return
+            if parsed.path.startswith("/api/devices/") and parsed.path.endswith("/maintenance/server-address"):
+                device_id = unquote(parsed.path.split("/")[3])
+                if not self.require_device_auth(device_id):
+                    return
+                if not self.store.device(device_id):
+                    self.send_json({"error": "device not found"}, HTTPStatus.NOT_FOUND)
+                    return
+                payload = self.body()
+                state = payload.get("state")
+                details = payload.get("details", {})
+                if state not in {"running", "succeeded", "failed"} or not isinstance(details, dict):
+                    self.send_json({"error": "valid state and details are required"}, HTTPStatus.BAD_REQUEST)
+                    return
+                safe_details = {"message": str(details.get("message", ""))[-1000:]}
+                result = self.store.set_maintenance_run(device_id, "server_address", state, safe_details)
+                self.send_json({"ok": True, "maintenance": result})
+                return
             if parsed.path.startswith("/api/pending/") and parsed.path.endswith("/adopt"):
                 if not self.require_auth():
                     return
@@ -933,7 +959,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json({"error": "device not found"}, HTTPStatus.NOT_FOUND)
                     return
                 payload = self.body()
-                allowed_commands = {"restart_media", "diagnostics", "restart_agent", "reboot", "update", "update_os", "sync_setup_ap"}
+                allowed_commands = {"restart_media", "diagnostics", "restart_agent", "reboot", "update", "update_os", "sync_setup_ap", "change_server_address"}
                 command_name = str(payload.get("command", ""))
                 if command_name not in allowed_commands:
                     self.send_json({"error": "unsupported diagnostic command"}, HTTPStatus.BAD_REQUEST)
@@ -957,7 +983,45 @@ class Handler(BaseHTTPRequestHandler):
                         self.send_json({"error": "setup Wi-Fi synchronization is already queued or running"}, HTTPStatus.CONFLICT)
                         return
                     self.store.set_maintenance_run(device_id, "setup_ap_sync", "queued", {})
-                command = self.store.queue_command(device_id, command_name)
+                command_payload = {}
+                if command_name == "change_server_address":
+                    if not self.authorized(admin_only=True):
+                        self.send_json({"error": "administrator access is required to change Pi server addresses"}, HTTPStatus.FORBIDDEN)
+                        return
+                    if not self.secure_connection():
+                        self.send_json({"error": "Pi server address changes require HTTPS"}, HTTPStatus.UPGRADE_REQUIRED)
+                        return
+                    server_url = payload.get("server")
+                    if not isinstance(server_url, str):
+                        self.send_json({"error": "an HTTPS management server address is required"}, HTTPStatus.BAD_REQUEST)
+                        return
+                    parsed_server = urlparse(server_url)
+                    if (parsed_server.scheme != "https" or not parsed_server.hostname
+                            or parsed_server.username or parsed_server.password
+                            or parsed_server.path not in ("", "/") or parsed_server.query or parsed_server.fragment
+                            or len(server_url) > 255):
+                        self.send_json({"error": "enter an HTTPS origin, for example https://cctv.example:8443"}, HTTPStatus.BAD_REQUEST)
+                        return
+                    try:
+                        parsed_server.port
+                    except ValueError:
+                        self.send_json({"error": "the dashboard address has an invalid port"}, HTTPStatus.BAD_REQUEST)
+                        return
+                    media_server = payload.get("media_server")
+                    if (not isinstance(media_server, str) or not media_server
+                            or len(media_server) > 255
+                            or not re.fullmatch(r"[A-Za-z0-9.-]+", media_server)
+                            or media_server.startswith(".") or media_server.endswith(".")
+                            or ".." in media_server):
+                        self.send_json({"error": "enter a media server hostname or IPv4 address without a scheme or path"}, HTTPStatus.BAD_REQUEST)
+                        return
+                    maintenance = self.store.maintenance_run(device_id, "server_address")
+                    if maintenance and maintenance["state"] in {"queued", "running"}:
+                        self.send_json({"error": "a server address change is already queued or running"}, HTTPStatus.CONFLICT)
+                        return
+                    command_payload = {"server": server_url.rstrip("/"), "media_server": media_server}
+                    self.store.set_maintenance_run(device_id, "server_address", "queued", command_payload)
+                command = self.store.queue_command(device_id, command_name, command_payload)
                 self.store.audit("device.command", device_id, self.client_address[0], {"command": command_name})
                 self.send_json(command, HTTPStatus.ACCEPTED)
                 return

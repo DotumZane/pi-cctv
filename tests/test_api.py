@@ -222,8 +222,8 @@ class ApiTests(unittest.TestCase):
     def test_health_reports_server_and_agent_versions_separately(self):
         status, health = self.call("GET", "/api/health")
         self.assertEqual(status, 200)
-        self.assertEqual(health["version"], "0.1.14")
-        self.assertEqual(health["latest_agent_version"], "0.1.14")
+        self.assertEqual(health["version"], "0.1.15")
+        self.assertEqual(health["latest_agent_version"], "0.1.15")
 
     def test_recording_download_requires_read_authorization(self):
         recording = Path(self.recordings.name) / "cam-01" / "2026-11-04" / "06-00-00.mp4"
@@ -252,6 +252,31 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(pending["commands"][0]["id"], command["id"])
         self.assertEqual(self.call("GET", "/api/devices/cam-1/commands")[1]["commands"], [])
+
+    def test_server_address_change_is_admin_only_validated_and_delivered_as_json(self):
+        self.httpd.store.register({"id": "cam-1", "kind": "camera", "name": "Saw 1"})
+        device_token = "address-change-device-token"
+        self.httpd.store.db.execute(
+            "UPDATE devices SET token_hash=? WHERE id=?",
+            (self.httpd.store.hash_token(device_token), "cam-1"),
+        )
+        self.httpd.store.db.commit()
+        self.httpd.store.create_user("admin", "correct-horse", "admin")
+        admin_token = self.httpd.store.create_session("admin")
+        request = {"command": "change_server_address", "server": "https://cctv.example:8443", "media_server": "192.168.10.10"}
+        with patch.object(Handler, "secure_connection", return_value=True):
+            self.assertEqual(self.call("POST", "/api/devices/cam-1/commands", request)[0], 401)
+            status, queued = self.call("POST", "/api/devices/cam-1/commands", request, admin_token)
+            self.assertEqual(status, 202)
+            status, commands = self.call("GET", "/api/devices/cam-1/commands", token=device_token)
+            self.assertEqual(status, 200)
+            self.assertEqual(commands["commands"][0]["id"], queued["id"])
+            self.assertEqual(commands["commands"][0]["payload"], {
+                "server": "https://cctv.example:8443", "media_server": "192.168.10.10",
+            })
+            self.assertEqual(self.call("POST", "/api/devices/cam-1/commands", {
+                **request, "media_server": "bad host/other",
+            }, admin_token)[0], 400)
 
     def test_diagnostics_commands_are_allowlisted_and_history_is_available(self):
         self.call("POST", "/api/devices", {"id": "cam-1", "kind": "camera", "name": "Saw 1"})
@@ -550,7 +575,7 @@ class ApiTests(unittest.TestCase):
         admin_token = self.httpd.store.create_session("admin")
 
         self.assertEqual(self.call("POST", "/api/devices/cam-1/commands", {"command": "update_os"}, admin_token)[0], 409)
-        self.call("POST", "/api/devices/cam-1/heartbeat", {"agent_version": "0.1.14"}, device_token)
+        self.call("POST", "/api/devices/cam-1/heartbeat", {"agent_version": __agent_version__}, device_token)
         self.assertEqual(self.call("POST", "/api/devices/cam-1/commands", {"command": "update_os"}, admin_token)[0], 202)
         self.assertEqual(self.call("POST", "/api/devices/cam-1/commands", {"command": "update_os"}, admin_token)[0], 409)
         self.assertEqual(self.call("POST", "/api/devices/cam-1/maintenance/os-update", {
