@@ -176,10 +176,24 @@ class RuntimeTests(unittest.TestCase):
     def test_reboot_uses_systemd_and_exits_agent_cleanly(self):
         runtime = DeviceRuntime("camera", "cam-1", "Camera", "", "http://server", "media")
         with patch("cctv.runtime.http_json", return_value={"commands": [{"command": "reboot"}]}), \
-                patch("cctv.runtime.subprocess.run") as run:
+                patch("cctv.runtime.subprocess.run") as run, \
+                patch.object(Path, "read_text", return_value="boot-id\n"), \
+                patch.object(runtime, "report_maintenance") as report:
             with self.assertRaisesRegex(SystemExit, "reboot requested"):
                 runtime.poll_commands()
         run.assert_called_once_with(["systemctl", "reboot"], check=True, timeout=10)
+        self.assertEqual(report.call_args.args[:3], ("reboot", "running", "Reboot requested; waiting for the Pi to return."))
+
+    def test_reboot_is_confirmed_only_after_boot_id_changes(self):
+        runtime = DeviceRuntime("camera", "cam-1", "Camera", "", "https://server", "media", token="device-token")
+        response = {"maintenance": {"state": "running", "details": {"boot_id": "old-boot"}}}
+        with patch("cctv.runtime.http_json", return_value=response) as request, \
+                patch("cctv.runtime.Path.read_text", return_value="new-boot\n"), \
+                patch.object(runtime, "report_maintenance") as report:
+            runtime.confirm_reboot_after_boot()
+        request.assert_called_once()
+        self.assertEqual(report.call_args.args[:3], ("reboot", "succeeded", "Pi reboot completed and the agent is back online."))
+        self.assertEqual(report.call_args.args[3], {"boot_id": "new-boot"})
 
     def test_dashboard_can_request_setup_ap_sync(self):
         runtime = DeviceRuntime("camera", "cam-1", "Camera", "", "https://server", "media")

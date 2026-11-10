@@ -222,8 +222,8 @@ class ApiTests(unittest.TestCase):
     def test_health_reports_server_and_agent_versions_separately(self):
         status, health = self.call("GET", "/api/health")
         self.assertEqual(status, 200)
-        self.assertEqual(health["version"], "0.1.16")
-        self.assertEqual(health["latest_agent_version"], "0.1.16")
+        self.assertEqual(health["version"], "0.1.17")
+        self.assertEqual(health["latest_agent_version"], "0.1.17")
 
     def test_recording_download_requires_read_authorization(self):
         recording = Path(self.recordings.name) / "cam-01" / "2026-11-04" / "06-00-00.mp4"
@@ -302,6 +302,26 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(result["maintenance"]["state"], "running")
         self.assertEqual(result["maintenance"]["details"]["message"], "Pulling update")
+
+    def test_pi_reboot_has_admin_status_and_device_boot_confirmation(self):
+        self.httpd.store.register({"id": "cam-1", "kind": "camera", "name": "Camera 1"})
+        device_token = "reboot-device-token"
+        self.httpd.store.db.execute(
+            "UPDATE devices SET token_hash=? WHERE id=?",
+            (self.httpd.store.hash_token(device_token), "cam-1"),
+        )
+        self.httpd.store.db.commit()
+        self.httpd.store.create_user("admin", "correct-horse", "admin")
+        admin_token = self.httpd.store.create_session("admin")
+        self.assertEqual(self.call("POST", "/api/devices/cam-1/commands", {"command": "reboot"}, admin_token)[0], 202)
+        self.assertEqual(self.call("POST", "/api/devices/cam-1/commands", {"command": "reboot"}, admin_token)[0], 409)
+        self.assertEqual(self.call("GET", "/api/devices/cam-1/maintenance/reboot", token=device_token)[1]["maintenance"]["state"], "queued")
+        self.assertEqual(self.call("POST", "/api/devices/cam-1/maintenance/reboot", {
+            "state": "running", "details": {"boot_id": "old-boot", "message": "Reboot requested"},
+        }, device_token)[0], 200)
+        status, result = self.call("GET", "/api/devices/cam-1/maintenance/reboot", token=admin_token)
+        self.assertEqual(status, 200)
+        self.assertEqual(result["maintenance"]["details"]["boot_id"], "old-boot")
 
     def test_diagnostics_commands_are_allowlisted_and_history_is_available(self):
         self.call("POST", "/api/devices", {"id": "cam-1", "kind": "camera", "name": "Saw 1"})

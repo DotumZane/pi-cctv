@@ -274,12 +274,12 @@ class DeviceRuntime:
             payload["displays"] = connected_displays()
         http_json(f"{self.server}/api/devices/{self.device_id}/heartbeat", "POST", payload, self.token)
 
-    def report_maintenance(self, task: str, state: str, message: str) -> None:
+    def report_maintenance(self, task: str, state: str, message: str, extra_details: dict | None = None) -> None:
         """Report an allowlisted maintenance task result to the dashboard."""
         try:
             http_json(
                 f"{self.server}/api/devices/{urllib.parse.quote(self.device_id, safe='')}/maintenance/{task}",
-                "POST", {"state": state, "details": {"message": message[:1000]}}, self.token,
+                "POST", {"state": state, "details": {"message": message[:1000], **(extra_details or {})}}, self.token,
             )
         except Exception as exc:
             print(f"Unable to report {task} status to dashboard: {exc}", flush=True)
@@ -439,6 +439,20 @@ class DeviceRuntime:
         ok, message = self.sync_setup_ap()
         self.report_maintenance("setup-ap-sync", "succeeded" if ok else "failed", message)
 
+    def confirm_reboot_after_boot(self) -> None:
+        """Confirm a queued reboot only after the operating system boot ID changes."""
+        try:
+            current_boot_id = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+            url = f"{self.server}/api/devices/{urllib.parse.quote(self.device_id, safe='')}/maintenance/reboot"
+            run = http_json(url, token=self.token).get("maintenance")
+            if not isinstance(run, dict) or run.get("state") != "running":
+                return
+            previous_boot_id = (run.get("details") or {}).get("boot_id")
+            if previous_boot_id and previous_boot_id != current_boot_id:
+                self.report_maintenance("reboot", "succeeded", "Pi reboot completed and the agent is back online.", {"boot_id": current_boot_id})
+        except Exception as exc:
+            print(f"Unable to confirm previous reboot: {exc}", flush=True)
+
     def poll_commands(self) -> None:
         commands = http_json(f"{self.server}/api/devices/{self.device_id}/commands", token=self.token).get("commands", [])
         for command in commands:
@@ -518,7 +532,13 @@ class DeviceRuntime:
             elif command_name == "reboot":
                 print("Reboot requested; stopping media and asking systemd to reboot", flush=True)
                 self.stop_media()
-                subprocess.run(["systemctl", "reboot"], check=True, timeout=10)
+                boot_id = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+                self.report_maintenance("reboot", "running", "Reboot requested; waiting for the Pi to return.", {"boot_id": boot_id})
+                try:
+                    subprocess.run(["systemctl", "reboot"], check=True, timeout=10)
+                except (OSError, subprocess.SubprocessError) as exc:
+                    self.report_maintenance("reboot", "failed", f"The Pi could not start rebooting: {exc}")
+                    continue
                 raise SystemExit("reboot requested")
 
     def desired_command(self) -> list[str]:
@@ -721,6 +741,7 @@ class DeviceRuntime:
                 self.sync_setup_ap_once_per_boot()
             except Exception as exc:
                 print(f"Unable to apply setup Wi-Fi profile at startup: {exc}", flush=True)
+            self.confirm_reboot_after_boot()
             while True:
                 try:
                     self.heartbeat()
