@@ -11,7 +11,7 @@ services:
       CCTV_BOOTSTRAP_TOKEN: ${CCTV_BOOTSTRAP_TOKEN:?set CCTV_BOOTSTRAP_TOKEN in .env}
       CCTV_PUBLIC_MEDIA_URL: ${CCTV_PUBLIC_MEDIA_URL:?set CCTV_PUBLIC_MEDIA_URL in .env}
       CCTV_PUBLIC_WEBRTC_URL: ${CCTV_PUBLIC_WEBRTC_URL:?set CCTV_PUBLIC_WEBRTC_URL in .env}
-      CCTV_TLS_PORT: 8443
+      CCTV_TLS_PORT: ${CCTV_TLS_PORT:-8443}
       CCTV_TLS_CERT: ${CCTV_TLS_CERT:-}
       CCTV_TLS_KEY: ${CCTV_TLS_KEY:-}
       CCTV_TLS_CA_CERT: ${CCTV_TLS_CA_CERT:-}
@@ -28,6 +28,21 @@ services:
       - /var/lib/pi-cctv-host-update:/host-update
     depends_on:
       - media
+
+  discovery:
+    build: .
+    command: ["python3", "-m", "cctv.discovery", "--serve"]
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      CCTV_TLS_CERT: ${CCTV_TLS_CERT:-/run/pi-cctv/tls/server.crt}
+      CCTV_TLS_CA_CERT: ${CCTV_TLS_CA_CERT:-/run/pi-cctv/tls/ca.crt}
+      CCTV_TLS_PORT: ${CCTV_TLS_PORT:-8443}
+      CCTV_DISCOVERY_PORT: ${CCTV_DISCOVERY_PORT:-42900}
+    volumes:
+      - ${CCTV_TLS_DIR:-/etc/pi-cctv/tls}:/run/pi-cctv/tls:ro
+    depends_on:
+      - management
 
   media:
     image: bluenviron/mediamtx:latest

@@ -12,6 +12,7 @@ MEDIA_SERVER=""
 TOKEN=""
 SKIP_PACKAGES="false"
 ENROLL="false"
+DISCOVER="false"
 BOOTSTRAP_TOKEN=""
 SETUP_AP="false"
 AP_SSID="PiCCTV-Setup"
@@ -34,6 +35,7 @@ while [[ $# -gt 0 ]]; do
     --token) TOKEN="$2"; shift 2;;
     --skip-packages) SKIP_PACKAGES="true"; shift;;
     --enroll) ENROLL="true"; shift;;
+    --discover) DISCOVER="true"; shift;;
     --bootstrap-token) BOOTSTRAP_TOKEN="$2"; shift 2;;
     --setup-ap) SETUP_AP="true"; shift;;
     --ap-ssid) AP_SSID="$2"; shift 2;;
@@ -95,8 +97,15 @@ configure_setup_ap() {
     --ssid "$AP_SSID" --country "$AP_COUNTRY" --channel "$AP_CHANNEL"
 }
 
-if [[ "$ENROLL" == "true" || -n "$ROLE" ]]; then
-  if [[ "$ENROLL" == "true" ]]; then
+if [[ "$DISCOVER" == "true" && ( "$ENROLL" == "true" || -n "$ROLE" || -n "$SERVER" || -n "$MEDIA_SERVER" || -n "$TOKEN" ) ]]; then
+  echo "--discover is a standalone first-boot setup mode; do not combine it with manual enrollment options." >&2
+  exit 2
+fi
+
+if [[ "$DISCOVER" == "true" || "$ENROLL" == "true" || -n "$ROLE" ]]; then
+  if [[ "$DISCOVER" == "true" ]]; then
+    AGENT_ARGS="--discover"
+  elif [[ "$ENROLL" == "true" ]]; then
     [[ -n "$SERVER" && -n "$MEDIA_SERVER" ]] || { echo "--enroll requires --server and --media-server" >&2; exit 2; }
     if [[ ! -f /var/lib/pi-cctv/device.json && -z "$BOOTSTRAP_TOKEN" ]]; then
       echo "First-time --enroll requires --bootstrap-token." >&2

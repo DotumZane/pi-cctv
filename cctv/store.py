@@ -89,7 +89,8 @@ class Store:
                 first_seen TEXT NOT NULL,
                 last_seen TEXT NOT NULL,
                 adopted_device_id TEXT,
-                issued_token TEXT
+                issued_token TEXT,
+                enrollment_secret_hash TEXT
             );
             CREATE TABLE IF NOT EXISTS users (
                 username TEXT PRIMARY KEY,
@@ -112,6 +113,9 @@ class Store:
         columns = {row[1] for row in self.db.execute("PRAGMA table_info(devices)").fetchall()}
         if "token_hash" not in columns:
             self.db.execute("ALTER TABLE devices ADD COLUMN token_hash TEXT")
+        pending_columns = {row[1] for row in self.db.execute("PRAGMA table_info(pending_devices)").fetchall()}
+        if "enrollment_secret_hash" not in pending_columns:
+            self.db.execute("ALTER TABLE pending_devices ADD COLUMN enrollment_secret_hash TEXT")
         assignment_columns = {row[1] for row in self.db.execute("PRAGMA table_info(assignments)").fetchall()}
         if "outputs" not in assignment_columns:
             self.db.execute("ALTER TABLE assignments ADD COLUMN outputs TEXT NOT NULL DEFAULT '[]'")
@@ -257,8 +261,48 @@ class Store:
         return dict(self.db.execute("SELECT * FROM pending_devices WHERE id=?", (device_id,)).fetchone())
 
     @serialized
+    def pending_register_discovered(self, device_id: str, name: str, ip_address: str, metadata: dict[str, Any], secret: str) -> dict[str, Any]:
+        timestamp = now()
+        self.db.execute(
+            """INSERT INTO pending_devices(id, name, ip_address, metadata, first_seen, last_seen, enrollment_secret_hash)
+               VALUES(?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET name=excluded.name, ip_address=excluded.ip_address,
+               metadata=excluded.metadata, last_seen=excluded.last_seen
+               WHERE pending_devices.adopted_device_id IS NULL
+                 AND pending_devices.enrollment_secret_hash=excluded.enrollment_secret_hash""",
+            (device_id, name, ip_address, json.dumps(metadata), timestamp, timestamp, self.hash_token(secret)),
+        )
+        row = self.db.execute("SELECT * FROM pending_devices WHERE id=?", (device_id,)).fetchone()
+        return dict(row) if row and row["enrollment_secret_hash"] == self.hash_token(secret) else {}
+
+    @serialized
+    def discovered_adoption_claim(self, device_id: str, secret: str) -> dict[str, Any] | None:
+        row = self.db.execute(
+            """SELECT d.*, p.issued_token FROM devices d JOIN pending_devices p ON p.adopted_device_id=d.id
+               WHERE p.id=? AND p.enrollment_secret_hash=? AND p.issued_token IS NOT NULL""",
+            (device_id, self.hash_token(secret)),
+        ).fetchone()
+        return dict(row) if row else None
+
+    @serialized
+    def pending_secret_valid(self, device_id: str, secret: str) -> bool:
+        row = self.db.execute("SELECT enrollment_secret_hash FROM pending_devices WHERE id=?", (device_id,)).fetchone()
+        return bool(row and row["enrollment_secret_hash"] and secrets.compare_digest(row["enrollment_secret_hash"], self.hash_token(secret)))
+
+    @serialized
+    def discard_unadopted_pending(self, device_id: str, secret: str) -> bool:
+        cursor = self.db.execute(
+            "DELETE FROM pending_devices WHERE id=? AND adopted_device_id IS NULL AND enrollment_secret_hash=?",
+            (device_id, self.hash_token(secret)),
+        )
+        self.db.commit()
+        return cursor.rowcount > 0
+
+    @serialized
     def pending_devices(self) -> list[dict[str, Any]]:
-        return [dict(row) for row in self.db.execute("SELECT * FROM pending_devices WHERE adopted_device_id IS NULL ORDER BY first_seen").fetchall()]
+        return [dict(row) for row in self.db.execute(
+            "SELECT id, name, ip_address, metadata, first_seen, last_seen FROM pending_devices WHERE adopted_device_id IS NULL ORDER BY first_seen"
+        ).fetchall()]
 
     @serialized
     def adopt_pending(self, pending_id: str, kind: str, name: str, location: str) -> tuple[dict[str, Any], str] | None:
@@ -390,6 +434,10 @@ class Store:
         self.db.execute(
             "UPDATE devices SET status='online', last_seen=?, ip_address=COALESCE(NULLIF(?, ''), ip_address), metadata=? WHERE id=?",
             (now(), ip_address, metadata, device_id),
+        )
+        self.db.execute(
+            "UPDATE pending_devices SET enrollment_secret_hash=NULL, issued_token=NULL WHERE adopted_device_id=?",
+            (device_id,),
         )
         self.db.commit()
         return self.device(device_id)

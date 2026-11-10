@@ -53,7 +53,7 @@ An older server build without **System settings → Server software** cannot upd
 ```bash
 cd ~/pi-cctv
 git pull --ff-only origin main
-sudo docker compose up -d --build management
+sudo docker compose up -d --build management discovery
 sudo bash scripts/install-server-updater.sh
 ```
 
@@ -70,7 +70,7 @@ Use `--db /path/to/cctv.db` when the server uses a non-default database path. Re
 Administrators can rename an adopted Pi and update its location from **Devices → Open → Device identity**. This changes only the dashboard name and location; the stable device ID, role, and agent settings remain intact.
 Administrators can also use **Devices → Open → Remove from dashboard** to remove a retired or test device record and clear its saved monitor routes. This does not wipe the Pi; a still-running Pi must be enrolled again before it can report to the dashboard.
 
-For adoption-based provisioning, `CCTV_BOOTSTRAP_TOKEN` is used only to place generic Pis into the pending-device list. It is not an administrator token. After adoption, the Pi receives a device-specific credential and the dashboard-selected role. Set `CCTV_PUBLIC_MEDIA_URL` and `CCTV_PUBLIC_WEBRTC_URL` to URLs reachable from the administrator's browser for live previews.
+For legacy adoption-based provisioning, `CCTV_BOOTSTRAP_TOKEN` places generic Pis into the pending-device list. New installations can use LAN discovery instead and do not need a shared enrollment token. After adoption, each Pi receives a device-specific credential and the dashboard-selected role. Set `CCTV_PUBLIC_MEDIA_URL` and `CCTV_PUBLIC_WEBRTC_URL` to URLs reachable from the administrator's browser for live previews.
 
 The V1 management API uses Python's standard library and SQLite. Docker installs FFmpeg in the management container for NVR recording:
 
@@ -109,7 +109,20 @@ curl -fsSL https://raw.githubusercontent.com/DotumZane/pi-cctv/main/install.sh |
   --server http://SERVER:8080 --media-server MEDIA_SERVER --token ADMIN_TOKEN
 ```
 
-To install a generic Pi that waits for dashboard adoption instead of choosing a role during installation:
+### New Pi: discover dashboards and adopt without a shared key
+
+On a fresh Pi OS Lite install, connect Ethernet to the CCTV LAN and run this once:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/DotumZane/pi-cctv/main/install.sh | \
+  sudo bash -s -- --discover
+```
+
+The agent discovers Pi CCTV dashboards on the same LAN, checks each dashboard's HTTPS certificate authority against the fingerprint in its LAN discovery response, and requests pending enrollment without a shared bootstrap token. Each reachable dashboard shows the Pi under **Pending devices**; adopt it on the dashboard that should own it and choose Camera or Monitor. That dashboard then issues the Pi's unique device credential. Discovery is local-network trust-on-first-use: use it only on a trusted CCTV LAN. A Pi is not controllable until an administrator adopts it. If dashboards are on different networks or LAN discovery is blocked, use the manual enrollment flow below with the selected dashboard address.
+
+The dashboard server must have local HTTPS configured and run the `discovery` Compose service. After pulling this release, deploy it with `sudo docker compose up -d --build management discovery`; the dashboard's **Server software** updater also refreshes both services. The old bootstrap-token flow remains available for existing setups.
+
+To install a generic Pi using a shared bootstrap token and explicit dashboard address:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/DotumZane/pi-cctv/main/install.sh | \

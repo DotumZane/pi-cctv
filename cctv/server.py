@@ -330,7 +330,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self.send_json({"devices": self.store.pending_devices()})
             return
-        if parsed.path.startswith("/api/enroll/"):
+        if parsed.path.startswith("/api/enroll/") and not parsed.path.startswith("/api/enroll/discovered/"):
             if not isinstance(self.connection, ssl.SSLSocket):
                 self.send_json({"error": "device enrollment requires HTTPS"}, HTTPStatus.UPGRADE_REQUIRED)
                 return
@@ -343,6 +343,26 @@ class Handler(BaseHTTPRequestHandler):
                 claim.pop("token_hash", None)
                 claim["status"] = "adopted"
             self.send_json(claim or {"status": "pending"})
+            return
+        if parsed.path.startswith("/api/enroll/discovered/"):
+            if not isinstance(self.connection, ssl.SSLSocket):
+                self.send_json({"error": "device enrollment requires HTTPS"}, HTTPStatus.UPGRADE_REQUIRED)
+                return
+            device_id = unquote(parsed.path.rsplit("/", 1)[-1])
+            secret = self.headers.get("X-Device-Pairing", "")
+            if not secret or not self.store.pending_secret_valid(device_id, secret):
+                self.send_json({"error": "pairing identity invalid"}, HTTPStatus.UNAUTHORIZED)
+                return
+            claim = self.store.discovered_adoption_claim(device_id, secret)
+            if claim:
+                claim["device_token"] = claim.pop("issued_token")
+                claim.pop("token_hash", None)
+                claim.pop("enrollment_secret_hash", None)
+                claim.pop("metadata", None)
+                claim["status"] = "adopted"
+                self.send_json(claim)
+            else:
+                self.send_json({"status": "pending", "id": device_id})
             return
         if parsed.path.startswith("/api/cameras/") and parsed.path.endswith("/live"):
             camera_id = parsed.path.split("/")[3]
@@ -775,6 +795,39 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/api/enroll" and not isinstance(self.connection, ssl.SSLSocket):
                 self.send_json({"error": "device enrollment requires HTTPS"}, HTTPStatus.UPGRADE_REQUIRED)
+                return
+            if parsed.path.startswith("/api/enroll/discovered/") and parsed.path.endswith("/cancel"):
+                if not isinstance(self.connection, ssl.SSLSocket):
+                    self.send_json({"error": "device enrollment requires HTTPS"}, HTTPStatus.UPGRADE_REQUIRED)
+                    return
+                device_id = unquote(parsed.path.split("/")[4])
+                pairing_secret = self.headers.get("X-Device-Pairing", "")
+                if len(pairing_secret) < 32:
+                    self.send_json({"error": "pairing identity invalid"}, HTTPStatus.UNAUTHORIZED)
+                    return
+                removed = self.store.discard_unadopted_pending(device_id, pairing_secret)
+                self.send_json({"ok": removed})
+                return
+            if parsed.path == "/api/enroll/discovered":
+                if not isinstance(self.connection, ssl.SSLSocket):
+                    self.send_json({"error": "device enrollment requires HTTPS"}, HTTPStatus.UPGRADE_REQUIRED)
+                    return
+                payload = self.body()
+                device_id = str(payload.get("id", "")).strip()
+                pairing_secret = self.headers.get("X-Device-Pairing", "")
+                if not re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", device_id) or len(pairing_secret) < 32:
+                    self.send_json({"error": "valid device identity and pairing secret are required"}, HTTPStatus.BAD_REQUEST)
+                    return
+                name = str(payload.get("name", device_id))[:128]
+                metadata = payload.get("metadata", {})
+                if not isinstance(metadata, dict):
+                    self.send_json({"error": "metadata must be an object"}, HTTPStatus.BAD_REQUEST)
+                    return
+                pending = self.store.pending_register_discovered(device_id, name, self.client_address[0], metadata, pairing_secret)
+                if not pending:
+                    self.send_json({"error": "device ID is already registered with a different pairing identity"}, HTTPStatus.CONFLICT)
+                    return
+                self.send_json({"status": "pending", "id": pending["id"]}, HTTPStatus.ACCEPTED)
                 return
             if parsed.path == "/api/auth/setup":
                 if self.store.user_count():
