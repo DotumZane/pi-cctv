@@ -288,6 +288,33 @@ class ApiTests(unittest.TestCase):
         self.assertGreater(body["recordings_storage"]["total_bytes"], 0)
         self.assertGreaterEqual(body["database_bytes"], 0)
 
+    def test_server_stream_addresses_are_admin_managed_and_used_for_live_urls(self):
+        self.httpd.store.create_user("admin", "correct-horse-battery")
+        token = self.httpd.store.create_session("admin")
+        self.httpd.public_media_url = "http://media.example:8888"
+        self.httpd.public_webrtc_url = "http://media.example:8889"
+        status, settings = self.call("GET", "/api/server/network", token=token)
+        self.assertEqual(status, 200)
+        self.assertEqual(settings["media_url"], "http://media.example:8888")
+
+        payload = {"media_url": "https://streams.example/hls", "webrtc_url": "https://streams.example/webrtc"}
+        status, body = self.call("PUT", "/api/server/network", payload, token)
+        self.assertEqual(status, 426)
+        with patch.object(Handler, "secure_connection", return_value=True):
+            status, body = self.call("PUT", "/api/server/network", payload, token)
+        self.assertEqual(status, 200)
+        self.assertEqual(body, payload)
+
+        self.call("POST", "/api/devices", {"id": "cam-1", "kind": "camera", "name": "Camera"}, token)
+        status, live = self.call("GET", "/api/cameras/cam-1/live", token=token)
+        self.assertEqual(status, 200)
+        self.assertEqual(live["hls_url"], "https://streams.example/hls/cam-1/index.m3u8")
+        self.assertEqual(live["webrtc_url"], "https://streams.example/webrtc/cam-1/whep")
+
+        with patch.object(Handler, "secure_connection", return_value=True):
+            status, body = self.call("PUT", "/api/server/network", {"media_url": "javascript:alert(1)", "webrtc_url": payload["webrtc_url"]}, token)
+        self.assertEqual(status, 400)
+
     def test_server_os_update_requires_https_and_queues_fixed_action(self):
         self.httpd.store.create_user("admin", "correct-horse-battery")
         token = self.httpd.store.create_session("admin")

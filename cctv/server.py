@@ -167,6 +167,18 @@ class Handler(BaseHTTPRequestHandler):
                 })
             self.send_json(profile)
             return
+        if parsed.path == "/api/server/network":
+            if not self.store.user_count():
+                self.send_json({"error": "create an administrator account before changing server settings"}, HTTPStatus.UNAUTHORIZED)
+                return
+            if not self.require_auth():
+                return
+            saved = self.store.system_setting("public_stream_endpoints") or {}
+            self.send_json({
+                "media_url": saved.get("media_url", getattr(self.server, "public_media_url", "http://127.0.0.1:8888")),  # type: ignore[attr-defined]
+                "webrtc_url": saved.get("webrtc_url", getattr(self.server, "public_webrtc_url", "http://127.0.0.1:8889")),  # type: ignore[attr-defined]
+            })
+            return
         if parsed.path == "/api/server/setup-ap":
             if not self.store.user_count():
                 self.send_json({"error": "create an administrator account before changing server settings"}, HTTPStatus.UNAUTHORIZED)
@@ -331,6 +343,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             media_url = getattr(self.server, "public_media_url", "http://127.0.0.1:8888").rstrip("/")  # type: ignore[attr-defined]
             webrtc_url = getattr(self.server, "public_webrtc_url", "http://127.0.0.1:8889").rstrip("/")  # type: ignore[attr-defined]
+            configured_endpoints = self.store.system_setting("public_stream_endpoints") or {}
+            media_url = str(configured_endpoints.get("media_url", media_url)).rstrip("/")
+            webrtc_url = str(configured_endpoints.get("webrtc_url", webrtc_url)).rstrip("/")
             self.send_json({"camera_id": camera_id, "hls_url": f"{media_url}/{camera_id}/index.m3u8", "webrtc_url": f"{webrtc_url}/{camera_id}/whep"})
             return
         if parsed.path.startswith("/api/devices/") and parsed.path.endswith("/commands"):
@@ -922,6 +937,39 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self.store.audit("user.password_reset", username, self.client_address[0], {"sessions_revoked": True})
             self.send_json({"ok": True, "username": username, "sessions_revoked": True})
+            return
+        if parsed.path == "/api/server/network":
+            if not self.store.user_count():
+                self.send_json({"error": "create an administrator account before changing server settings"}, HTTPStatus.UNAUTHORIZED)
+                return
+            if not self.require_auth():
+                return
+            if not self.secure_connection():
+                self.send_json({"error": "stream endpoints can only be changed over HTTPS"}, HTTPStatus.UPGRADE_REQUIRED)
+                return
+            payload = self.body()
+            normalized = {}
+            for key in ("media_url", "webrtc_url"):
+                value = payload.get(key)
+                if not isinstance(value, str) or not value.strip() or len(value) > 255:
+                    self.send_json({"error": "enter both media and WebRTC base URLs"}, HTTPStatus.BAD_REQUEST)
+                    return
+                value = value.strip().rstrip("/")
+                try:
+                    endpoint = urlparse(value)
+                    valid = (endpoint.scheme in {"http", "https"} and bool(endpoint.hostname)
+                             and endpoint.username is None and endpoint.password is None
+                             and not endpoint.query and not endpoint.fragment)
+                    endpoint.port  # validate any explicit port
+                except ValueError:
+                    valid = False
+                if not valid:
+                    self.send_json({"error": f"{key} must be a valid HTTP or HTTPS URL without credentials, query, or fragment"}, HTTPStatus.BAD_REQUEST)
+                    return
+                normalized[key] = value
+            self.store.set_system_setting("public_stream_endpoints", normalized)
+            self.store.audit("server.stream_endpoints.update", "stream-endpoints", self.client_address[0], normalized)
+            self.send_json(normalized)
             return
         if parsed.path == "/api/server/setup-ap":
             if not self.store.user_count():

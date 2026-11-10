@@ -170,6 +170,8 @@ Use a non-root Pi username. If the device name does not resolve, use the Pi's Ta
 
 Monitor settings are available from the selected monitor editor: scaling, orientation, output size, refresh rate, kiosk mode, screen blanking prevention, camera/timestamp overlays, reconnect/watchdog limits, fallback camera, and scheduled-layout enablement. Hardware-specific display behavior still needs validation on the first Pi board.
 
+The dashboard **System settings → Live stream addresses** section controls the public MediaMTX URLs embedded in camera live-view responses. Set both the Media/HLS and WebRTC base URLs to addresses reachable from the browser. These values are stored in the management database and do not change the management server URL configured on the Pis. If unset, the server uses `CCTV_PUBLIC_MEDIA_URL` and `CCTV_PUBLIC_WEBRTC_URL` from its environment.
+
 If `--id` is omitted, the agent uses the Pi hostname so the identity remains stable across reboot and service restart.
 
 Pi heartbeats include available CPU temperature, one-minute load, memory-use percentage, uptime metrics, and monitor display outputs when applicable. Settings and health metadata are merged so recurring heartbeats cannot erase administrator configuration.
