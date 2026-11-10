@@ -222,6 +222,47 @@ const mobileLayoutStyle=document.createElement('style');mobileLayoutStyle.textCo
 }
 `;document.head.appendChild(mobileLayoutStyle);
 mobileLayoutStyle.textContent+='@media(max-width:850px){.system-settings-form{grid-template-columns:minmax(0,1fr)!important}.system-settings-actions{display:flex;flex-wrap:wrap;gap:8px}.system-settings-form input,.system-settings-form select{width:100%;min-width:0}}';
+mobileLayoutStyle.textContent+=`
+@media(max-width:850px){
+ .app{display:grid!important;grid-template-columns:minmax(0,1fr)!important;grid-template-rows:auto minmax(0,1fr)!important;width:100%;max-width:100vw}
+ .sidebar,.main,.content{width:100%;max-width:100%;min-width:0}
+ .sidebar{display:grid!important;grid-template-columns:minmax(0,1fr)!important;grid-template-areas:"brand" "nav" "foot";overflow:hidden}
+ .nav{max-width:100%;min-width:0}
+ .nav button{min-width:max-content;max-width:none}
+ .topbar{width:100%;min-width:0}
+ .content{overflow-x:hidden}
+ .view,.view>*,.view>.panel>*,.panel-head>*,#assignments,#settings{min-width:0;max-width:100%}
+ #view-routing .panel-head{flex-direction:column;align-items:stretch}
+ #view-routing .panel-head input{width:100%}
+ #view-routing #assignments>div{display:grid!important;grid-template-columns:minmax(0,1fr)!important;min-height:0!important;width:100%;max-width:100%}
+ #view-routing #assignments>div>.panel{grid-column:1;box-sizing:border-box;width:100%;min-width:0;max-width:100%;overflow:hidden!important}
+ #view-routing [data-monitor-card] .panel-head{flex-direction:row;flex-wrap:wrap;align-items:flex-start}
+ #view-routing [data-monitor-card] .grid.two{grid-template-columns:minmax(0,1fr)!important}
+ #view-routing [data-monitor-card] label{min-width:0;max-width:100%;overflow-wrap:anywhere}
+ #view-routing [data-monitor-card] select,#view-routing [data-monitor-card] input{width:100%;min-width:0;max-width:100%}
+ #view-routing [data-monitor-card] .slots{grid-template-columns:minmax(0,1fr)!important}
+ #view-routing [data-monitor-card] [style*="justify-content:flex-end"]{flex-wrap:wrap}
+ #settings>div{grid-template-columns:minmax(0,1fr)!important}
+ #settings .camera-editor .grid.two>label:not(:has(input[type=checkbox])){grid-template-columns:minmax(0,1fr)!important}
+ .device-hero-actions,.action-row,.system-settings-actions{flex-wrap:wrap}
+ .device-grid{grid-template-columns:minmax(0,1fr)!important}
+}
+@media(max-width:480px){
+ .sidebar{padding:8px 10px}
+ .nav{gap:2px}
+ .nav button{font-size:11px;padding:7px 8px}
+ .sidebar-foot{display:none}
+ .topbar{flex-direction:row;align-items:center}
+ .topbar h1{font-size:17px}
+ .top-actions{justify-content:flex-end}
+ .content{padding:9px}
+ .panel{padding:11px}
+ #view-routing #assignments>div{gap:9px!important}
+ #view-routing #assignments>div>.panel{padding:10px!important}
+ #view-routing [data-monitor-card] .panel-head{gap:7px}
+ #view-routing [data-monitor-card] .layout-badge{font-size:11px}
+}
+`;
 document.querySelector('.nav').insertAdjacentHTML('beforeend','<button id="system-nav" data-view="system" hidden>⚙ System settings</button>');
 document.querySelector('.content').insertAdjacentHTML('beforeend','<section class="view" id="view-system"><div class="panel"><div class="panel-head"><div><h2>Server setup Wi-Fi</h2><span class="notice">Set the shared hidden access point profile managed by this server.</span></div><button class="ghost" onclick="loadSystemSettings()">Refresh</button></div><p id="system-settings-notice" class="notice">Loading settings…</p><form id="system-settings-form" class="grid two system-settings-form"><label><input id="setup-ap-enabled" type="checkbox"> Enable setup access point</label><label>SSID<input id="setup-ap-ssid" maxlength="32" required></label><label>Country code<input id="setup-ap-country" maxlength="2" required></label><label>2.4 GHz channel<select id="setup-ap-channel"><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option><option>6</option><option>7</option><option>8</option><option>9</option><option>10</option><option>11</option></select></label><label>Shared Wi-Fi password<input id="setup-ap-password" type="password" minlength="8" maxlength="63" autocomplete="new-password" placeholder="Leave blank to keep current password"></label><div class="system-settings-actions"><button class="primary" type="submit">Save profile</button><button class="ghost" type="button" onclick="applySetupProfile()">Apply saved profile to online Pis</button></div></form><p class="notice">The AP bridges your phone to the wired LAN; it does not provide DHCP, NAT, or internet. Saving never reveals the stored password. Use HTTPS to change the profile. Devices that are offline will receive it the next time they start.</p><p id="system-https-link" hidden></p></div></section>');
 document.querySelector('#view-system .panel').insertAdjacentHTML('beforeend','<section class="server-update-section"><div class="panel-head"><div><h2>Server software</h2><span class="notice">Update this dashboard and its management service from the project’s main branch.</span></div><button class="ghost" type="button" onclick="loadServerUpdateStatus()">Refresh status</button></div><p id="server-update-status" class="notice">Checking update helper…</p><div class="system-settings-actions"><button class="primary" id="server-update-button" type="button" onclick="requestServerUpdate()">Update server software</button></div><pre id="server-update-log" class="command-output" hidden></pre></section>');
