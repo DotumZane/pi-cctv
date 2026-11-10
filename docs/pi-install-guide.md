@@ -29,6 +29,8 @@ The installer installs the required packages, downloads the Pi CCTV software, an
 
 Open **Devices → Pending devices** on the dashboard you want this Pi to belong to. If several dashboards are on the same LAN, the Pi may appear on each one; adopt it on the correct dashboard. Choose **Camera** or **Monitor**, set the display name and location, then click **Adopt**. The Pi receives its unique device credential and begins reporting to that dashboard. Other dashboards remove their unadopted pending entry when the Pi completes adoption.
 
+To replace an offline camera, choose that camera in **Replace offline camera** before adopting the new Pi. This preserves the camera's dashboard identity, camera settings, and monitor assignments, and changes the new Pi's hostname to the retained camera ID. Replacement is available only for offline cameras.
+
 Check the Devices page to confirm it becomes online. For a camera, confirm a live view appears. For a monitor, assign a camera in Monitor routing and confirm its display.
 
 ## If the Pi does not appear

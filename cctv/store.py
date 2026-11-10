@@ -305,18 +305,48 @@ class Store:
         ).fetchall()]
 
     @serialized
-    def adopt_pending(self, pending_id: str, kind: str, name: str, location: str) -> tuple[dict[str, Any], str] | None:
+    def adopt_pending(
+        self, pending_id: str, kind: str, name: str, location: str,
+        replace_device_id: str = "",
+    ) -> tuple[dict[str, Any], str] | None:
         pending = self.db.execute("SELECT * FROM pending_devices WHERE id=? AND adopted_device_id IS NULL", (pending_id,)).fetchone()
         if not pending:
             return None
         token = secrets.token_urlsafe(32)
         device_id = pending_id
+        replacement = None
+        if replace_device_id:
+            if kind != "camera" or replace_device_id == pending_id:
+                return None
+            replacement = next((item for item in self.devices() if item["id"] == replace_device_id), None)
+            if not replacement or replacement["kind"] != "camera" or replacement["status"] != "offline":
+                return None
+            device_id = replace_device_id
         existing = self.device(device_id)
         if existing:
+            try:
+                metadata = json.loads(existing.get("metadata") or "{}")
+            except (json.JSONDecodeError, TypeError):
+                metadata = {}
+            if replacement:
+                try:
+                    pending_metadata = json.loads(pending["metadata"] or "{}")
+                except (json.JSONDecodeError, TypeError):
+                    pending_metadata = {}
+                old_settings = metadata.get("settings", {})
+                metadata.update(pending_metadata)
+                metadata["settings"] = old_settings
+                name = existing["name"]
+                location = existing["location"]
+                # Never execute commands queued for the retired hardware on its replacement.
+                self.db.execute(
+                    "DELETE FROM device_commands WHERE device_id=? AND consumed_at IS NULL",
+                    (device_id,),
+                )
             self.db.execute(
                 """UPDATE devices SET kind=?, name=?, location=?, ip_address=?, status='online',
-                   last_seen=?, token_hash=? WHERE id=?""",
-                (kind, name, location, pending["ip_address"], now(), self.hash_token(token), device_id),
+                   last_seen=?, token_hash=?, metadata=? WHERE id=?""",
+                (kind, name, location, pending["ip_address"], now(), self.hash_token(token), json.dumps(metadata), device_id),
             )
         else:
             self.db.execute(

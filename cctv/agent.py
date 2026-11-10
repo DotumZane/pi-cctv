@@ -9,6 +9,7 @@ import os
 import secrets
 import socket
 import ssl
+import subprocess
 import tempfile
 import time
 import urllib.request
@@ -142,10 +143,12 @@ def run_discovered(state_path: Path = DEVICE_STATE_FILE) -> None:
                         except Exception:
                             pass
                     enrolled = {
-                        "kind": claim["kind"], "id": pairing["id"], "name": claim["name"],
+                        "kind": claim["kind"], "id": claim["id"], "name": claim["name"],
                         "location": claim.get("location", ""), "server": server["url"],
                         "media_server": server["media_server"], "device_token": claim["device_token"],
                     }
+                    if enrolled["id"] != socket.gethostname():
+                        subprocess.run(["hostnamectl", "set-hostname", enrolled["id"]], check=True, timeout=15)
                     save_device_state(enrolled, state_path)
                     pairing_path.unlink(missing_ok=True)
                     DeviceRuntime(enrolled["kind"], enrolled["id"], enrolled["name"], enrolled["location"], enrolled["server"], enrolled["media_server"], token=enrolled["device_token"]).run(enroll=False)
@@ -170,10 +173,12 @@ def run_pending(server: str, bootstrap: str, media_server: str, name: str = "", 
             state = request(f"{base}/api/enroll/{device_id}", "GET", bootstrap=bootstrap)
             if state.get("status") == "adopted":
                 enrolled = {
-                    "kind": state["kind"], "id": device_id, "name": state["name"],
+                    "kind": state["kind"], "id": state["id"], "name": state["name"],
                     "location": state.get("location", ""), "server": server,
                     "media_server": media_server, "device_token": state["device_token"],
                 }
+                if enrolled["id"] != socket.gethostname():
+                    subprocess.run(["hostnamectl", "set-hostname", enrolled["id"]], check=True, timeout=15)
                 save_device_state(enrolled, state_path)
                 runtime = DeviceRuntime(state["kind"], device_id, state["name"], state.get("location", ""), server, media_server, token=state["device_token"])
                 runtime.run(enroll=False)

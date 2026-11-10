@@ -70,6 +70,10 @@ python3 -m cctv.reset_password --username Admin
 Use `--db /path/to/cctv.db` when the server uses a non-default database path. Resetting a password signs out all existing sessions for that user.
 
 Administrators can rename an adopted Pi and update its location from **Devices → Open → Device identity**. This changes only the dashboard name and location; the stable device ID, role, and agent settings remain intact.
+
+To replace an offline camera, adopt a new pending Pi and select the offline camera in **Replace offline camera**. Disconnect the old Pi first so it cannot continue publishing to the same camera stream. The replacement keeps the camera's device ID, dashboard name/location, camera settings, and monitor assignments; the new Pi receives its own credential and changes its hostname to the retained device ID. Queued commands for the retired Pi are discarded.
+
+For lens aiming, **Camera settings → Low-latency focus view** opens MediaMTX's WebRTC player directly in the browser. This avoids the HLS playback buffer and does not interrupt recording or monitor streams. The phone must be able to reach the configured WebRTC address from its network (including when connected through the Pi setup Wi-Fi).
 Administrators can also use **Devices → Open → Remove from dashboard** to remove a retired or test device record and clear its saved monitor routes. This does not wipe the Pi; a still-running Pi must be enrolled again before it can report to the dashboard.
 
 For legacy adoption-based provisioning, `CCTV_BOOTSTRAP_TOKEN` places generic Pis into the pending-device list. New installations can use LAN discovery instead and do not need a shared enrollment token. After adoption, each Pi receives a device-specific credential and the dashboard-selected role. Set `CCTV_PUBLIC_MEDIA_URL` and `CCTV_PUBLIC_WEBRTC_URL` to URLs reachable from the administrator's browser for live previews.

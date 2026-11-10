@@ -1050,12 +1050,19 @@ class Handler(BaseHTTPRequestHandler):
                 if payload.get("kind") not in ("camera", "monitor") or not payload.get("name"):
                     self.send_json({"error": "kind and name are required"}, HTTPStatus.BAD_REQUEST)
                     return
-                result = self.store.adopt_pending(pending_id, payload["kind"], payload["name"], payload.get("location", ""))
+                replace_device_id = str(payload.get("replace_device_id", "")).strip()
+                result = self.store.adopt_pending(
+                    pending_id, payload["kind"], payload["name"], payload.get("location", ""), replace_device_id,
+                )
                 if not result:
-                    self.send_json({"error": "pending device not found or already adopted"}, HTTPStatus.NOT_FOUND)
+                    self.send_json({
+                        "error": "Device could not be adopted. A replacement must be an offline camera, and the pending device must be unclaimed."
+                    }, HTTPStatus.CONFLICT)
                     return
                 device, _token = result
-                self.store.audit("device.adopt", pending_id, self.client_address[0], {"kind": payload["kind"], "name": payload["name"]})
+                self.store.audit("device.adopt", pending_id, self.client_address[0], {
+                    "kind": payload["kind"], "name": device["name"], "replaced_device_id": replace_device_id,
+                })
                 self.send_json(device, HTTPStatus.CREATED)
                 return
             if parsed.path.startswith("/api/devices/") and parsed.path.endswith("/commands"):
