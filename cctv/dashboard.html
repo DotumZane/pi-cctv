@@ -261,8 +261,8 @@ mobileLayoutStyle.textContent+=`
 }
 @media(max-width:480px){
  .sidebar{padding:8px 10px}
- .nav{gap:2px}
- .nav button{font-size:11px;padding:7px 8px}
+ .nav{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px;overflow:visible}
+ .nav button{min-width:0;max-width:100%;white-space:normal;text-align:left;font-size:11px;line-height:1.2;padding:8px 9px}
  .sidebar-foot{display:none}
  .topbar{flex-direction:row;align-items:center}
  .topbar h1{font-size:17px}
