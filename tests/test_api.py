@@ -226,6 +226,47 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(status, 409)
         self.assertEqual(body["state"], "running")
 
+    def test_user_can_change_own_password_over_https(self):
+        self.httpd.store.create_user("admin", "old-password", "admin")
+        token = self.httpd.store.create_session("admin")
+        status, body = self.call("PUT", "/api/auth/password", {
+            "current_password": "old-password", "new_password": "updated-password",
+        }, token)
+        self.assertEqual(status, 426)
+        self.assertIn("HTTPS", body["error"])
+        with patch.object(Handler, "secure_connection", return_value=True):
+            status, body = self.call("PUT", "/api/auth/password", {
+                "current_password": "wrong-password", "new_password": "updated-password",
+            }, token)
+            self.assertEqual(status, 401)
+            status, body = self.call("PUT", "/api/auth/password", {
+                "current_password": "old-password", "new_password": "updated-password",
+            }, token)
+        self.assertEqual(status, 200)
+        self.assertEqual(body["username"], "admin")
+        self.assertTrue(self.httpd.store.authenticate_user("admin", "updated-password"))
+        self.assertIsNone(self.httpd.store.authenticate_user("admin", "old-password"))
+        self.assertEqual(self.httpd.store.session_user(token)["username"], "admin")
+
+    def test_admin_can_reset_another_users_password_and_revoke_sessions(self):
+        self.httpd.store.create_user("admin", "admin-password", "admin")
+        self.httpd.store.create_user("operator", "operator-password", "operator")
+        admin_token = self.httpd.store.create_session("admin")
+        operator_token = self.httpd.store.create_session("operator")
+        path = "/api/users/operator/password"
+        status, body = self.call("PUT", path, {"new_password": "temporary-password"}, admin_token)
+        self.assertEqual(status, 426)
+        with patch.object(Handler, "secure_connection", return_value=True):
+            status, body = self.call("PUT", path, {"new_password": "temporary-password"}, admin_token)
+            self.assertEqual(status, 200)
+            status, body = self.call("PUT", "/api/users/admin/password", {"new_password": "bad-self-reset"}, admin_token)
+        self.assertEqual(status, 400)
+        self.assertIn("Change my password", body["error"])
+        self.assertTrue(self.httpd.store.authenticate_user("operator", "temporary-password"))
+        self.assertIsNone(self.httpd.store.session_user(operator_token))
+        self.assertEqual(body["error"], "use Change my password to update your own account")
+        self.assertEqual(self.httpd.store.audit_entries(1)[0]["action"], "user.password_reset")
+
     def test_server_update_reports_missing_host_helper(self):
         self.httpd.store.create_user("admin", "correct-horse-battery")
         token = self.httpd.store.create_session("admin")

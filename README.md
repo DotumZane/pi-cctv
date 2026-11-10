@@ -44,7 +44,7 @@ The dashboard is available at `http://SERVER:8080`; device enrollment and privat
 
 Run `scripts/install-server-updater.sh` once from the server checkout after Docker Compose is installed. It installs a systemd path service and a fixed host-side updater. **System settings → Server software** can then fast-forward a clean `main` checkout and rebuild the management container. The web container does not receive the Docker socket or an unrestricted host shell. This button updates Pi CCTV software only; Ubuntu packages and operating-system upgrades remain separate maintenance tasks. If a server update fails, its status and recent command output appear on that page; use SSH for recovery if the checkout or Docker host needs repair.
 
-If an administrator password is forgotten, reset it locally on the dashboard server. The command prompts twice without displaying or storing the password:
+Signed-in users can change their password in **Account** over HTTPS. Administrators can reset another account's password in **Users**; that signs out all of that user's active sessions. If the administrator password is forgotten and nobody can sign in, recover access locally on the dashboard server. The command prompts twice without displaying or storing the password:
 
 ```bash
 python3 -m cctv.reset_password --username Admin

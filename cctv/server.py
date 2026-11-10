@@ -670,6 +670,60 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_PUT(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
+        if parsed.path == "/api/auth/password":
+            current = self.session_user()
+            if not current:
+                self.send_json({"error": "sign in with a dashboard account to change its password"}, HTTPStatus.UNAUTHORIZED)
+                return
+            if not self.secure_connection():
+                self.send_json({"error": "password changes require HTTPS"}, HTTPStatus.UPGRADE_REQUIRED)
+                return
+            payload = self.body()
+            current_password = payload.get("current_password", "")
+            new_password = payload.get("new_password", "")
+            if not isinstance(current_password, str) or not isinstance(new_password, str) or not 8 <= len(new_password) <= 128:
+                self.send_json({"error": "new password must be 8–128 characters"}, HTTPStatus.BAD_REQUEST)
+                return
+            if not self.store.authenticate_user(current["username"], current_password):
+                self.send_json({"error": "current password is incorrect"}, HTTPStatus.UNAUTHORIZED)
+                return
+            token = self.session_token()
+            if not token:
+                supplied = self.headers.get("Authorization", "")
+                token = supplied[7:] if supplied.startswith("Bearer ") else ""
+            try:
+                self.store.set_password(current["username"], new_password, preserve_session_token=token)
+            except ValueError as error:
+                self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+                return
+            self.store.audit("user.password_change", current["username"], self.client_address[0])
+            self.send_json({"ok": True, "username": current["username"]})
+            return
+        if parsed.path.startswith("/api/users/") and parsed.path.endswith("/password"):
+            if not self.require_auth():
+                return
+            if not self.secure_connection():
+                self.send_json({"error": "password resets require HTTPS"}, HTTPStatus.UPGRADE_REQUIRED)
+                return
+            username = unquote(parsed.path[len("/api/users/"):-len("/password")].strip("/"))
+            current = self.session_user()
+            if current and current["username"] == username:
+                self.send_json({"error": "use Change my password to update your own account"}, HTTPStatus.BAD_REQUEST)
+                return
+            payload = self.body()
+            password = payload.get("new_password", "")
+            if not isinstance(password, str) or not 8 <= len(password) <= 128:
+                self.send_json({"error": "new password must be 8–128 characters"}, HTTPStatus.BAD_REQUEST)
+                return
+            try:
+                self.store.set_password(username, password)
+            except ValueError as error:
+                status = HTTPStatus.NOT_FOUND if str(error) == "user not found" else HTTPStatus.BAD_REQUEST
+                self.send_json({"error": str(error)}, status)
+                return
+            self.store.audit("user.password_reset", username, self.client_address[0], {"sessions_revoked": True})
+            self.send_json({"ok": True, "username": username, "sessions_revoked": True})
+            return
         if parsed.path == "/api/server/setup-ap":
             if not self.store.user_count():
                 self.send_json({"error": "create an administrator account before changing server settings"}, HTTPStatus.UNAUTHORIZED)
