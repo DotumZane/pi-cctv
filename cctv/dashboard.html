@@ -365,6 +365,14 @@ const compactPhoneStyle=document.createElement('style');compactPhoneStyle.textCo
 }
 `;
 document.head.appendChild(compactPhoneStyle);
+const phoneNavigationStyle=document.createElement('style');phoneNavigationStyle.textContent=`
+@media(max-width:600px){
+ .sidebar{padding:6px 8px calc(6px + env(safe-area-inset-bottom))!important}
+ .nav{display:grid!important;grid-template-columns:repeat(3,minmax(0,1fr))!important;grid-auto-rows:minmax(38px,auto);gap:4px!important;overflow-x:hidden!important;overflow-y:auto!important;max-height:132px;width:100%;align-items:stretch}
+ .nav button{display:flex!important;align-items:center;justify-content:center;min-width:0!important;max-width:100%!important;min-height:38px;padding:5px 3px!important;white-space:normal!important;text-align:center!important;line-height:1.15;font-size:11px!important;overflow-wrap:anywhere}
+ .content{padding-bottom:calc(174px + env(safe-area-inset-bottom))!important}
+}
+`;document.head.appendChild(phoneNavigationStyle);
 </script>
 <script>
 let agentUpdateDevice='';

@@ -222,8 +222,8 @@ class ApiTests(unittest.TestCase):
     def test_health_reports_server_and_agent_versions_separately(self):
         status, health = self.call("GET", "/api/health")
         self.assertEqual(status, 200)
-        self.assertEqual(health["version"], "0.1.17")
-        self.assertEqual(health["latest_agent_version"], "0.1.17")
+        self.assertEqual(health["version"], "0.1.18")
+        self.assertEqual(health["latest_agent_version"], "0.1.18")
 
     def test_recording_download_requires_read_authorization(self):
         recording = Path(self.recordings.name) / "cam-01" / "2026-11-04" / "06-00-00.mp4"
