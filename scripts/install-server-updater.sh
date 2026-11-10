@@ -36,11 +36,19 @@ printf '{"project_dir":"%s"}\n' "$repo_dir" > "$config"
 chmod 0644 "$config"
 install -o root -g docker -m 0660 /dev/null "$state_dir/installed"
 install -o root -g docker -m 0660 /dev/null "$state_dir/status.json"
+install -o root -g docker -m 0660 /dev/null "$state_dir/os-installed"
+install -o root -g docker -m 0660 /dev/null "$state_dir/os-status.json"
 sed -e "s|@CCTVOPS_USER@|$repo_owner|" -e "s|@CCTVOPS_REPO@|$repo_dir|" \
   "$repo_dir/services/pi-cctv-server-update.service" > /etc/systemd/system/pi-cctv-server-update.service
 chown root:root /etc/systemd/system/pi-cctv-server-update.service
 chmod 0644 /etc/systemd/system/pi-cctv-server-update.service
 install -o root -g root -m 0644 "$repo_dir/services/pi-cctv-server-update.path" /etc/systemd/system/pi-cctv-server-update.path
+sed -e "s|@CCTVOPS_REPO@|$repo_dir|" \
+  "$repo_dir/services/pi-cctv-server-os-update.service" > /etc/systemd/system/pi-cctv-server-os-update.service
+chown root:root /etc/systemd/system/pi-cctv-server-os-update.service
+chmod 0644 /etc/systemd/system/pi-cctv-server-os-update.service
+install -o root -g root -m 0644 "$repo_dir/services/pi-cctv-server-os-update.path" /etc/systemd/system/pi-cctv-server-os-update.path
 systemctl daemon-reload
 systemctl enable --now pi-cctv-server-update.path
-echo "Dashboard server updates are installed for checkout: $repo_dir"
+systemctl enable --now pi-cctv-server-os-update.path
+echo "Dashboard server software and Ubuntu OS updates are installed for checkout: $repo_dir"

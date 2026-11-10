@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch for Pi CCTV dashboard Ubuntu OS update requests
+
+[Path]
+PathExists=/var/lib/pi-cctv-host-update/os-request.json
+Unit=pi-cctv-server-os-update.service
+
+[Install]
+WantedBy=multi-user.target

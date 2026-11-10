@@ -275,6 +275,39 @@ class ApiTests(unittest.TestCase):
         self.assertFalse(body["installed"])
         self.assertEqual(body["state"], "not_installed")
 
+    def test_server_os_update_requires_https_and_queues_fixed_action(self):
+        self.httpd.store.create_user("admin", "correct-horse-battery")
+        token = self.httpd.store.create_session("admin")
+        state_dir = Path(self.host_updates.name)
+        (state_dir / "os-installed").touch()
+        (state_dir / "os-status.json").write_text('{"state":"idle"}\n')
+        status, body = self.call("POST", "/api/server/os-update", {}, token)
+        self.assertEqual(status, 426)
+        self.assertIn("HTTPS", body["error"])
+
+        with patch.object(Handler, "secure_connection", return_value=True):
+            status, body = self.call("POST", "/api/server/os-update", {}, token)
+        self.assertEqual(status, 202)
+        self.assertEqual(body["state"], "queued")
+        request = json.loads((state_dir / "os-request.json").read_text())
+        self.assertEqual(request, {"id": body["request_id"], "action": "os_update"})
+        self.assertEqual(self.httpd.store.audit_entries(1)[0]["action"], "server.os_update.request")
+
+        (state_dir / "installed").touch()
+        (state_dir / "os-status.json").write_text('{"state":"running"}\n')
+        with patch.object(Handler, "secure_connection", return_value=True):
+            status, body = self.call("POST", "/api/server/update", {}, token)
+        self.assertEqual(status, 409)
+        self.assertEqual(body["state"], "running")
+
+    def test_server_os_update_reports_missing_helper(self):
+        self.httpd.store.create_user("admin", "correct-horse-battery")
+        token = self.httpd.store.create_session("admin")
+        status, body = self.call("GET", "/api/server/os-update", token=token)
+        self.assertEqual(status, 200)
+        self.assertFalse(body["installed"])
+        self.assertEqual(body["state"], "not_installed")
+
     def test_setup_ap_sync_command_is_allowlisted(self):
         self.call("POST", "/api/devices", {"id": "cam-1", "kind": "camera", "name": "Saw 1"})
         status, command = self.call("POST", "/api/devices/cam-1/commands", {"command": "sync_setup_ap"})
@@ -293,7 +326,7 @@ class ApiTests(unittest.TestCase):
         admin_token = self.httpd.store.create_session("admin")
 
         self.assertEqual(self.call("POST", "/api/devices/cam-1/commands", {"command": "update_os"}, admin_token)[0], 409)
-        self.call("POST", "/api/devices/cam-1/heartbeat", {"agent_version": "0.1.6"}, device_token)
+        self.call("POST", "/api/devices/cam-1/heartbeat", {"agent_version": "0.1.7"}, device_token)
         self.assertEqual(self.call("POST", "/api/devices/cam-1/commands", {"command": "update_os"}, admin_token)[0], 202)
         self.assertEqual(self.call("POST", "/api/devices/cam-1/commands", {"command": "update_os"}, admin_token)[0], 409)
         self.assertEqual(self.call("POST", "/api/devices/cam-1/maintenance/os-update", {

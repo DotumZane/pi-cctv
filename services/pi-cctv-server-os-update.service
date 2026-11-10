@@ -1,0 +1,12 @@
+[Unit]
+Description=Apply fixed Ubuntu package upgrades requested from Pi CCTV dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/
+ExecStart=/usr/bin/python3 @CCTVOPS_REPO@/scripts/pi-cctv-server-os-update.py
+TimeoutStartSec=3700
+UMask=0007

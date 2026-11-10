@@ -18,7 +18,7 @@ STATE_DIR = Path("/var/lib/pi-cctv-host-update")
 CONFIG = Path("/etc/pi-cctv-server-update.json")
 REQUEST = STATE_DIR / "request.json"
 STATUS = STATE_DIR / "status.json"
-LOCK = STATE_DIR / "update.lock"
+LOCK = STATE_DIR / "host-maintenance.lock"
 
 
 def now() -> str:
