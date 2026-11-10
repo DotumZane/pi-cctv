@@ -1,6 +1,6 @@
 # First Raspberry Pi board test
 
-This is the shortest path to validate one camera Pi and one monitor Pi before expanding the system.
+This is the shortest path to validate one camera Pi and one monitor Pi before expanding the system. For a fresh Raspberry Pi OS Lite install, follow the [Pi install guide](pi-install-guide.md) for the no-key discovery and dashboard adoption flow.
 
 ## Before powering the board
 
@@ -8,17 +8,18 @@ This is the shortest path to validate one camera Pi and one monitor Pi before ex
 - Connect the HQ/IMX477 camera and verify the ribbon cable orientation.
 - Prepare a monitor Pi with HDMI output and a wired network connection.
 - Put the test Pi devices, management server, and MediaMTX host on the same isolated test network.
-- Have the server/media-server IP addresses ready. The dashboard creates its administrator account on first visit; the legacy admin token is still accepted for Pi agents and test scripts.
+- Update the dashboard first so its discovery service is running, and put the Pis on the same LAN/VLAN as the dashboard. The dashboard creates its administrator account on first visit.
 
 ## Camera Pi
 
-Run the installer from the repository, or use the one-command installer in the README:
+Install the CCTV software on the fresh Pi:
 
 ```bash
-sudo bash install.sh --role camera --name "Test Camera 1" \
-  --location "Bench" --server http://SERVER:8080 \
-  --media-server MEDIA_SERVER --token ADMIN_TOKEN
+curl -fsSL https://raw.githubusercontent.com/DotumZane/pi-cctv/main/install.sh | \
+  sudo bash -s -- --discover
 ```
+
+Then adopt it from **Devices → Pending devices** as a Camera, name it **Test Camera 1**, and set location to **Bench**.
 
 Verify the service and camera stack:
 
@@ -34,13 +35,14 @@ The camera should appear in the dashboard and show `online` after its first hear
 
 ## Monitor Pi
 
-Install it with the monitor role:
+Install the CCTV software on the monitor Pi with the same command:
 
 ```bash
-sudo bash install.sh --role monitor --name "Test Monitor 1" \
-  --location "Bench" --server http://SERVER:8080 \
-  --media-server MEDIA_SERVER --token ADMIN_TOKEN
+curl -fsSL https://raw.githubusercontent.com/DotumZane/pi-cctv/main/install.sh | \
+  sudo bash -s -- --discover
 ```
+
+Adopt it from **Devices → Pending devices** as a Monitor, name it **Test Monitor 1**, and set location to **Bench**.
 
 Assign the test camera to the monitor in the dashboard. Confirm that the monitor service starts after the assignment is saved and that `systemctl status pi-cctv-agent` remains active.
 

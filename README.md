@@ -21,6 +21,8 @@ A low-latency, centrally managed industrial CCTV system for Raspberry Pi-based c
 - Centralized recording and health monitoring
 - Architecture, deployment, testing, and operations documentation
 
+For the no-key first-time setup on a fresh Raspberry Pi OS Lite install, see the [Pi install guide](docs/pi-install-guide.md).
+
 Implementation will begin after the architecture and technical design are reviewed and approved.
 
 ## V1 quick start
@@ -122,6 +124,8 @@ The agent discovers Pi CCTV dashboards on the same LAN, checks each dashboard's 
 
 The dashboard server must have local HTTPS configured and run the `discovery` Compose service. After pulling this release, deploy it with `sudo docker compose up -d --build management discovery`; the dashboard's **Server software** updater also refreshes both services. The old bootstrap-token flow remains available for existing setups.
 
+#### Legacy: explicit dashboard address and bootstrap token
+
 To install a generic Pi using a shared bootstrap token and explicit dashboard address:
 
 ```bash
@@ -160,7 +164,7 @@ sudo bash /opt/pi-cctv/install.sh --skip-packages --server-ca /tmp/pi-cctv-serve
   --enroll --server https://SERVER:8443 --media-server SERVER
 ```
 
-For a brand-new Pi, download and verify the same CA certificate first, then use the `--enroll` command above; once adopted, it will receive the AP configuration automatically. The network must provide DHCP and allow the phone's additional MAC address on each Pi's Ethernet switch port. The setup SSID is hidden and WPA2 protected, but hiding the name is not an access-control measure. The AP bridges clients to Ethernet; it does not provide DHCP, NAT, or internet routing. Connect the phone manually to the hidden SSID. Use a 2.4 GHz channel from 1 to 11. The Pi may briefly disconnect as its Ethernet address moves onto the bridge.
+For a brand-new Pi, use the discovery-based [Pi install guide](docs/pi-install-guide.md); after adoption, it receives the setup AP profile automatically. The network must provide DHCP and allow the phone's additional MAC address on each Pi's Ethernet switch port. The setup SSID is hidden and WPA2 protected, but hiding the name is not an access-control measure. The AP bridges clients to Ethernet; it does not provide DHCP, NAT, or internet routing. Connect the phone manually to the hidden SSID. Use a 2.4 GHz channel from 1 to 11. The Pi may briefly disconnect as its Ethernet address moves onto the bridge.
 
 To roll back the managed setup AP on a Pi and restore its saved Ethernet profile:
 
