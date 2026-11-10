@@ -75,6 +75,16 @@ class RuntimeTests(unittest.TestCase):
             runtime.poll_commands()
         sync.assert_called_once_with()
 
+    def test_pi_os_update_runs_in_detached_systemd_unit(self):
+        runtime = DeviceRuntime("camera", "cam-1", "Camera", "", "https://server", "media")
+        with patch("cctv.runtime.http_json", return_value={"commands": [{"command": "update_os"}]}), \
+                patch("cctv.runtime.subprocess.run", return_value=Mock(returncode=0, stdout="", stderr="")) as run:
+            runtime.poll_commands()
+        command = run.call_args.args[0]
+        self.assertIn("--no-block", command)
+        self.assertIn("--unit=pi-cctv-os-update-cam-1", command)
+        self.assertEqual(command[-2:], ["-m", "cctv.os_update"])
+
     def test_adopted_enrollment_token_persists_and_is_reused_after_restart(self):
         with TemporaryDirectory() as directory:
             state_path = Path(directory) / "device.json"

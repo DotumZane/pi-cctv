@@ -72,6 +72,14 @@ class Store:
                 created_at TEXT NOT NULL,
                 consumed_at TEXT
             );
+            CREATE TABLE IF NOT EXISTS maintenance_runs (
+                device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+                task TEXT NOT NULL,
+                state TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                details TEXT NOT NULL DEFAULT '{}',
+                PRIMARY KEY(device_id, task)
+            );
             CREATE TABLE IF NOT EXISTS pending_devices (
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
@@ -427,3 +435,28 @@ class Store:
             "SELECT * FROM device_commands WHERE device_id=? ORDER BY id DESC LIMIT ?",
             (device_id, limit),
         ).fetchall()]
+
+    @serialized
+    def maintenance_run(self, device_id: str, task: str) -> dict[str, Any] | None:
+        row = self.db.execute(
+            "SELECT task, state, updated_at, details FROM maintenance_runs WHERE device_id=? AND task=?",
+            (device_id, task),
+        ).fetchone()
+        if not row:
+            return None
+        result = dict(row)
+        result["details"] = json.loads(result["details"] or "{}")
+        return result
+
+    @serialized
+    def set_maintenance_run(self, device_id: str, task: str, state: str, details: dict[str, Any] | None = None) -> dict[str, Any]:
+        if state not in {"queued", "running", "succeeded", "failed"}:
+            raise ValueError("invalid maintenance state")
+        updated_at = now()
+        self.db.execute(
+            "INSERT INTO maintenance_runs(device_id, task, state, updated_at, details) VALUES(?, ?, ?, ?, ?) "
+            "ON CONFLICT(device_id, task) DO UPDATE SET state=excluded.state, updated_at=excluded.updated_at, details=excluded.details",
+            (device_id, task, state, updated_at, json.dumps(details or {})),
+        )
+        self.db.commit()
+        return self.maintenance_run(device_id, task) or {}

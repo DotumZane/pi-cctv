@@ -366,6 +366,27 @@ class DeviceRuntime:
                     continue
                 print(f"Update service started as {update_unit}", flush=True)
                 raise SystemExit(0)
+            elif command_name == "update_os":
+                print("Pi OS package update requested", flush=True)
+                suffix = re.sub(r"[^A-Za-z0-9_.-]", "_", self.device_id)[:40] or "device"
+                update_unit = f"pi-cctv-os-update-{suffix}"
+                result = subprocess.run([
+                    "systemd-run", "--quiet", "--no-block", "--collect",
+                    f"--unit={update_unit}", "--working-directory=/opt/pi-cctv",
+                    sys.executable, "-m", "cctv.os_update",
+                ], check=False, capture_output=True, text=True, timeout=10)
+                if result.returncode:
+                    detail = result.stderr.strip() or result.stdout.strip() or str(result.returncode)
+                    print(f"Unable to start Pi OS update service: {detail}", flush=True)
+                    try:
+                        http_json(
+                            f"{self.server}/api/devices/{urllib.parse.quote(self.device_id, safe='')}/maintenance/os-update",
+                            "POST", {"state": "failed", "details": {"output": f"Unable to start update service: {detail}"}}, self.token,
+                        )
+                    except Exception as exc:
+                        print(f"Unable to report Pi OS update launch failure: {exc}", flush=True)
+                    continue
+                print(f"Pi OS update service started as {update_unit}", flush=True)
             elif command_name == "restart_agent":
                 self.stop_media()
                 self.last_command = None

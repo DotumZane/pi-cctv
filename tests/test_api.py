@@ -281,6 +281,35 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(status, 202)
         self.assertEqual(command["command"], "sync_setup_ap")
 
+    def test_pi_os_update_is_allowlisted_and_reports_authenticated_status(self):
+        self.httpd.store.register({"id": "cam-1", "kind": "camera", "name": "Saw 1"})
+        device_token = "device-update-token"
+        self.httpd.store.db.execute(
+            "UPDATE devices SET token_hash=? WHERE id=?",
+            (self.httpd.store.hash_token(device_token), "cam-1"),
+        )
+        self.httpd.store.db.commit()
+        self.httpd.store.create_user("admin", "correct-horse", "admin")
+        admin_token = self.httpd.store.create_session("admin")
+
+        self.assertEqual(self.call("POST", "/api/devices/cam-1/commands", {"command": "update_os"}, admin_token)[0], 409)
+        self.call("POST", "/api/devices/cam-1/heartbeat", {"agent_version": "0.1.6"}, device_token)
+        self.assertEqual(self.call("POST", "/api/devices/cam-1/commands", {"command": "update_os"}, admin_token)[0], 202)
+        self.assertEqual(self.call("POST", "/api/devices/cam-1/commands", {"command": "update_os"}, admin_token)[0], 409)
+        self.assertEqual(self.call("POST", "/api/devices/cam-1/maintenance/os-update", {
+            "state": "running", "details": {},
+        })[0], 401)
+        status, _ = self.call("POST", "/api/devices/cam-1/maintenance/os-update", {
+            "state": "running", "details": {},
+        }, device_token)
+        self.assertEqual(status, 200)
+        status, result = self.call("GET", "/api/devices/cam-1/maintenance/os-update", token=admin_token)
+        self.assertEqual(status, 200)
+        self.assertEqual(result["maintenance"]["state"], "running")
+        self.assertEqual(self.call("POST", "/api/devices/cam-1/maintenance/os-update", {
+            "state": "unknown", "details": {},
+        }, device_token)[0], 400)
+
     def test_camera_live_urls_are_available(self):
         self.call("POST", "/api/devices", {"id": "cam-1", "kind": "camera", "name": "Saw 1"})
         status, live = self.call("GET", "/api/cameras/cam-1/live")

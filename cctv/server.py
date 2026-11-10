@@ -301,6 +301,15 @@ class Handler(BaseHTTPRequestHandler):
             except (ValueError, TypeError): logs = []
             self.send_json({"logs": logs[-200:]})
             return
+        if parsed.path.startswith("/api/devices/") and parsed.path.endswith("/maintenance/os-update"):
+            if not self.require_auth():
+                return
+            device_id = unquote(parsed.path.split("/")[3])
+            if not self.store.device(device_id):
+                self.send_json({"error": "device not found"}, HTTPStatus.NOT_FOUND)
+                return
+            self.send_json({"maintenance": self.store.maintenance_run(device_id, "os_update")})
+            return
         if parsed.path.startswith("/api/devices/") and parsed.path.endswith("/preview"):
             if not self.require_read_auth():
                 return
@@ -630,6 +639,26 @@ class Handler(BaseHTTPRequestHandler):
                 self.store.heartbeat(device_id, self.client_address[0], json.dumps({"diagnostics":payload}))
                 self.send_json({"ok":True})
                 return
+            if parsed.path.startswith("/api/devices/") and parsed.path.endswith("/maintenance/os-update"):
+                device_id = unquote(parsed.path.split("/")[3])
+                if not self.require_device_auth(device_id):
+                    return
+                if not self.store.device(device_id):
+                    self.send_json({"error": "device not found"}, HTTPStatus.NOT_FOUND)
+                    return
+                payload = self.body()
+                state = payload.get("state")
+                details = payload.get("details", {})
+                if state not in {"running", "succeeded", "failed"} or not isinstance(details, dict):
+                    self.send_json({"error": "valid state and details are required"}, HTTPStatus.BAD_REQUEST)
+                    return
+                safe_details = {
+                    "output": str(details.get("output", ""))[-12000:],
+                    "reboot_required": bool(details.get("reboot_required", False)),
+                }
+                result = self.store.set_maintenance_run(device_id, "os_update", state, safe_details)
+                self.send_json({"ok": True, "maintenance": result})
+                return
             if parsed.path.startswith("/api/pending/") and parsed.path.endswith("/adopt"):
                 if not self.require_auth():
                     return
@@ -654,11 +683,24 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json({"error": "device not found"}, HTTPStatus.NOT_FOUND)
                     return
                 payload = self.body()
-                allowed_commands = {"restart_media", "diagnostics", "restart_agent", "reboot", "update", "sync_setup_ap"}
+                allowed_commands = {"restart_media", "diagnostics", "restart_agent", "reboot", "update", "update_os", "sync_setup_ap"}
                 command_name = str(payload.get("command", ""))
                 if command_name not in allowed_commands:
                     self.send_json({"error": "unsupported diagnostic command"}, HTTPStatus.BAD_REQUEST)
                     return
+                if command_name == "update_os":
+                    try:
+                        current_agent_version = json.loads(self.store.device(device_id).get("metadata", "{}" )).get("agent_version", "")
+                    except (ValueError, TypeError, AttributeError):
+                        current_agent_version = ""
+                    if current_agent_version != __version__:
+                        self.send_json({"error": f"Update CCTV software to {__version__} first, then retry the Pi OS update."}, HTTPStatus.CONFLICT)
+                        return
+                    maintenance = self.store.maintenance_run(device_id, "os_update")
+                    if maintenance and maintenance["state"] in {"queued", "running"}:
+                        self.send_json({"error": "a Pi OS update is already queued or running"}, HTTPStatus.CONFLICT)
+                        return
+                    self.store.set_maintenance_run(device_id, "os_update", "queued", {})
                 command = self.store.queue_command(device_id, command_name)
                 self.store.audit("device.command", device_id, self.client_address[0], {"command": command_name})
                 self.send_json(command, HTTPStatus.ACCEPTED)
