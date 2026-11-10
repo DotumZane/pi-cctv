@@ -11,6 +11,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from cctv.server import Handler
+from cctv import __agent_version__
+from cctv.fleet import FleetOsUpdateCoordinator
 from cctv.store import Store
 
 
@@ -18,6 +20,7 @@ class ApiTests(unittest.TestCase):
     def setUp(self):
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.httpd.store = Store(":memory:")
+        self.httpd.fleet_os_updater = FleetOsUpdateCoordinator(self.httpd.store, __agent_version__)
         self.httpd.bootstrap_token = "bootstrap-token"
         self.recordings = tempfile.TemporaryDirectory()
         self.host_updates = tempfile.TemporaryDirectory()
@@ -30,6 +33,7 @@ class ApiTests(unittest.TestCase):
     def tearDown(self):
         self.httpd.shutdown()
         self.httpd.server_close()
+        self.httpd.fleet_os_updater.stop()
         self.httpd.store.close()
         self.recordings.cleanup()
         self.host_updates.cleanup()
@@ -468,6 +472,21 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.call("POST", "/api/devices/cam-1/maintenance/setup-ap-sync", {
             "state": "mystery", "details": {},
         }, device_token)[0], 400)
+
+    def test_fleet_pi_os_update_requires_admin_and_persists_a_server_job(self):
+        self.assertEqual(self.call("GET", "/api/fleet/os-update")[0], 200)
+        self.httpd.admin_token = "admin-token"
+        self.assertEqual(self.call("POST", "/api/fleet/os-update")[0], 401)
+        self.httpd.admin_token = ""
+        self.httpd.store.pending_register("cam-1", "Camera 1", "192.0.2.1", {"agent_version": __agent_version__})
+        self.httpd.store.adopt_pending("cam-1", "camera", "Camera 1", "")
+        self.httpd.store.heartbeat("cam-1", "192.0.2.1", json.dumps({"agent_version": __agent_version__}))
+        self.httpd.fleet_os_updater._launch = lambda: None
+        status, result = self.call("POST", "/api/fleet/os-update")
+        self.assertEqual(status, 202)
+        self.assertEqual(result["job"]["targets"][0]["device_id"], "cam-1")
+        self.assertEqual(self.call("GET", "/api/fleet/os-update")[1]["job"]["id"], result["job"]["id"])
+        self.assertEqual(self.httpd.store.audit_entries(1)[0]["action"], "fleet.os_update.request")
 
     def test_pi_os_update_is_allowlisted_and_reports_authenticated_status(self):
         self.httpd.store.register({"id": "cam-1", "kind": "camera", "name": "Saw 1"})
