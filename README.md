@@ -44,6 +44,19 @@ The dashboard is available at `http://SERVER:8080`; device enrollment and privat
 
 Run `scripts/install-server-updater.sh` once from the server checkout after Docker Compose is installed. It installs fixed systemd path services for dashboard server software updates, Ubuntu package updates, and an explicit host reboot action with reboot-completion reporting. **System settings → Server software** can then fast-forward a clean `main` checkout and rebuild the management container; **Ubuntu system updates** runs `apt-get update` and `apt-get -y upgrade` on the server without automatically rebooting it. Use **Reboot dashboard server** when an Ubuntu update reports that a reboot is required. The web container does not receive the Docker socket or an unrestricted host shell. On the **Devices** page, **Update outdated online Pis** and **Update online Pis one at a time** run as server-side, persisted jobs; their progress remains available if the browser closes or refreshes. Per-device controls remain available on each Pi's device page. Pi OS updates may restart services but never reboot a device automatically. Use SSH for first-time bootstrap or recovery if a device cannot reach the dashboard, or if a host helper has not been installed.
 
+### Upgrade an existing dashboard server
+
+An older server build without **System settings → Server software** cannot update itself from its dashboard. From the existing Git checkout on the Ubuntu server, run this one-time bootstrap:
+
+```bash
+cd ~/pi-cctv
+git pull --ff-only origin main
+sudo docker compose up -d --build management
+sudo bash scripts/install-server-updater.sh
+```
+
+The checkout must be owned by the normal server user (for example, `cctvops`), and Docker Compose must already work with `sudo`. The update installs the dashboard controls and their fixed host helper; it does not change the Pi enrollment or recording data. After the dashboard comes back, sign in over HTTPS and use **System settings → Server software** for future dashboard updates. Use **Ubuntu system updates** for server package updates, and the **Devices** page for fleet agent and Pi OS updates. SSH remains the recovery path if the server dashboard or its host updater is unavailable.
+
 Signed-in users can change their password in **Account** over HTTPS. Administrators can reset another account's password in **Users**; that signs out all of that user's active sessions. If the administrator password is forgotten and nobody can sign in, recover access locally on the dashboard server. The command prompts twice without displaying or storing the password:
 
 ```bash
