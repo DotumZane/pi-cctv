@@ -275,6 +275,19 @@ class ApiTests(unittest.TestCase):
         self.assertFalse(body["installed"])
         self.assertEqual(body["state"], "not_installed")
 
+    def test_server_health_requires_read_auth_and_reports_runtime_and_storage(self):
+        self.httpd.read_token = "read-token"
+        status, _ = self.call("GET", "/api/server/health")
+        self.assertEqual(status, 401)
+        status, body = self.call("GET", "/api/server/health", token="read-token")
+        self.assertEqual(status, 200)
+        self.assertIn("version", body)
+        self.assertGreaterEqual(body["process_uptime_seconds"], 0)
+        self.assertIn("memory_total_bytes", body)
+        self.assertIsNotNone(body["recordings_storage"])
+        self.assertGreater(body["recordings_storage"]["total_bytes"], 0)
+        self.assertGreaterEqual(body["database_bytes"], 0)
+
     def test_server_os_update_requires_https_and_queues_fixed_action(self):
         self.httpd.store.create_user("admin", "correct-horse-battery")
         token = self.httpd.store.create_session("admin")

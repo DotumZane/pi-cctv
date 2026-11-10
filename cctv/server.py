@@ -12,6 +12,7 @@ import ssl
 import subprocess
 import tempfile
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -251,6 +252,43 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/health":
             self.send_json({"ok": True, "version": __version__, "latest_agent_version": __version__, "devices": self.store.health_summary()})
+            return
+        if parsed.path == "/api/server/health":
+            if not self.require_read_auth():
+                return
+            memory = {}
+            try:
+                for line in Path("/proc/meminfo").read_text().splitlines():
+                    key, _, value = line.partition(":")
+                    if key in {"MemTotal", "MemAvailable"}:
+                        memory[key.lower()] = int(value.strip().split()[0]) * 1024
+            except (OSError, ValueError, IndexError):
+                pass
+            try:
+                load_1m = os.getloadavg()[0]
+            except (AttributeError, OSError):
+                load_1m = None
+            recordings_dir = Path(getattr(self.server, "recordings_dir", "recordings"))  # type: ignore[attr-defined]
+            try:
+                disk = shutil.disk_usage(recordings_dir)
+                recordings_storage = {"total_bytes": disk.total, "used_bytes": disk.used, "free_bytes": disk.free}
+            except OSError:
+                recordings_storage = None
+            db_path = Path(self.store.path)
+            try:
+                database_bytes = sum(Path(str(db_path) + suffix).stat().st_size for suffix in ("", "-wal"))
+            except OSError:
+                database_bytes = 0
+            started = getattr(self.server, "started_monotonic", time.monotonic())  # type: ignore[attr-defined]
+            self.send_json({
+                "version": __version__,
+                "process_uptime_seconds": max(0, int(time.monotonic() - started)),
+                "load_1m": load_1m,
+                "memory_total_bytes": memory.get("memtotal"),
+                "memory_available_bytes": memory.get("memavailable"),
+                "recordings_storage": recordings_storage,
+                "database_bytes": database_bytes,
+            })
             return
         if parsed.path == "/api/nvr/settings":
             if not self.require_read_auth(): return
@@ -1121,6 +1159,7 @@ def main() -> None:
     parser.add_argument("--public-webrtc-url", default=os.getenv("CCTV_PUBLIC_WEBRTC_URL", "http://127.0.0.1:8889"))
     args = parser.parse_args()
     httpd = ThreadingHTTPServer((args.host, args.port), Handler)
+    httpd.started_monotonic = time.monotonic()  # type: ignore[attr-defined]
     httpd.store = Store(args.db)  # type: ignore[attr-defined]
     httpd.admin_token = args.admin_token  # type: ignore[attr-defined]
     httpd.read_token = args.read_token  # type: ignore[attr-defined]
@@ -1176,7 +1215,7 @@ def main() -> None:
             "store", "admin_token", "read_token", "recordings_dir", "previews_dir",
             "bootstrap_token", "public_media_url", "public_webrtc_url", "recorder_supervisor",
             "setup_ap_enabled", "tls_enabled",
-            "tls_ca_cert", "host_update_dir",
+            "tls_ca_cert", "host_update_dir", "started_monotonic",
         ):
             setattr(tls_httpd, key, getattr(httpd, key))
         tls_httpd.socket = context.wrap_socket(tls_httpd.socket, server_side=True)
