@@ -1,0 +1,13 @@
+[Unit]
+Description=Record completion of Pi CCTV dashboard server reboot
+After=local-fs.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/
+ExecStart=/usr/bin/python3 @CCTVOPS_REPO@/scripts/pi-cctv-server-reboot.py --complete
+UMask=0007
+
+[Install]
+WantedBy=multi-user.target

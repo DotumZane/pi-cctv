@@ -1,0 +1,12 @@
+[Unit]
+Description=Reboot Pi CCTV dashboard server after an authenticated request
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/
+ExecStart=/usr/bin/python3 @CCTVOPS_REPO@/scripts/pi-cctv-server-reboot.py
+TimeoutStartSec=90
+UMask=0007

@@ -214,6 +214,22 @@ class Handler(BaseHTTPRequestHandler):
                 status = {"state": "idle"}
             self.send_json({"installed": True, **status})
             return
+        if parsed.path == "/api/server/reboot":
+            if not self.store.user_count():
+                self.send_json({"error": "create an administrator account before rebooting the server"}, HTTPStatus.UNAUTHORIZED)
+                return
+            if not self.require_auth():
+                return
+            host_update_dir = Path(getattr(self.server, "host_update_dir", "/host-update"))  # type: ignore[attr-defined]
+            if not (host_update_dir / "reboot-installed").is_file():
+                self.send_json({"installed": False, "state": "not_installed"})
+                return
+            try:
+                status = json.loads((host_update_dir / "reboot-status.json").read_text())
+            except (OSError, json.JSONDecodeError):
+                status = {"state": "idle"}
+            self.send_json({"installed": True, **status})
+            return
         if parsed.path == "/api/auth/status":
             user = self.session_user()
             self.send_json({"authenticated": bool(user), "setup_required": self.store.user_count() == 0, "user": user})
@@ -492,12 +508,12 @@ class Handler(BaseHTTPRequestHandler):
                 if not (host_update_dir / "installed").is_file():
                     self.send_json({"error": "The host update helper is not installed"}, HTTPStatus.SERVICE_UNAVAILABLE)
                     return
-                for status_name, request_name in (("status.json", "request.json"), ("os-status.json", "os-request.json")):
+                for status_name, request_name in (("status.json", "request.json"), ("os-status.json", "os-request.json"), ("reboot-status.json", "reboot-request.json")):
                     try:
                         current = json.loads((host_update_dir / status_name).read_text())
                     except (OSError, json.JSONDecodeError):
                         current = {}
-                    if current.get("state") in {"queued", "running"} or (host_update_dir / request_name).exists():
+                    if current.get("state") in {"queued", "running", "rebooting"} or (host_update_dir / request_name).exists():
                         self.send_json({"error": "Another server maintenance action is already in progress", "state": current.get("state", "queued")}, HTTPStatus.CONFLICT)
                         return
                 host_update_dir.mkdir(parents=True, exist_ok=True)
@@ -543,12 +559,12 @@ class Handler(BaseHTTPRequestHandler):
                 if not (host_update_dir / "os-installed").is_file():
                     self.send_json({"error": "The host OS update helper is not installed"}, HTTPStatus.SERVICE_UNAVAILABLE)
                     return
-                for status_name, request_name in (("status.json", "request.json"), ("os-status.json", "os-request.json")):
+                for status_name, request_name in (("status.json", "request.json"), ("os-status.json", "os-request.json"), ("reboot-status.json", "reboot-request.json")):
                     try:
                         current = json.loads((host_update_dir / status_name).read_text())
                     except (OSError, json.JSONDecodeError):
                         current = {}
-                    if current.get("state") in {"queued", "running"} or (host_update_dir / request_name).exists():
+                    if current.get("state") in {"queued", "running", "rebooting"} or (host_update_dir / request_name).exists():
                         self.send_json({"error": "Another server maintenance action is already in progress", "state": current.get("state", "queued")}, HTTPStatus.CONFLICT)
                         return
                 request_id = secrets.token_hex(16)
@@ -571,6 +587,49 @@ class Handler(BaseHTTPRequestHandler):
                     if os.path.exists(temporary):
                         os.unlink(temporary)
                 self.store.audit("server.os_update.request", "server", self.client_address[0], {"request_id": request_id})
+                self.send_json({"ok": True, **status}, HTTPStatus.ACCEPTED)
+                return
+            if parsed.path == "/api/server/reboot":
+                if not self.store.user_count():
+                    self.send_json({"error": "create an administrator account before rebooting the server"}, HTTPStatus.UNAUTHORIZED)
+                    return
+                if not self.require_auth():
+                    return
+                if not self.secure_connection():
+                    self.send_json({"error": "server reboots can only be requested over HTTPS"}, HTTPStatus.UPGRADE_REQUIRED)
+                    return
+                host_update_dir = Path(getattr(self.server, "host_update_dir", "/host-update"))  # type: ignore[attr-defined]
+                if not (host_update_dir / "reboot-installed").is_file():
+                    self.send_json({"error": "The host reboot helper is not installed"}, HTTPStatus.SERVICE_UNAVAILABLE)
+                    return
+                for status_name, request_name in (("status.json", "request.json"), ("os-status.json", "os-request.json"), ("reboot-status.json", "reboot-request.json")):
+                    try:
+                        current = json.loads((host_update_dir / status_name).read_text())
+                    except (OSError, json.JSONDecodeError):
+                        current = {}
+                    if current.get("state") in {"queued", "running", "rebooting"} or (host_update_dir / request_name).exists():
+                        self.send_json({"error": "Another server maintenance action is already in progress", "state": current.get("state", "queued")}, HTTPStatus.CONFLICT)
+                        return
+                request_id = secrets.token_hex(16)
+                request_path = host_update_dir / "reboot-request.json"
+                descriptor, temporary = tempfile.mkstemp(prefix=".reboot-request-", dir=host_update_dir, text=True)
+                try:
+                    os.fchown(descriptor, -1, host_update_dir.stat().st_gid)
+                    os.fchmod(descriptor, 0o640)
+                    with os.fdopen(descriptor, "w") as stream:
+                        json.dump({"id": request_id, "action": "reboot"}, stream)
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                    status = {"request_id": request_id, "state": "queued", "requested_at": datetime.now(timezone.utc).isoformat()}
+                    (host_update_dir / "reboot-status.json").write_text(json.dumps(status) + "\n")
+                    os.replace(temporary, request_path)
+                except OSError:
+                    self.send_json({"error": "The host reboot request could not be written"}, HTTPStatus.SERVICE_UNAVAILABLE)
+                    return
+                finally:
+                    if os.path.exists(temporary):
+                        os.unlink(temporary)
+                self.store.audit("server.reboot.request", "server", self.client_address[0], {"request_id": request_id})
                 self.send_json({"ok": True, **status}, HTTPStatus.ACCEPTED)
                 return
             if parsed.path == "/api/enroll" and not isinstance(self.connection, ssl.SSLSocket):
