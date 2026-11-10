@@ -7,7 +7,7 @@ import glob
 import re
 import fcntl
 import subprocess
-from . import __version__
+from . import __agent_version__
 import time
 import urllib.request
 import urllib.parse
@@ -93,7 +93,7 @@ def connected_displays() -> list[dict[str, str]]:
 def collect_diagnostics(role: str, device_id: str, media_server: str, processes: list | None = None) -> dict:
     """Collect bounded, read-only health details suitable for a dashboard report."""
     result = {"collected_at": datetime.datetime.now(datetime.timezone.utc).isoformat(), "device_id": device_id,
-              "hostname": socket.gethostname(), "role": role, "platform": platform.platform(), "agent_version": __version__,
+              "hostname": socket.gethostname(), "role": role, "platform": platform.platform(), "agent_version": __agent_version__,
               "metrics": system_metrics(), "displays": connected_displays() if role == "monitor" else []}
     disks=[]
     for path in ("/", "/data", "/var/lib/mediamtx"):
@@ -233,7 +233,7 @@ class DeviceRuntime:
         }, token=self.token)
 
     def heartbeat(self) -> None:
-        payload = {"runtime": "v1", "agent_version": __version__, "metrics": system_metrics(), "recent_logs": recent_logs()}
+        payload = {"runtime": "v1", "agent_version": __agent_version__, "metrics": system_metrics(), "recent_logs": recent_logs()}
         if self.role == "monitor":
             payload["displays"] = connected_displays()
         http_json(f"{self.server}/api/devices/{self.device_id}/heartbeat", "POST", payload, self.token)

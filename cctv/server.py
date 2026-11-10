@@ -19,7 +19,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-from . import __version__
+from . import __agent_version__, __version__
 from .recording import RecorderSupervisor
 from .store import Store
 
@@ -263,7 +263,7 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(content)
             return
         if parsed.path == "/api/health":
-            self.send_json({"ok": True, "version": __version__, "latest_agent_version": __version__, "devices": self.store.health_summary()})
+            self.send_json({"ok": True, "version": __version__, "latest_agent_version": __agent_version__, "devices": self.store.health_summary()})
             return
         if parsed.path == "/api/server/health":
             if not self.require_read_auth():
@@ -893,8 +893,8 @@ class Handler(BaseHTTPRequestHandler):
                         current_agent_version = json.loads(self.store.device(device_id).get("metadata", "{}" )).get("agent_version", "")
                     except (ValueError, TypeError, AttributeError):
                         current_agent_version = ""
-                    if current_agent_version != __version__:
-                        self.send_json({"error": f"Update CCTV software to {__version__} first, then retry the Pi OS update."}, HTTPStatus.CONFLICT)
+                    if current_agent_version != __agent_version__:
+                        self.send_json({"error": f"Update CCTV software to {__agent_version__} first, then retry the Pi OS update."}, HTTPStatus.CONFLICT)
                         return
                     maintenance = self.store.maintenance_run(device_id, "os_update")
                     if maintenance and maintenance["state"] in {"queued", "running"}:
