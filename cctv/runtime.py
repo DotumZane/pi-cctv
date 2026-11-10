@@ -476,6 +476,7 @@ class DeviceRuntime:
                     print(f"Unable to upload diagnostics: {exc}", flush=True)
             elif command_name == "update":
                 print("Remote update requested", flush=True)
+                self.report_maintenance("agent-update", "running", "Starting the approved CCTV software update.")
                 update_unit = f"pi-cctv-agent-update-{os.getpid()}"
                 result = subprocess.run([
                     "systemd-run", "--quiet", "--no-block", "--collect",
@@ -485,6 +486,7 @@ class DeviceRuntime:
                 if result.returncode:
                     detail = result.stderr.strip() or result.stdout.strip()
                     print(f"Unable to start update service: {detail or result.returncode}", flush=True)
+                    self.report_maintenance("agent-update", "failed", f"Unable to start update service: {detail or result.returncode}")
                     continue
                 print(f"Update service started as {update_unit}", flush=True)
                 raise SystemExit(0)

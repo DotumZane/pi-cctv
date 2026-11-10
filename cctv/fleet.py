@@ -355,6 +355,7 @@ class FleetAgentUpdateCoordinator:
                 target["queued_at"] = _now()
                 self._save(job)
                 command = self.store.queue_command(target["device_id"], "update")
+                self.store.set_maintenance_run(target["device_id"], "agent_update", "queued", {})
                 target["command_id"] = command["id"]
                 target["state"] = "queued"
                 self._save(job)

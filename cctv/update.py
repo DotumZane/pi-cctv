@@ -5,11 +5,33 @@ from __future__ import annotations
 import subprocess
 import json
 import re
+import urllib.parse
+import urllib.request
 from pathlib import Path
 
 
 INSTALL_DIR = Path("/opt/pi-cctv")
 DEVICE_STATE = Path("/var/lib/pi-cctv/device.json")
+
+
+def report_status(state: str, message: str) -> None:
+    """Report update progress with the enrolled device credential."""
+    try:
+        device = json.loads(DEVICE_STATE.read_text())
+        device_id = str(device["id"])
+        server = str(device["server"]).rstrip("/")
+        token = str(device["device_token"])
+        payload = json.dumps({"state": state, "details": {"message": message[:1000]}}).encode()
+        request = urllib.request.Request(
+            f"{server}/api/devices/{urllib.parse.quote(device_id, safe='')}/maintenance/agent-update",
+            data=payload,
+            method="POST",
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
+        )
+        with urllib.request.urlopen(request, timeout=10):
+            pass
+    except Exception as exc:
+        print(f"Unable to report CCTV update status: {exc}", flush=True)
 
 
 def mark_setup_ap_checked_this_boot() -> None:
@@ -35,6 +57,7 @@ def main() -> int:
         ["systemctl", "daemon-reload"],
         ["systemctl", "restart", "pi-cctv-agent.service"],
     ]
+    report_status("running", "Downloading the approved CCTV software update.")
     for command in commands:
         print(f"Running: {' '.join(command)}", flush=True)
         if command[-1:] == ["pi-cctv-agent.service"]:
@@ -42,7 +65,9 @@ def main() -> int:
         result = subprocess.run(command, check=False)
         if result.returncode:
             print(f"Update failed with exit code {result.returncode}", flush=True)
+            report_status("failed", f"Update step failed ({' '.join(command[:2])}) with exit code {result.returncode}.")
             return result.returncode
+    report_status("succeeded", "CCTV software updated and the agent service restarted successfully.")
     return 0
 
 

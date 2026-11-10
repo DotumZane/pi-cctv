@@ -424,6 +424,15 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self.send_json({"maintenance": self.store.maintenance_run(device_id, "server_address")})
             return
+        if parsed.path.startswith("/api/devices/") and parsed.path.endswith("/maintenance/agent-update"):
+            if not self.require_auth():
+                return
+            device_id = unquote(parsed.path.split("/")[3])
+            if not self.store.device(device_id):
+                self.send_json({"error": "device not found"}, HTTPStatus.NOT_FOUND)
+                return
+            self.send_json({"maintenance": self.store.maintenance_run(device_id, "agent_update")})
+            return
         if parsed.path.startswith("/api/devices/") and parsed.path.endswith("/preview"):
             if not self.require_read_auth():
                 return
@@ -935,6 +944,23 @@ class Handler(BaseHTTPRequestHandler):
                 result = self.store.set_maintenance_run(device_id, "server_address", state, safe_details)
                 self.send_json({"ok": True, "maintenance": result})
                 return
+            if parsed.path.startswith("/api/devices/") and parsed.path.endswith("/maintenance/agent-update"):
+                device_id = unquote(parsed.path.split("/")[3])
+                if not self.require_device_auth(device_id):
+                    return
+                if not self.store.device(device_id):
+                    self.send_json({"error": "device not found"}, HTTPStatus.NOT_FOUND)
+                    return
+                payload = self.body()
+                state = payload.get("state")
+                details = payload.get("details", {})
+                if state not in {"queued", "running", "succeeded", "failed"} or not isinstance(details, dict):
+                    self.send_json({"error": "valid state and details are required"}, HTTPStatus.BAD_REQUEST)
+                    return
+                safe_details = {"message": str(details.get("message", ""))[-1000:]}
+                result = self.store.set_maintenance_run(device_id, "agent_update", state, safe_details)
+                self.send_json({"ok": True, "maintenance": result})
+                return
             if parsed.path.startswith("/api/pending/") and parsed.path.endswith("/adopt"):
                 if not self.require_auth():
                     return
@@ -984,6 +1010,12 @@ class Handler(BaseHTTPRequestHandler):
                         return
                     self.store.set_maintenance_run(device_id, "setup_ap_sync", "queued", {})
                 command_payload = {}
+                if command_name == "update":
+                    maintenance = self.store.maintenance_run(device_id, "agent_update")
+                    if maintenance and maintenance["state"] in {"queued", "running"}:
+                        self.send_json({"error": "a CCTV software update is already queued or running"}, HTTPStatus.CONFLICT)
+                        return
+                    self.store.set_maintenance_run(device_id, "agent_update", "queued", {})
                 if command_name == "change_server_address":
                     if not self.authorized(admin_only=True):
                         self.send_json({"error": "administrator access is required to change Pi server addresses"}, HTTPStatus.FORBIDDEN)

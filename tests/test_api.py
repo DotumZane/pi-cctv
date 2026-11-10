@@ -222,8 +222,8 @@ class ApiTests(unittest.TestCase):
     def test_health_reports_server_and_agent_versions_separately(self):
         status, health = self.call("GET", "/api/health")
         self.assertEqual(status, 200)
-        self.assertEqual(health["version"], "0.1.15")
-        self.assertEqual(health["latest_agent_version"], "0.1.15")
+        self.assertEqual(health["version"], "0.1.16")
+        self.assertEqual(health["latest_agent_version"], "0.1.16")
 
     def test_recording_download_requires_read_authorization(self):
         recording = Path(self.recordings.name) / "cam-01" / "2026-11-04" / "06-00-00.mp4"
@@ -277,6 +277,31 @@ class ApiTests(unittest.TestCase):
             self.assertEqual(self.call("POST", "/api/devices/cam-1/commands", {
                 **request, "media_server": "bad host/other",
             }, admin_token)[0], 400)
+
+    def test_agent_update_status_is_visible_and_reported_by_device(self):
+        self.httpd.store.register({"id": "cam-1", "kind": "camera", "name": "Saw 1"})
+        device_token = "agent-update-device-token"
+        self.httpd.store.db.execute(
+            "UPDATE devices SET token_hash=? WHERE id=?",
+            (self.httpd.store.hash_token(device_token), "cam-1"),
+        )
+        self.httpd.store.db.commit()
+        self.httpd.store.create_user("admin", "correct-horse", "admin")
+        admin_token = self.httpd.store.create_session("admin")
+        status, queued = self.call("POST", "/api/devices/cam-1/commands", {"command": "update"}, admin_token)
+        self.assertEqual(status, 202)
+        self.assertEqual(queued["command"], "update")
+        self.assertEqual(self.call("POST", "/api/devices/cam-1/commands", {"command": "update"}, admin_token)[0], 409)
+        self.assertEqual(self.call("GET", "/api/devices/cam-1/maintenance/agent-update", token=admin_token)[1]["maintenance"]["state"], "queued")
+        self.assertEqual(self.call("POST", "/api/devices/cam-1/maintenance/agent-update", {
+            "state": "running", "details": {"message": "Pulling update"},
+        })[0], 401)
+        status, result = self.call("POST", "/api/devices/cam-1/maintenance/agent-update", {
+            "state": "running", "details": {"message": "Pulling update"},
+        }, device_token)
+        self.assertEqual(status, 200)
+        self.assertEqual(result["maintenance"]["state"], "running")
+        self.assertEqual(result["maintenance"]["details"]["message"], "Pulling update")
 
     def test_diagnostics_commands_are_allowlisted_and_history_is_available(self):
         self.call("POST", "/api/devices", {"id": "cam-1", "kind": "camera", "name": "Saw 1"})
