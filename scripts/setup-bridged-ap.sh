@@ -297,8 +297,17 @@ if ! bridge link show dev eth0 | grep -q 'master br0'; then
   remove_ap
   exit 1
 fi
+for ((attempt = 0; attempt < 30; attempt++)); do
+  ip -4 addr show dev br0 | grep -q 'inet ' && break
+  sleep 1
+done
 if ! ip -4 addr show dev br0 | grep -q 'inet '; then
-  echo "The setup bridge did not receive an IPv4 address from the wired LAN; restoring the original wired profile." >&2
+  echo "The setup bridge did not receive an IPv4 address from the wired LAN after 30 seconds. Bridge diagnostics:" >&2
+  nmcli -f NAME,TYPE,DEVICE connection show --active >&2 || true
+  bridge link show >&2 || true
+  ip -4 addr show dev br0 >&2 || true
+  journalctl -u NetworkManager --since '2 minutes ago' -n 40 --no-pager >&2 || true
+  echo "Restoring the original wired profile." >&2
   remove_ap
   exit 1
 fi
