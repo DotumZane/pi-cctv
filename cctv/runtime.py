@@ -343,6 +343,9 @@ class DeviceRuntime:
             if command_name == "restart_media":
                 self.stop_media()
                 self.last_command = None
+            elif command_name == "sync_setup_ap":
+                print("Dashboard requested setup Wi-Fi synchronization", flush=True)
+                self.sync_setup_ap()
             elif command_name == "diagnostics":
                 report = collect_diagnostics(self.role, self.device_id, self.media_server, self.processes)
                 try:

@@ -38,7 +38,7 @@ sudo chmod 600 .env
 sudo docker compose up -d --build
 ```
 
-The dashboard is available at `http://SERVER:8080`; device enrollment and private setup-Wi-Fi delivery use `https://SERVER:8443`. In `.env`, set `CCTV_TLS_DIR=/etc/pi-cctv/tls`, `CCTV_TLS_CERT=/run/pi-cctv/tls/server.crt`, `CCTV_TLS_KEY=/run/pi-cctv/tls/server.key`, and `CCTV_TLS_CA_CERT=/run/pi-cctv/tls/ca.crt`. Set `CCTV_SETUP_AP_ENABLED=true`, the shared `CCTV_SETUP_AP_SSID`, `CCTV_SETUP_AP_PASSWORD`, country, and channel. Quote the password as a single-quoted Compose `.env` value if it contains `$` or `#`. Keep `.env` and `/etc/pi-cctv/tls/ca.key` private. On first visit, create the dashboard administrator account. The RTSP port must be reachable by cameras and monitors on the CCTV VLAN.
+The dashboard is available at `http://SERVER:8080`; device enrollment and private setup-Wi-Fi delivery use `https://SERVER:8443`. In `.env`, set `CCTV_TLS_DIR=/etc/pi-cctv/tls`, `CCTV_TLS_CERT=/run/pi-cctv/tls/server.crt`, `CCTV_TLS_KEY=/run/pi-cctv/tls/server.key`, and `CCTV_TLS_CA_CERT=/run/pi-cctv/tls/ca.crt`. Initial `CCTV_SETUP_AP_*` values seed the server's persistent settings on first start; afterward, manage the SSID, password, country, and channel in **System settings** over HTTPS. Keep `.env` and `/etc/pi-cctv/tls/ca.key` private. On first visit, create the dashboard administrator account. The RTSP port must be reachable by cameras and monitors on the CCTV VLAN.
 
 If an administrator password is forgotten, reset it locally on the dashboard server. The command prompts twice without displaying or storing the password:
 
@@ -109,7 +109,7 @@ The installer creates and enables `pi-cctv-agent.service`, which restarts automa
 
 ### Server-managed phone setup Wi-Fi
 
-Once an adopted Pi is using the server's HTTPS URL, its agent fetches the AP profile once when the agent starts. The profile is delivered only to an authenticated adopted Pi over HTTPS. The Wi-Fi password stays in the server's protected `.env` and the Pi's root-only NetworkManager/hostapd configuration; it is never exposed in the dashboard or agent logs. Changing the SSID/password/profile requires changing the `.env` values and incrementing `CCTV_SETUP_AP_REVISION`, then rebuilding the management service and rebooting each Pi (or restarting its agent service) to apply the change.
+Once an adopted Pi is using the server's HTTPS URL, its agent fetches the AP profile once at boot. An administrator can also save a new profile in **System settings** and explicitly queue an apply to online Pis. The profile is delivered only to an authenticated adopted Pi over HTTPS. The Wi-Fi password is stored server-side in SQLite and in the Pi's root-only NetworkManager/hostapd configuration; it is never returned to the dashboard or written to agent logs. Offline Pis fetch the latest profile at their next boot. Applying a profile uses the reversible bridge helper, which rolls back if the wired LAN address is lost.
 
 Before trusting the local CA on a Pi, download the public certificate and compare its fingerprint to the SHA-256 fingerprint printed by the server certificate setup command:
 

@@ -1,5 +1,6 @@
 import json
 import os
+import socket
 import tempfile
 import threading
 import time
@@ -7,6 +8,7 @@ import unittest
 from http.client import HTTPConnection
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+from unittest.mock import patch
 
 from cctv.server import Handler
 from cctv.store import Store
@@ -159,17 +161,49 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(history["commands"][0]["id"], command["id"])
 
+    def test_pending_enrollment_requires_https(self):
+        status, _ = self.call("POST", "/api/enroll", {"id": "pending-pi", "name": "New Pi"}, bootstrap="bootstrap-token")
+        self.assertEqual(status, 426)
+        status, _ = self.call("GET", "/api/enroll/pending-pi", bootstrap="bootstrap-token")
+        self.assertEqual(status, 426)
+
     def test_pending_device_can_be_adopted_and_claims_device_token(self):
-        status, pending = self.call("POST", "/api/enroll", {"id": "pending-pi", "name": "New Pi"}, bootstrap="bootstrap-token")
-        self.assertEqual(status, 202)
-        self.assertEqual(pending["status"], "pending")
+        self.httpd.store.pending_register("pending-pi", "New Pi", "127.0.0.1", {})
         status, adopted = self.call("POST", "/api/pending/pending-pi/adopt", {"kind": "camera", "name": "Saw 1", "location": "Line 1"})
         self.assertEqual(status, 201)
-        status, claim = self.call("GET", "/api/enroll/pending-pi", bootstrap="bootstrap-token")
+        claim = self.httpd.store.claim_adoption("pending-pi")
+        self.assertTrue(claim["issued_token"])
+        self.assertEqual(self.call("POST", "/api/devices/pending-pi/heartbeat", {"test": True}, claim["issued_token"])[0], 200)
+
+    def test_server_wifi_settings_never_return_the_password_and_require_https_to_change(self):
+        self.httpd.store.create_user("admin", "correct-horse", "admin")
+        self.httpd.admin_token = "test-token"
+        profile = {"enabled": True, "ssid": "PiCCTV-Setup", "password": "secret-pass", "country": "US", "channel": 6, "revision": "1"}
+        self.httpd.store.set_system_setting("setup_ap_profile", profile)
+        status, settings = self.call("GET", "/api/server/setup-ap", token="test-token")
         self.assertEqual(status, 200)
-        self.assertEqual(claim["status"], "adopted")
-        self.assertTrue(claim["device_token"])
-        self.assertEqual(self.call("POST", "/api/devices/pending-pi/heartbeat", {"test": True}, claim["device_token"])[0], 200)
+        self.assertTrue(settings["password_configured"])
+        self.assertNotIn("password", settings)
+        status, result = self.call("PUT", "/api/server/setup-ap", {**profile, "password": "new-password"}, token="test-token")
+        self.assertEqual(status, 426)
+        self.assertIn("HTTPS", result["error"])
+        self.assertEqual(self.httpd.store.system_setting("setup_ap_profile")["password"], "secret-pass")
+        self.httpd.tls_enabled = True
+        with patch("cctv.server.ssl.SSLSocket", socket.socket):
+            status, saved = self.call("PUT", "/api/server/setup-ap", {
+                "enabled": True, "ssid": "PiCCTV-Field", "password": "new-password",
+                "country": "US", "channel": 11,
+            }, token="test-token")
+        self.assertEqual(status, 200)
+        self.assertNotIn("password", saved)
+        self.assertEqual(saved["revision"], "2")
+        self.assertEqual(self.httpd.store.system_setting("setup_ap_profile")["password"], "new-password")
+
+    def test_setup_ap_sync_command_is_allowlisted(self):
+        self.call("POST", "/api/devices", {"id": "cam-1", "kind": "camera", "name": "Saw 1"})
+        status, command = self.call("POST", "/api/devices/cam-1/commands", {"command": "sync_setup_ap"})
+        self.assertEqual(status, 202)
+        self.assertEqual(command["command"], "sync_setup_ap")
 
     def test_camera_live_urls_are_available(self):
         self.call("POST", "/api/devices", {"id": "cam-1", "kind": "camera", "name": "Saw 1"})

@@ -150,16 +150,33 @@ class Handler(BaseHTTPRequestHandler):
             if not device:
                 self.send_json({"error": "device not found"}, HTTPStatus.NOT_FOUND)
                 return
-            enabled = bool(getattr(self.server, "setup_ap_enabled", False))  # type: ignore[attr-defined]
-            profile = {"enabled": enabled, "revision": getattr(self.server, "setup_ap_revision", "disabled")}  # type: ignore[attr-defined]
+            saved_profile = self.store.system_setting("setup_ap_profile") or {}
+            enabled = bool(saved_profile.get("enabled", False))
+            profile = {"enabled": enabled, "revision": saved_profile.get("revision", "disabled")}
             if enabled:
                 profile.update({
-                    "ssid": getattr(self.server, "setup_ap_ssid", "PiCCTV-Setup"),  # type: ignore[attr-defined]
-                    "password": getattr(self.server, "setup_ap_password", ""),  # type: ignore[attr-defined]
-                    "country": getattr(self.server, "setup_ap_country", "US"),  # type: ignore[attr-defined]
-                    "channel": getattr(self.server, "setup_ap_channel", 6),  # type: ignore[attr-defined]
+                    "ssid": saved_profile.get("ssid", "PiCCTV-Setup"),
+                    "password": saved_profile.get("password", ""),
+                    "country": saved_profile.get("country", "US"),
+                    "channel": saved_profile.get("channel", 6),
                 })
             self.send_json(profile)
+            return
+        if parsed.path == "/api/server/setup-ap":
+            if not self.store.user_count():
+                self.send_json({"error": "create an administrator account before changing server settings"}, HTTPStatus.UNAUTHORIZED)
+                return
+            if not self.require_auth():
+                return
+            profile = self.store.system_setting("setup_ap_profile") or {}
+            self.send_json({
+                "enabled": bool(profile.get("enabled", False)),
+                "ssid": profile.get("ssid", "PiCCTV-Setup"),
+                "country": profile.get("country", "US"),
+                "channel": profile.get("channel", 6),
+                "password_configured": bool(profile.get("password")),
+                "revision": profile.get("revision", "disabled"),
+            })
             return
         if parsed.path == "/api/auth/status":
             user = self.session_user()
@@ -567,7 +584,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json({"error": "device not found"}, HTTPStatus.NOT_FOUND)
                     return
                 payload = self.body()
-                allowed_commands = {"restart_media", "diagnostics", "restart_agent", "reboot", "update"}
+                allowed_commands = {"restart_media", "diagnostics", "restart_agent", "reboot", "update", "sync_setup_ap"}
                 command_name = str(payload.get("command", ""))
                 if command_name not in allowed_commands:
                     self.send_json({"error": "unsupported diagnostic command"}, HTTPStatus.BAD_REQUEST)
@@ -583,6 +600,56 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_PUT(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
+        if parsed.path == "/api/server/setup-ap":
+            if not self.store.user_count():
+                self.send_json({"error": "create an administrator account before changing server settings"}, HTTPStatus.UNAUTHORIZED)
+                return
+            if not self.require_auth():
+                return
+            if not isinstance(self.connection, ssl.SSLSocket):
+                self.send_json({"error": "setup Wi-Fi settings can only be changed over HTTPS"}, HTTPStatus.UPGRADE_REQUIRED)
+                return
+            payload = self.body()
+            old_profile = self.store.system_setting("setup_ap_profile") or {}
+            enabled = payload.get("enabled")
+            ssid = str(payload.get("ssid", "")).strip()
+            password = payload.get("password", "")
+            country = payload.get("country", "")
+            channel = payload.get("channel")
+            if not isinstance(enabled, bool):
+                self.send_json({"error": "enabled must be true or false"}, HTTPStatus.BAD_REQUEST); return
+            if not re.fullmatch(r"[\x20-\x7e]{1,32}", ssid):
+                self.send_json({"error": "SSID must be 1–32 printable ASCII characters"}, HTTPStatus.BAD_REQUEST); return
+            if password == "":
+                password = old_profile.get("password", "")
+            if not isinstance(password, str) or (enabled and not re.fullmatch(r"[\x20-\x7e]{8,63}", password)):
+                self.send_json({"error": "Wi-Fi password must be 8–63 printable ASCII characters"}, HTTPStatus.BAD_REQUEST); return
+            if not isinstance(country, str) or not re.fullmatch(r"[A-Z]{2}", country):
+                self.send_json({"error": "Country must be a two-letter uppercase code"}, HTTPStatus.BAD_REQUEST); return
+            if isinstance(channel, bool) or not isinstance(channel, int) or channel not in range(1, 12):
+                self.send_json({"error": "Wi-Fi channel must be 1–11"}, HTTPStatus.BAD_REQUEST); return
+            if enabled and (not password or not getattr(self.server, "tls_enabled", False)):
+                self.send_json({"error": "Enable server HTTPS and set a Wi-Fi password before enabling the setup AP"}, HTTPStatus.BAD_REQUEST); return
+            try:
+                next_revision = int(old_profile.get("revision", "0")) + 1
+            except (TypeError, ValueError):
+                next_revision = 1
+            next_profile = {
+                "enabled": enabled, "ssid": ssid, "password": password,
+                "country": country, "channel": channel,
+                "revision": str(next_revision),
+            }
+            self.store.set_system_setting("setup_ap_profile", next_profile)
+            self.store.audit("server.setup_ap.update", "setup-ap", self.client_address[0], {
+                "enabled": enabled, "ssid": ssid, "country": country, "channel": channel,
+                "password_changed": payload.get("password", "") != "",
+                "revision": next_profile["revision"],
+            })
+            self.send_json({
+                "enabled": enabled, "ssid": ssid, "country": country, "channel": channel,
+                "password_configured": bool(password), "revision": next_profile["revision"],
+            })
+            return
         if parsed.path == "/api/nvr/settings":
             if not self.require_auth(): return
             payload = self.body()
@@ -777,22 +844,32 @@ def main() -> None:
     httpd.bootstrap_token = args.bootstrap_token  # type: ignore[attr-defined]
     httpd.public_media_url = args.public_media_url  # type: ignore[attr-defined]
     httpd.public_webrtc_url = args.public_webrtc_url  # type: ignore[attr-defined]
-    setup_ap_enabled = os.getenv("CCTV_SETUP_AP_ENABLED", "false").lower() in {"1", "true", "yes", "on"}
-    setup_ap_password = os.getenv("CCTV_SETUP_AP_PASSWORD", "")
-    if setup_ap_enabled and not re.fullmatch(r"[\x20-\x7e]{8,63}", setup_ap_password):
-        raise SystemExit("CCTV_SETUP_AP_PASSWORD must be 8–63 printable ASCII characters when setup AP is enabled")
-    httpd.setup_ap_enabled = setup_ap_enabled  # type: ignore[attr-defined]
-    httpd.setup_ap_ssid = os.getenv("CCTV_SETUP_AP_SSID", "PiCCTV-Setup")  # type: ignore[attr-defined]
-    httpd.setup_ap_password = setup_ap_password  # type: ignore[attr-defined]
-    httpd.setup_ap_country = os.getenv("CCTV_SETUP_AP_COUNTRY", "US")  # type: ignore[attr-defined]
-    httpd.setup_ap_channel = int(os.getenv("CCTV_SETUP_AP_CHANNEL", "6"))  # type: ignore[attr-defined]
-    httpd.setup_ap_revision = os.getenv("CCTV_SETUP_AP_REVISION", "1")  # type: ignore[attr-defined]
-    if not re.fullmatch(r"[\x20-\x7e]{1,32}", httpd.setup_ap_ssid):
-        raise SystemExit("CCTV_SETUP_AP_SSID must be 1–32 printable ASCII characters")
-    if httpd.setup_ap_country != httpd.setup_ap_country.upper() or not re.fullmatch(r"[A-Z]{2}", httpd.setup_ap_country):
-        raise SystemExit("CCTV_SETUP_AP_COUNTRY must be a two-letter uppercase country code")
-    if httpd.setup_ap_channel not in range(1, 12):
-        raise SystemExit("CCTV_SETUP_AP_CHANNEL must be a 2.4 GHz channel from 1 to 11")
+    httpd.tls_enabled = bool(os.getenv("CCTV_TLS_CERT") and os.getenv("CCTV_TLS_KEY"))  # type: ignore[attr-defined]
+    ap_profile = httpd.store.system_setting("setup_ap_profile")  # type: ignore[attr-defined]
+    if ap_profile is None:
+        initial_ap_profile = {
+            "enabled": os.getenv("CCTV_SETUP_AP_ENABLED", "false").lower() in {"1", "true", "yes", "on"},
+            "ssid": os.getenv("CCTV_SETUP_AP_SSID", "PiCCTV-Setup"),
+            "password": os.getenv("CCTV_SETUP_AP_PASSWORD", ""),
+            "country": os.getenv("CCTV_SETUP_AP_COUNTRY", "US"),
+            "channel": int(os.getenv("CCTV_SETUP_AP_CHANNEL", "6")),
+            "revision": os.getenv("CCTV_SETUP_AP_REVISION", "1"),
+        }
+        httpd.store.set_system_setting("setup_ap_profile", initial_ap_profile, only_if_missing=True)  # type: ignore[attr-defined]
+        ap_profile = httpd.store.system_setting("setup_ap_profile")  # type: ignore[attr-defined]
+    if not isinstance(ap_profile, dict):
+        raise SystemExit("Saved setup AP settings are invalid")
+    if ap_profile.get("enabled") and not re.fullmatch(r"[\x20-\x7e]{8,63}", str(ap_profile.get("password", ""))):
+        raise SystemExit("Saved setup AP password must be 8–63 printable ASCII characters")
+    if not re.fullmatch(r"[\x20-\x7e]{1,32}", str(ap_profile.get("ssid", ""))):
+        raise SystemExit("Saved setup AP SSID must be 1–32 printable ASCII characters")
+    if not re.fullmatch(r"[A-Z]{2}", str(ap_profile.get("country", ""))):
+        raise SystemExit("Saved setup AP country must be a two-letter uppercase code")
+    if isinstance(ap_profile.get("channel"), bool) or ap_profile.get("channel") not in range(1, 12):
+        raise SystemExit("Saved setup AP channel must be a 2.4 GHz channel from 1 to 11")
+    if ap_profile.get("enabled") and not httpd.tls_enabled:  # type: ignore[attr-defined]
+        raise SystemExit("HTTPS must be configured before enabling the server-managed setup Wi-Fi profile")
+    setup_ap_enabled = bool(ap_profile.get("enabled"))
     httpd.recorder_supervisor = RecorderSupervisor(httpd.store, Path(args.recordings_dir))  # type: ignore[attr-defined]
     httpd.recorder_supervisor.start()  # type: ignore[attr-defined]
     print(f"Pi CCTV server listening on http://{args.host}:{args.port}", flush=True)
@@ -812,8 +889,7 @@ def main() -> None:
         for key in (
             "store", "admin_token", "read_token", "recordings_dir", "previews_dir",
             "bootstrap_token", "public_media_url", "public_webrtc_url", "recorder_supervisor",
-            "setup_ap_enabled", "setup_ap_ssid", "setup_ap_password", "setup_ap_country",
-            "setup_ap_channel", "setup_ap_revision",
+            "setup_ap_enabled", "tls_enabled",
             "tls_ca_cert",
         ):
             setattr(tls_httpd, key, getattr(httpd, key))

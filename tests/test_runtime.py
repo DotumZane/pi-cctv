@@ -68,6 +68,13 @@ class RuntimeTests(unittest.TestCase):
                 runtime.poll_commands()
         run.assert_called_once_with(["systemctl", "reboot"], check=True, timeout=10)
 
+    def test_dashboard_can_request_setup_ap_sync(self):
+        runtime = DeviceRuntime("camera", "cam-1", "Camera", "", "https://server", "media")
+        with patch("cctv.runtime.http_json", return_value={"commands": [{"command": "sync_setup_ap"}]}), \
+                patch.object(runtime, "sync_setup_ap") as sync:
+            runtime.poll_commands()
+        sync.assert_called_once_with()
+
     def test_adopted_enrollment_token_persists_and_is_reused_after_restart(self):
         with TemporaryDirectory() as directory:
             state_path = Path(directory) / "device.json"

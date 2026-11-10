@@ -94,6 +94,10 @@ class Store:
                 created_at TEXT NOT NULL,
                 expires_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS system_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
             """
         )
         columns = {row[1] for row in self.db.execute("PRAGMA table_info(devices)").fetchall()}
@@ -107,6 +111,26 @@ class Store:
     @serialized
     def close(self) -> None:
         self.db.close()
+
+    @serialized
+    def system_setting(self, key: str) -> Any | None:
+        row = self.db.execute("SELECT value FROM system_settings WHERE key=?", (key,)).fetchone()
+        return json.loads(row["value"]) if row else None
+
+    @serialized
+    def set_system_setting(self, key: str, value: Any, *, only_if_missing: bool = False) -> None:
+        if only_if_missing:
+            self.db.execute(
+                "INSERT OR IGNORE INTO system_settings(key, value) VALUES(?, ?)",
+                (key, json.dumps(value)),
+            )
+        else:
+            self.db.execute(
+                "INSERT INTO system_settings(key, value) VALUES(?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (key, json.dumps(value)),
+            )
+        self.db.commit()
 
     @serialized
     def device(self, device_id: str) -> dict[str, Any] | None:
