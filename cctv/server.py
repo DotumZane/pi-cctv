@@ -651,7 +651,7 @@ class Handler(BaseHTTPRequestHandler):
             if root not in requested.parents or not requested.is_file() or requested.suffix not in {".mkv", ".mp4"}:
                 self.send_json({"error": "recording not found"}, HTTPStatus.NOT_FOUND)
                 return
-            if requested.suffix == ".mkv" and parse_qs(parsed.query).get("format", [""])[0] == "mp4":
+            if parse_qs(parsed.query).get("format", [""])[0] == "mp4":
                 if not shutil.which("ffmpeg"):
                     self.send_json({"error": "MP4 playback conversion is unavailable"}, HTTPStatus.NOT_IMPLEMENTED)
                     return
@@ -663,7 +663,7 @@ class Handler(BaseHTTPRequestHandler):
                         temporary = cache.with_name(f"{cache.stem}.{os.getpid()}.tmp.mp4")
                         try:
                             result = subprocess.run(
-                                ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(requested), "-map", "0:v:0", "-c", "copy", "-movflags", "+faststart", str(temporary)],
+                                ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(requested), "-map", "0:v:0", "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-an", "-movflags", "+faststart", str(temporary)],
                                 capture_output=True,
                                 text=True,
                                 timeout=180,
