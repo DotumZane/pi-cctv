@@ -65,6 +65,7 @@ class MonitorPlayer:
         self.width = 0
         self.height = 0
         self.age_seconds: float | None = None
+        self.last_video_buffer_at: float | None = None
         self.started_at = time.monotonic()
         self.rtspsrcs = self._find_elements("rtspsrc")
         for source in self.rtspsrcs:
@@ -123,6 +124,7 @@ class MonitorPlayer:
             return self.Gst.PadProbeReturn.OK
         with self.lock:
             self.frames_in_window += 1
+            self.last_video_buffer_at = time.monotonic()
             caps = pad.get_current_caps()
             if caps and caps.get_size():
                 structure = caps.get_structure(0)
@@ -167,11 +169,16 @@ class MonitorPlayer:
             self.frames_in_window = 0
             self.last_fps_update = now
             width, height, age, bitrate, fps = self.width, self.height, self.age_seconds, self.bitrate, self.fps
+            if age is None and self.last_video_buffer_at is not None:
+                # Some live sources expose PTS values in a different clock domain
+                # than the pipeline clock. Use the most recent buffer arrival as a
+                # safe low-latency fallback instead of leaving the overlay stuck.
+                age = max(0.0, min(10.0, now - self.last_video_buffer_at))
         visible = now < self.visible_until
         self.overlay.set_property("silent", not visible)
         if visible:
             resolution = f"{width}×{height}" if width and height else "measuring"
-            age_text = f"{age * 1000:.0f} ms" if age is not None else "measuring"
+            age_text = f"{age * 1000:.0f} ms" if age is not None else "unavailable"
             uptime = int(now - self.started_at)
             stats = (
                 f"STATS FOR NERDS  ·  {resolution} @ {fps:.1f} fps\n"
