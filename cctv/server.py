@@ -579,6 +579,48 @@ class Handler(BaseHTTPRequestHandler):
             entries.sort(key=lambda entry: entry["modified"], reverse=True)
             self.send_json({"recordings": entries})
             return
+        if parsed.path == "/api/recordings/snapshot":
+            if not self.require_read_auth():
+                return
+            root = Path(getattr(self.server, "recordings_dir", "recordings")).resolve()
+            relative_text = unquote(parse_qs(parsed.query).get("path", [""])[0])
+            try:
+                requested = (root / relative_text).resolve()
+                seconds = max(0.0, min(3600.0, float(parse_qs(parsed.query).get("at", [0])[0])))
+            except (TypeError, ValueError):
+                self.send_json({"error": "invalid snapshot request"}, HTTPStatus.BAD_REQUEST)
+                return
+            if root not in requested.parents or not requested.is_file() or requested.suffix not in {".mkv", ".mp4"}:
+                self.send_json({"error": "recording not found"}, HTTPStatus.NOT_FOUND)
+                return
+            cache = root / ".snapshot-cache" / requested.relative_to(root).parent / f"{requested.stem}-{int(seconds):04d}.jpg"
+            cache.parent.mkdir(parents=True, exist_ok=True)
+            if not cache.is_file() or cache.stat().st_mtime < requested.stat().st_mtime:
+                temporary = cache.with_name(f"{cache.stem}.{os.getpid()}.tmp.jpg")
+                try:
+                    result = subprocess.run(
+                        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-ss", f"{seconds:.3f}", "-i", str(requested), "-frames:v", "1", "-vf", "scale=320:-2", "-q:v", "5", "-y", str(temporary)],
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
+                    )
+                except (OSError, subprocess.TimeoutExpired):
+                    temporary.unlink(missing_ok=True)
+                    self.send_json({"error": "Unable to generate recording snapshot"}, HTTPStatus.UNPROCESSABLE_ENTITY)
+                    return
+                if result.returncode != 0 or not temporary.is_file():
+                    temporary.unlink(missing_ok=True)
+                    self.send_json({"error": "Unable to generate recording snapshot"}, HTTPStatus.UNPROCESSABLE_ENTITY)
+                    return
+                temporary.replace(cache)
+            image = cache.read_bytes()
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "image/jpeg")
+            self.send_header("Cache-Control", "public, max-age=3600")
+            self.send_header("Content-Length", str(len(image)))
+            self.end_headers()
+            self.wfile.write(image)
+            return
         if parsed.path.startswith("/recordings/"):
             if not self.require_read_auth():
                 return
