@@ -466,4 +466,5 @@ const openWorkspaceAsPage=openLiveWorkspace;openLiveWorkspace=async function(id)
 const closeWorkspaceAsPage=closeLiveWorkspace;closeLiveWorkspace=function(){if(workspacePageClosing)return;workspacePageClosing=true;closeWorkspaceAsPage();hideWorkspacePage();if(history.state?.camera)history.back();else workspacePageClosing=false};
 window.addEventListener('popstate',()=>{if(document.body.classList.contains('workspace-page-open')){workspacePageClosing=true;closeWorkspaceAsPage();hideWorkspacePage();workspacePageClosing=false}});
 </script>
+<script src="/timeline-enhancements.js"></script>
 </body></html>

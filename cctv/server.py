@@ -254,6 +254,15 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self.send_json({"users": self.store.users()})
             return
+        if parsed.path == "/timeline-enhancements.js":
+            content = (ROOT / "timeline-enhancements.js").read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/javascript; charset=utf-8")
+            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+            self.send_header("Content-Length", str(len(content)))
+            self.end_headers()
+            self.wfile.write(content)
+            return
         if parsed.path == "/":
             content = (ROOT / "dashboard.html").read_bytes()
             self.send_response(200)
