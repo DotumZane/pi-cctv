@@ -457,7 +457,7 @@ const playWorkspaceRecordingBeforeAccurateTimeline=playWorkspaceRecording;playWo
 </script>
 <script>
 const workspacePageStyle=document.createElement('style');workspacePageStyle.textContent=`
-body.workspace-page-open>.app{display:none!important}body.workspace-page-open{background:var(--bg);overflow:auto}body.workspace-page-open>#live-workspace{position:relative;inset:auto;z-index:1;min-height:100dvh;background:var(--bg);padding:24px}body.workspace-page-open .live-workspace-inner{width:min(1500px,100%)}
+body.workspace-page-open>.app{display:none!important}body.workspace-page-open{background:var(--bg);overflow:auto}body.workspace-page-open>#live-workspace{position:relative;inset:auto;z-index:1;min-height:100dvh;background:var(--bg);padding:24px}body.workspace-page-open .live-workspace-inner{width:100%;max-width:none}
 .workspace-back{display:inline-flex;align-items:center;gap:7px;margin:0 0 12px;padding:7px 11px}.workspace-back:before{content:'←';font-size:16px;line-height:1}.workspace-page-open .live-workspace-head{margin-bottom:16px}
 @media(max-width:600px){body.workspace-page-open>#live-workspace{padding:12px}.workspace-back{margin-bottom:8px}}
 `;document.head.appendChild(workspacePageStyle);
