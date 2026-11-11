@@ -22,7 +22,7 @@ class RecorderConfig:
     camera_id: str
     stream_url: str
     output_dir: Path
-    segment_seconds: int = 900
+    segment_seconds: int = 30
     retention_hours: int = 24
     storage_limit_gb: int = 500
 
@@ -165,7 +165,7 @@ class RecorderSupervisor:
             try:
                 settings = self._settings()
                 retention = int(settings.get("retention_hours", 24))
-                segment_seconds = int(settings.get("segment_seconds", 900))
+                segment_seconds = int(settings.get("segment_seconds", 30))
                 storage_limit_gb = int(settings.get("storage_limit_gb", 500))
                 recording_enabled = settings.get("recording_enabled", True)
                 per_camera = settings.get("camera_recording", {})
@@ -207,7 +207,7 @@ def main() -> None:
     parser.add_argument("--camera-id", required=True)
     parser.add_argument("--stream-url", required=True)
     parser.add_argument("--output-dir", default="recordings")
-    parser.add_argument("--segment-seconds", type=int, default=900)
+    parser.add_argument("--segment-seconds", type=int, default=30)
     parser.add_argument("--retention-hours", type=int, default=24)
     parser.add_argument("--storage-limit-gb", type=int, default=500)
     args = parser.parse_args()

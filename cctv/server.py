@@ -30,7 +30,7 @@ ROOT = Path(__file__).parent
 DEFAULT_NVR_SETTINGS = {
     "recording_enabled": True,
     "retention_hours": 24,
-    "segment_seconds": 900,
+    "segment_seconds": 30,
     "storage_limit_gb": 500,
     "camera_recording": {},
 }
@@ -335,7 +335,11 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/nvr/settings":
             if not self.require_read_auth(): return
             path = Path(getattr(self.server, "recordings_dir", "recordings")) / "nvr-settings.json"  # type: ignore[attr-defined]
-            try: settings = {**DEFAULT_NVR_SETTINGS, **json.loads(path.read_text())}
+            try:
+                settings = {**DEFAULT_NVR_SETTINGS, **json.loads(path.read_text())}
+                if settings.get("segment_seconds") == 900:
+                    settings["segment_seconds"] = DEFAULT_NVR_SETTINGS["segment_seconds"]
+                    path.write_text(json.dumps(settings, indent=2) + "\n")
             except (OSError, ValueError, TypeError): settings = dict(DEFAULT_NVR_SETTINGS)
             self.send_json({"settings": settings})
             return
@@ -1412,7 +1416,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 enabled = payload.get("recording_enabled", True)
                 retention = int(payload.get("retention_hours", 24))
-                segment = int(payload.get("segment_seconds", 900))
+                segment = int(payload.get("segment_seconds", 30))
                 storage_limit = int(payload.get("storage_limit_gb", 500))
                 camera_recording = payload.get("camera_recording", {})
             except (TypeError, ValueError):
