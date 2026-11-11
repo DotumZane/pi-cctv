@@ -37,6 +37,11 @@
   function shell() { return mainVideo()?.closest('.workspace-video-shell'); }
   function sourceFor(record) {
     const url = String(record?.url || '');
+    // Recorder output is normally already browser-playable MP4. Do not send
+    // those files through the server's FFmpeg conversion path: that makes
+    // Safari wait for a full transcode before it can seek. MKV recordings
+    // still use the conversion endpoint for browser compatibility.
+    if (/\.mp4(?:[?#]|$)/i.test(url)) return url;
     return `${url}${url.includes('?') ? '&' : '?'}format=mp4`;
   }
 
