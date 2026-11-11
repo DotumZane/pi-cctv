@@ -499,5 +499,5 @@ function ensureVerticalTimelineStage(){const inner=document.querySelector('.live
 const verticalTimelineBaseLoad=loadCameraTimeline;loadCameraTimeline=async function(id){await verticalTimelineBaseLoad(id);ensureVerticalTimelineStage();buildVerticalTimeline();};
 const verticalTimelineBaseUpdate=updateTimelinePlayhead;updateTimelinePlayhead=function(value){verticalTimelineBaseUpdate(value);if(verticalTimelineReady)verticalTimelineSetPosition(value,true)};
 const verticalTimelineBaseOpen=openLiveWorkspace;openLiveWorkspace=async function(id){await verticalTimelineBaseOpen(id);ensureVerticalTimelineStage();buildVerticalTimeline()};
-</script>
+</script><script src="/playback-engine.js"></script>
 </body></html>
