@@ -382,8 +382,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         hls_match = re.fullmatch(r"/api/cameras/([^/]+)/hls/(.+)", parsed.path)
         if hls_match:
-            if not self.require_read_auth():
-                return
+            # MediaMTX's HLS endpoint is intentionally public on the LAN. Keep
+            # this browser-media proxy public too because <video> requests
+            # cannot attach the dashboard's localStorage bearer token.
             camera_id = unquote(hls_match.group(1))
             resource = unquote(hls_match.group(2))
             camera = self.store.device(camera_id)
