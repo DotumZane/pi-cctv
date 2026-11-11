@@ -6,11 +6,17 @@ rtsp: true
 rtspAddress: :8554
 hls: true
 hlsAddress: :8888
-# Safari is used from an HTTP dashboard. Use the broadly compatible HLS
-# transport; Low-Latency HLS on Apple devices requires HTTPS.
+# Safari is used from the HTTPS dashboard. Encrypt HLS and WebRTC so browsers
+# do not block the live stream as mixed active content.
+hlsEncryption: true
+hlsServerKey: /run/pi-cctv/tls/server.key
+hlsServerCert: /run/pi-cctv/tls/server.crt
 hlsVariant: mpegts
 webrtc: true
 webrtcAddress: :8889
+webrtcEncryption: true
+webrtcServerKey: /run/pi-cctv/tls/server.key
+webrtcServerCert: /run/pi-cctv/tls/server.crt
 readTimeout: 5s
 writeTimeout: 5s
 writeQueueSize: 512

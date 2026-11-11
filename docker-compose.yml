@@ -56,6 +56,7 @@ services:
       - "8189:8189/udp"
     volumes:
       - ./mediamtx.yml:/mediamtx.yml:ro
+      - ${CCTV_TLS_DIR:-/etc/pi-cctv/tls}:/run/pi-cctv/tls:ro
 
 volumes:
   cctv-data:
