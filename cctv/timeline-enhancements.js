@@ -94,4 +94,14 @@ const workspaceTimelineRefinementStyle=document.createElement('style');workspace
   .workspace-page-open .workspace-timeline-axis,.workspace-page-open .workspace-timeline-track{min-width:720px}
   .workspace-page-open .workspace-timeline-track{height:62px}
 }
+@media(max-width:600px){
+  body.workspace-page-open>#live-workspace{padding-bottom:calc(32px + env(safe-area-inset-bottom));}
+  .workspace-video-shell{aspect-ratio:16/9;min-height:0;}
+  .workspace-video-shell>#workspace-live{height:auto;min-height:0;max-height:none;aspect-ratio:16/9;object-fit:contain;}
+  .workspace-video-shell>.workspace-playback-controls{display:flex;align-items:center;}
+  .workspace-video-shell .workspace-control-left{flex:0 0 auto;}
+  .workspace-video-shell .workspace-control-center{flex:1 1 auto;justify-content:center;min-width:0;}
+  .workspace-video-shell .workspace-return-live{flex:1 0 100%;margin-left:0;}
+  .workspace-page-open .workspace-timeline-shell{margin-bottom:12px;}
+}
 `;document.head.appendChild(workspaceTimelineRefinementStyle);
