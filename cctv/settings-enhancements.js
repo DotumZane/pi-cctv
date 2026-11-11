@@ -118,8 +118,28 @@
   const originalOpenDevice = window.openDevice;
   if (typeof originalOpenDevice === 'function') {
     window.openDevice = async function openDeviceWithHostnameEditor(id) {
+      localStorage.setItem('cctvDeviceId', id);
       await originalOpenDevice(id);
+      history.replaceState(null, '', `${location.pathname}#device/${encodeURIComponent(id)}`);
       ensureDeviceHostnameEditor(id);
+    };
+  }
+
+  const originalLoadAll = window.loadAll;
+  if (typeof originalLoadAll === 'function') {
+    window.loadAll = async function loadAllWithDeviceRestore() {
+      await originalLoadAll();
+      const match = location.hash.match(/^#device\/(.+)$/);
+      const savedId = match ? decodeURIComponent(match[1]) : localStorage.getItem('cctvDeviceId');
+      const device = savedId && state.devices.find(item => item.id === savedId);
+      if (device) {
+        const detail = document.querySelector('#device-detail-page');
+        if (!document.querySelector('#view-device-detail.active') || !detail?.children.length) await window.openDevice(device.id);
+      } else if (localStorage.getItem('cctvView') === 'device-detail' || location.hash === '#device-detail') {
+        localStorage.removeItem('cctvDeviceId');
+        history.replaceState(null, '', `${location.pathname}#devices`);
+        window.selectView?.('devices');
+      }
     };
   }
 })();
