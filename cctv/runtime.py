@@ -116,7 +116,9 @@ def collect_diagnostics(role: str, device_id: str, media_server: str, processes:
     result["network"]={"media_server":media_server,"rtsp_port_8554_reachable":reachable}
     result["media_processes"]=[{"running":p.poll() is None,"pid":p.pid} for p in (processes or [])]
     checks=[]
-    for service in ("mediamtx", "pi-cctv-agent", "pi-cctv-recorder"):
+    # MediaMTX and recording run on the dashboard host. A Pi report must only
+    # check services that are actually expected to be local to the device.
+    for service in ("pi-cctv-agent",):
         try:
             p=subprocess.run(["systemctl","is-active",service],capture_output=True,text=True,timeout=3,check=False)
             checks.append({"service":service,"active":p.stdout.strip()=="active","state":p.stdout.strip() or "unknown"})

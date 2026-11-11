@@ -52,6 +52,19 @@
 })();
 
 (() => {
+  const originalDiagnosticSummaryMarkup = window.diagnosticSummaryMarkup;
+  if (typeof originalDiagnosticSummaryMarkup !== 'function') return;
+  const dashboardHosted = new Set(['mediamtx', 'pi-cctv-recorder']);
+  window.diagnosticSummaryMarkup = function diagnosticSummaryMarkupWithServiceScope(report) {
+    const services = Array.isArray(report?.services) ? report.services.map(service => {
+      if (!dashboardHosted.has(service.service)) return service;
+      return {...service, active: true, state: 'dashboard host', service: `${service.service} · dashboard host`};
+    }) : report?.services;
+    return originalDiagnosticSummaryMarkup({...report, services});
+  };
+})();
+
+(() => {
   const style = document.createElement('style');
   style.textContent = '.device-identity-card{grid-column:1/-1!important;padding:24px 26px!important}.device-identity-card>.panel-head{margin-bottom:18px}.device-identity-card>.panel-head h2{margin-bottom:5px}.device-identity-columns{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.device-identity-group{display:grid;align-content:start;gap:12px;margin:0;padding:17px;border:1px solid var(--line);border-radius:13px;background:var(--bg)}.device-identity-group h3{margin:0;font-size:.95rem}.device-identity-group>p{margin:-5px 0 2px;color:var(--muted);font-size:.78rem;line-height:1.45}.device-identity-group label,.device-hostname-form label{display:grid;gap:7px;color:var(--muted);font-size:.78rem;font-weight:700}.device-identity-group input,.device-hostname-form input{width:100%;box-sizing:border-box}.device-identity-actions,.device-hostname-actions{display:flex;align-items:center;gap:9px;flex-wrap:wrap}.device-identity-actions .notice,.device-hostname-actions .notice{min-height:1.2em}.device-hostname-form{display:grid;gap:12px;margin:0;padding:0;border:0}.device-hostname-form>.notice{margin:0;color:var(--muted);font-size:.78rem;line-height:1.45}.device-identity-columns>.device-hostname-form{display:grid}.device-identity-columns>.device-hostname-form:before{content:"Pi network identity";display:block;margin-bottom:-4px;font-size:.95rem;font-weight:750}.device-identity-columns>.device-hostname-form:after{content:"The hostname used to identify this Raspberry Pi on your network.";display:block;grid-row:2;color:var(--muted);font-size:.78rem;line-height:1.45}.device-identity-columns>.device-hostname-form>.notice{display:none}.device-identity-columns>.device-hostname-form .device-hostname-actions{grid-row:5}.device-identity-columns>.device-hostname-form label{grid-row:3}.device-identity-columns>.device-hostname-form .device-hostname-actions{grid-row:4}.device-identity-columns>.device-hostname-form:after{grid-row:2}.device-identity-columns>.device-hostname-form{grid-template-rows:auto auto auto auto}.device-identity-columns>.device-hostname-form .device-hostname-actions{grid-column:1}.device-identity-columns>.device-hostname-form:after{grid-column:1}.device-identity-columns>.device-hostname-form label{grid-column:1}.device-identity-columns>.device-hostname-form .device-hostname-actions .notice{display:block}@media(max-width:700px){.device-identity-columns{grid-template-columns:1fr}}';
   document.head.appendChild(style);
