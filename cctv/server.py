@@ -401,6 +401,8 @@ class Handler(BaseHTTPRequestHandler):
             schemes = [parsed_media.scheme]
             if parsed_media.scheme == "http":
                 schemes.insert(0, "https")
+            elif parsed_media.scheme == "https":
+                schemes.append("http")
             last_error: Exception | None = None
             for scheme in dict.fromkeys(schemes):
                 remote_url = parsed_media._replace(scheme=scheme).geturl().rstrip("/") + remote_path
