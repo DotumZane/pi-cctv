@@ -57,3 +57,13 @@ const workspaceVideoShellStyle=document.createElement('style');workspaceVideoShe
 const workspaceNativeControlStyle=document.createElement('style');workspaceNativeControlStyle.textContent=`
 .workspace-video-shell>.workspace-playback-controls{display:none!important}.workspace-video-status{position:absolute;left:14px;top:14px;z-index:7;padding:4px 8px;border-radius:5px;background:#101418bb;color:#fff;font-size:11px;font-weight:800;letter-spacing:.08em;pointer-events:none}.workspace-video-status[data-mode="live"]{color:#06210f;background:#42d392}.workspace-video-shell:fullscreen>.workspace-video-status{left:24px;top:24px}
 `;document.head.appendChild(workspaceNativeControlStyle);
+const workspaceTimelineRefinementStyle=document.createElement('style');workspaceTimelineRefinementStyle.textContent=`
+.workspace-timeline-shell{margin-top:10px;padding:12px 14px 14px;border:1px solid var(--line);border-radius:12px;background:linear-gradient(180deg,#151d27,#10161e);box-shadow:0 8px 22px #0002}
+.workspace-timeline-heading{margin-bottom:7px}.workspace-timeline-heading h2{font-size:15px}.workspace-timeline-subtitle{font-size:11px}.workspace-timeline-time{padding:4px 8px;border:1px solid #ffffff1c;border-radius:6px;background:#0b1016;font-size:12px}
+.workspace-timeline-tools{margin:0 0 8px;padding:5px 7px;border-color:#ffffff12;background:#0c1219}.workspace-timeline-tools button{padding:5px 8px;border-radius:6px}.workspace-timeline-tool-label{font-size:10px}
+.workspace-timeline-axis{height:20px;margin-bottom:3px;font-size:10px}.workspace-timeline-track{height:66px;border-radius:8px;background:linear-gradient(180deg,#0d141c,#0a1017);box-shadow:inset 0 1px 0 #ffffff0b,inset 0 -1px 0 #0008}
+.workspace-timeline-track:before{background:repeating-linear-gradient(90deg,transparent 0,transparent calc(1.3888% - 1px),#ffffff0b calc(1.3888% - 1px),#ffffff0b 1.3888%)}
+.workspace-timeline-coverage{top:25px;height:22px;border-radius:4px;background:linear-gradient(180deg,#77a8ff,#4e7fdc);box-shadow:0 1px 0 #b7d0ff55,inset 0 0 0 1px #b7d0ff2b;opacity:1}
+.workspace-timeline-playhead{width:2px;box-shadow:0 0 0 1px #000a,0 0 13px #9fc2ff}.workspace-timeline-playhead:before{left:-5px;border-left-width:6px;border-right-width:6px;border-top-width:7px}
+.workspace-timeline-range{cursor:ew-resize}.workspace-timeline-scroll{scrollbar-width:thin}
+`;document.head.appendChild(workspaceTimelineRefinementStyle);
