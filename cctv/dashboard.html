@@ -181,8 +181,10 @@ const nvrView=document.querySelector('#view-nvr');if(nvrView){nvrView.querySelec
 const originalSelectView=selectView;selectView=function(view){localStorage.cctvView=view;history.replaceState(null,'',view==='overview'?location.pathname:location.pathname+'#'+encodeURIComponent(view));const result=originalSelectView(view);if(view==='nvr')loadNvr();return result};
 const savedView=decodeURIComponent(location.hash.slice(1))||localStorage.cctvView||'overview';if(document.querySelector('#view-'+CSS.escape(savedView)))selectView(savedView);
 </script>
+<script>
 async function requestMonitorStats(id){const status=document.querySelector('#monitor-stats-status'),button=[...document.querySelectorAll('.monitor-preview-card button')].find(item=>item.textContent.includes('stats for 1 minute'));if(button)button.disabled=true;if(status)status.textContent='Requesting the one-minute stats overlay…';try{const response=await api(`/api/devices/${encodeURIComponent(id)}/commands`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command:'show_stats'})}),result=await response.json().catch(()=>({}));if(!response.ok)throw new Error(result.error||'Could not request the stats overlay.');if(status)status.textContent='Requested. It will appear on the monitor when the Pi checks in, then disappear after 1 minute.'}catch(error){if(status)status.textContent=error.message||'Could not request the stats overlay.'}finally{if(button)button.disabled=false}}
-</body></html>
+</script>
+
 
 <script>
 const monitorPreviewStyle=document.createElement('style');monitorPreviewStyle.textContent='.monitor-preview-card{grid-column:1/-1}.monitor-preview-heading{display:flex;justify-content:space-between;align-items:center;gap:16px;margin-bottom:14px}.monitor-preview-heading h2{margin-bottom:4px}.monitor-preview-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap;justify-content:flex-end}.monitor-stats-status:empty{display:none}.monitor-preview-card img{display:block;width:100%;max-height:62vh;min-height:240px;object-fit:contain;border-radius:12px;background:#05070a;border:1px solid var(--line)}.monitor-preview-card .preview-unavailable{padding:28px;text-align:center;border:1px dashed var(--line);border-radius:12px;color:var(--muted)}.preview-live{display:inline-flex;align-items:center;gap:7px;color:#42d392;font-size:.7rem;font-weight:800;letter-spacing:.1em}.preview-live i{width:8px;height:8px;border-radius:50%;background:#42d392;box-shadow:0 0 10px #42d392}.monitor-preview-card .preview-unavailable[hidden],.monitor-preview-card img[hidden]{display:none}@media(max-width:950px){.monitor-preview-card{grid-column:auto}}';document.head.appendChild(monitorPreviewStyle);
@@ -403,3 +405,4 @@ window.sendDeviceCommand=async function(id,command){if(command!=='reboot')return
 setInterval(()=>{if(rebootStatusDevice&&document.querySelector('#view-device-detail.active'))refreshPiRebootStatus()},3000);
 const piRebootStatusStyle=document.createElement('style');piRebootStatusStyle.textContent='.pi-reboot-status{display:block;flex-basis:100%;margin-top:4px}.pi-reboot-status[data-state="succeeded"]{color:var(--good)}.pi-reboot-status[data-state="failed"]{color:var(--bad)}';document.head.appendChild(piRebootStatusStyle);
 </script>
+</body></html>
