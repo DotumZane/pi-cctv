@@ -394,19 +394,29 @@ class Handler(BaseHTTPRequestHandler):
             media_url = getattr(self.server, "public_media_url", "http://127.0.0.1:8888").rstrip("/")  # type: ignore[attr-defined]
             configured_endpoints = self.store.system_setting("public_stream_endpoints") or {}
             media_url = str(configured_endpoints.get("media_url", media_url)).rstrip("/")
-            remote_url = f"{media_url}/{quote(camera_id, safe='')}/{quote(resource, safe='/')}"
+            remote_path = f"/{quote(camera_id, safe='')}/{quote(resource, safe='/')}"
             if parsed.query:
-                remote_url += f"?{parsed.query}"
-            try:
-                context = ssl._create_unverified_context() if remote_url.startswith("https://") else None
-                with urllib_request.urlopen(remote_url, timeout=10, context=context) as response:
-                    content_type = response.headers.get("Content-Type", "application/octet-stream")
-                    body = response.read(8_000_001)
-                if len(body) > 8_000_000:
-                    self.send_json({"error": "stream segment is too large"}, HTTPStatus.BAD_GATEWAY)
-                    return
-            except (OSError, urllib_request.URLError, TimeoutError) as exc:
-                self.send_json({"error": f"unable to proxy live stream: {exc}"}, HTTPStatus.BAD_GATEWAY)
+                remote_path += f"?{parsed.query}"
+            parsed_media = urlparse(media_url)
+            schemes = [parsed_media.scheme]
+            if parsed_media.scheme == "http":
+                schemes.insert(0, "https")
+            last_error: Exception | None = None
+            for scheme in dict.fromkeys(schemes):
+                remote_url = parsed_media._replace(scheme=scheme).geturl().rstrip("/") + remote_path
+                try:
+                    context = ssl._create_unverified_context() if scheme == "https" else None
+                    with urllib_request.urlopen(remote_url, timeout=10, context=context) as response:
+                        content_type = response.headers.get("Content-Type", "application/octet-stream")
+                        body = response.read(8_000_001)
+                    if len(body) > 8_000_000:
+                        self.send_json({"error": "stream segment is too large"}, HTTPStatus.BAD_GATEWAY)
+                        return
+                    break
+                except (OSError, urllib_request.URLError, TimeoutError) as exc:
+                    last_error = exc
+            else:
+                self.send_json({"error": f"unable to proxy live stream: {last_error}"}, HTTPStatus.BAD_GATEWAY)
                 return
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", content_type)
