@@ -459,6 +459,7 @@ body.workspace-page-open>.app{display:none!important}body.workspace-page-open{ba
 @media(max-width:600px){body.workspace-page-open>#live-workspace{padding:12px}.workspace-back{margin-bottom:8px}}
 `;document.head.appendChild(workspacePageStyle);
 let workspacePageClosing=false;
+document.head.insertAdjacentHTML('beforeend','<style>.auth-screen{z-index:100}</style>');
 function ensureWorkspaceBackButton(){const head=document.querySelector('.live-workspace-head');if(!head||head.querySelector('.workspace-back'))return;const button=document.createElement('button');button.className='ghost workspace-back';button.type='button';button.textContent='Back to live views';button.onclick=()=>closeLiveWorkspace();head.parentElement.insertBefore(button,head)}
 function showWorkspacePage(){document.body.classList.add('workspace-page-open');ensureWorkspaceBackButton();document.title=`${document.querySelector('#workspace-title')?.textContent||'Camera'} · Pi CCTV`}
 function hideWorkspacePage(){document.body.classList.remove('workspace-page-open');const video=document.querySelector('#workspace-live');video?.pause();document.title='Pi CCTV'}
