@@ -17,7 +17,8 @@ from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
+from urllib import request as urllib_request
 
 from . import __agent_version__, __version__
 from .fleet import FleetAgentUpdateCoordinator, FleetOsUpdateCoordinator
@@ -378,6 +379,40 @@ class Handler(BaseHTTPRequestHandler):
             media_url = str(configured_endpoints.get("media_url", media_url)).rstrip("/")
             webrtc_url = str(configured_endpoints.get("webrtc_url", webrtc_url)).rstrip("/")
             self.send_json({"camera_id": camera_id, "hls_url": f"{media_url}/{camera_id}/index.m3u8", "webrtc_url": f"{webrtc_url}/{camera_id}/whep"})
+            return
+        hls_match = re.fullmatch(r"/api/cameras/([^/]+)/hls/(.+)", parsed.path)
+        if hls_match:
+            if not self.require_read_auth():
+                return
+            camera_id = unquote(hls_match.group(1))
+            resource = unquote(hls_match.group(2))
+            camera = self.store.device(camera_id)
+            if not camera or camera.get("kind") != "camera" or not resource or resource.startswith("/") or ".." in resource.split("/"):
+                self.send_json({"error": "camera stream resource not found"}, HTTPStatus.NOT_FOUND)
+                return
+            media_url = getattr(self.server, "public_media_url", "http://127.0.0.1:8888").rstrip("/")  # type: ignore[attr-defined]
+            configured_endpoints = self.store.system_setting("public_stream_endpoints") or {}
+            media_url = str(configured_endpoints.get("media_url", media_url)).rstrip("/")
+            remote_url = f"{media_url}/{quote(camera_id, safe='')}/{quote(resource, safe='/')}"
+            if parsed.query:
+                remote_url += f"?{parsed.query}"
+            try:
+                context = ssl._create_unverified_context() if remote_url.startswith("https://") else None
+                with urllib_request.urlopen(remote_url, timeout=10, context=context) as response:
+                    content_type = response.headers.get("Content-Type", "application/octet-stream")
+                    body = response.read(8_000_001)
+                if len(body) > 8_000_000:
+                    self.send_json({"error": "stream segment is too large"}, HTTPStatus.BAD_GATEWAY)
+                    return
+            except (OSError, urllib_request.URLError, TimeoutError) as exc:
+                self.send_json({"error": f"unable to proxy live stream: {exc}"}, HTTPStatus.BAD_GATEWAY)
+                return
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Cache-Control", "no-store, max-age=0")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
             return
         if parsed.path.startswith("/api/devices/") and parsed.path.endswith("/commands"):
             device_id = parsed.path.split("/")[3]
