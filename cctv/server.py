@@ -102,6 +102,20 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json({"error": "authentication required"}, HTTPStatus.UNAUTHORIZED)
         return False
 
+    def viewer_restricted_path(self, path: str) -> bool:
+        """Keep viewer sessions limited to camera viewing and recordings."""
+        user = self.session_user()
+        if not user or user.get("role") != "viewer":
+            return False
+        return (
+            path == "/api/assignments"
+            or path == "/api/pending"
+            or path == "/api/audit"
+            or path.startswith("/api/users")
+            or path.startswith("/api/server/")
+            or path.startswith("/api/devices/")
+        )
+
     def bootstrap_authorized(self) -> bool:
         expected = getattr(self.server, "bootstrap_token", "")  # type: ignore[attr-defined]
         supplied = self.headers.get("X-Bootstrap-Token", "")
@@ -127,6 +141,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
+        if self.viewer_restricted_path(parsed.path):
+            self.send_json({"error": "viewer access is limited to live camera views and recordings"}, HTTPStatus.FORBIDDEN)
+            return
         if parsed.path == "/ca.crt":
             if not isinstance(self.connection, ssl.SSLSocket):
                 self.send_json({"error": "download the local CA certificate over HTTPS"}, HTTPStatus.UPGRADE_REQUIRED)
@@ -346,7 +363,10 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/devices":
             if not self.require_read_auth():
                 return
-            self.send_json({"devices": self.store.devices(parse_qs(parsed.query).get("kind", [None])[0])})
+            kind = parse_qs(parsed.query).get("kind", [None])[0]
+            if self.session_user() and self.session_user().get("role") == "viewer":
+                kind = "camera"
+            self.send_json({"devices": self.store.devices(kind)})
             return
         if parsed.path == "/api/pending":
             if not self.require_auth():

@@ -329,8 +329,11 @@ selectSystemTab(localStorage.getItem('cctvSystemTab'),false);
 const systemNav=document.querySelector('#system-nav');
 systemNav.hidden=!authUi.user||authUi.user.role!=='admin';
 const originalSystemHideAuth=hideAuth,originalSystemShowAuth=showAuth;
-hideAuth=function(user){originalSystemHideAuth(user);systemNav.hidden=user.role!=='admin';if(user.role==='admin'&&(location.hash==='#system'||localStorage.cctvView==='system')){selectView('system');loadSystemSettings()}};
-showAuth=function(setup){originalSystemShowAuth(setup);systemNav.hidden=true};
+function applyRoleNavigation(user){const viewer=user?.role==='viewer';document.querySelectorAll('.nav button').forEach(button=>{button.hidden=viewer&&!['live'].includes(button.dataset.view)});const accountNav=document.querySelector('#account-nav');if(accountNav)accountNav.hidden=viewer;systemNav.hidden=!user||user.role!=='admin';const sidebarFoot=document.querySelector('.sidebar-foot');if(sidebarFoot)sidebarFoot.hidden=viewer}
+const roleGuardedSelectView=selectView;
+selectView=function(view){if(authUi.user?.role==='viewer'&&!['live'].includes(view)){view='live'}return roleGuardedSelectView(view)};
+hideAuth=function(user){originalSystemHideAuth(user);applyRoleNavigation(user);if(user.role==='viewer'&&location.hash!=='#live'){selectView('live')}if(user.role==='admin'&&(location.hash==='#system'||localStorage.cctvView==='system')){selectView('system');loadSystemSettings()}};
+showAuth=function(setup){originalSystemShowAuth(setup);applyRoleNavigation(null);systemNav.hidden=true};
 systemNav.addEventListener('click',()=>{selectView('system');loadSystemSettings()});
 if((location.hash==='#system'||localStorage.cctvView==='system')&&authUi.user?.role==='admin'){selectView('system');loadSystemSettings()}
 let serverUpdatePoll=null;
