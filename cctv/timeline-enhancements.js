@@ -66,4 +66,32 @@ const workspaceTimelineRefinementStyle=document.createElement('style');workspace
 .workspace-timeline-coverage{top:25px;height:22px;border-radius:4px;background:linear-gradient(180deg,#77a8ff,#4e7fdc);box-shadow:0 1px 0 #b7d0ff55,inset 0 0 0 1px #b7d0ff2b;opacity:1}
 .workspace-timeline-playhead{width:2px;box-shadow:0 0 0 1px #000a,0 0 13px #9fc2ff}.workspace-timeline-playhead:before{left:-5px;border-left-width:6px;border-right-width:6px;border-top-width:7px}
 .workspace-timeline-range{cursor:ew-resize}.workspace-timeline-scroll{scrollbar-width:thin}
+@media(max-width:600px){
+  body.workspace-page-open{overflow:hidden}
+  body.workspace-page-open>#live-workspace{padding:8px 8px calc(8px + env(safe-area-inset-bottom));overflow:auto}
+  .workspace-page-open .live-workspace-inner{width:100%;min-width:0}
+  .workspace-page-open .live-workspace-head{align-items:stretch;flex-direction:column;gap:8px;margin-bottom:10px}
+  .workspace-page-open .live-workspace-head h1{font-size:18px}
+  .workspace-page-open .workspace-actions{display:grid;grid-template-columns:1fr 1fr;width:100%;gap:7px}
+  .workspace-page-open .workspace-actions button{min-height:40px}
+  .workspace-video-shell{border-radius:10px}
+  .workspace-video-shell>#workspace-live{height:48vh;min-height:220px;max-height:48vh}
+  .workspace-video-shell>.workspace-playback-controls{left:7px;right:7px;bottom:7px;gap:6px;padding:7px}
+  .workspace-video-shell .workspace-control-left{min-width:0;gap:5px}
+  .workspace-video-shell .workspace-control-time{min-width:64px;font-size:12px}
+  .workspace-video-shell .workspace-control-center{gap:4px}
+  .workspace-video-shell .workspace-control-center button{min-width:0;padding:7px 6px}
+  .workspace-video-shell .workspace-speed-label{display:none}
+  .workspace-video-shell .workspace-return-live{margin-left:auto;padding:7px 6px}
+  .workspace-page-open .workspace-date-controls{gap:7px;margin:8px 0 6px}
+  .workspace-page-open .workspace-date-controls input{width:100%;min-height:40px}
+  .workspace-page-open .workspace-timeline-shell{margin-top:7px;padding:9px 10px 10px}
+  .workspace-page-open .workspace-timeline-heading{align-items:flex-start}
+  .workspace-page-open .workspace-timeline-heading h2{font-size:14px}
+  .workspace-page-open .workspace-timeline-time{font-size:11px}
+  .workspace-page-open .workspace-timeline-tools{overflow-x:auto;flex-wrap:nowrap;white-space:nowrap}
+  .workspace-page-open .workspace-timeline-tools .workspace-timeline-tool-group{flex-wrap:nowrap}
+  .workspace-page-open .workspace-timeline-axis,.workspace-page-open .workspace-timeline-track{min-width:720px}
+  .workspace-page-open .workspace-timeline-track{height:62px}
+}
 `;document.head.appendChild(workspaceTimelineRefinementStyle);
