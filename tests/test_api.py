@@ -262,6 +262,25 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(status, 202)
         self.assertEqual(command["command"], "show_stats")
 
+    def test_set_hostname_is_admin_only_and_validated(self):
+        self.httpd.store.register({"id": "cam-1", "kind": "camera", "name": "Camera"})
+        device_token = "hostname-device-token"
+        self.httpd.store.db.execute(
+            "UPDATE devices SET token_hash=? WHERE id=?",
+            (self.httpd.store.hash_token(device_token), "cam-1"),
+        )
+        self.httpd.store.db.commit()
+        self.httpd.store.create_user("admin", "correct-horse", "admin")
+        admin_token = self.httpd.store.create_session("admin")
+        self.assertEqual(self.call("POST", "/api/devices/cam-1/commands", {"command": "set_hostname", "hostname": "front-door"})[0], 401)
+        self.assertEqual(self.call("POST", "/api/devices/cam-1/commands", {"command": "set_hostname", "hostname": "Bad Name"}, admin_token)[0], 400)
+        status, command = self.call("POST", "/api/devices/cam-1/commands", {"command": "set_hostname", "hostname": " Front-Door "}, admin_token)
+        self.assertEqual(status, 202)
+        self.assertEqual(command["command"], "set_hostname")
+        status, commands = self.call("GET", "/api/devices/cam-1/commands", token=device_token)
+        self.assertEqual(status, 200)
+        self.assertEqual(commands["commands"][0]["payload"], {"hostname": "front-door"})
+
     def test_server_address_change_is_admin_only_validated_and_delivered_as_json(self):
         self.httpd.store.register({"id": "cam-1", "kind": "camera", "name": "Saw 1"})
         device_token = "address-change-device-token"

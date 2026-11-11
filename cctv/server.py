@@ -1185,7 +1185,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json({"error": "device not found"}, HTTPStatus.NOT_FOUND)
                     return
                 payload = self.body()
-                allowed_commands = {"restart_media", "diagnostics", "restart_agent", "reboot", "update", "update_os", "sync_setup_ap", "change_server_address", "show_stats"}
+                allowed_commands = {"restart_media", "diagnostics", "restart_agent", "reboot", "update", "update_os", "sync_setup_ap", "change_server_address", "set_hostname", "show_stats"}
                 command_name = str(payload.get("command", ""))
                 if command_name not in allowed_commands:
                     self.send_json({"error": "unsupported diagnostic command"}, HTTPStatus.BAD_REQUEST)
@@ -1262,6 +1262,19 @@ class Handler(BaseHTTPRequestHandler):
                         return
                     command_payload = {"server": server_url.rstrip("/"), "media_server": media_server}
                     self.store.set_maintenance_run(device_id, "server_address", "queued", command_payload)
+                if command_name == "set_hostname":
+                    if not self.authorized(admin_only=True):
+                        self.send_json({"error": "administrator access is required to change Pi hostnames"}, HTTPStatus.FORBIDDEN)
+                        return
+                    hostname = payload.get("hostname")
+                    if not isinstance(hostname, str):
+                        self.send_json({"error": "a hostname is required"}, HTTPStatus.BAD_REQUEST)
+                        return
+                    hostname = hostname.strip().lower()
+                    if not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", hostname):
+                        self.send_json({"error": "hostname must be 1–63 characters using lowercase letters, numbers, and hyphens"}, HTTPStatus.BAD_REQUEST)
+                        return
+                    command_payload = {"hostname": hostname}
                 command = self.store.queue_command(device_id, command_name, command_payload)
                 self.store.audit("device.command", device_id, self.client_address[0], {"command": command_name})
                 self.send_json(command, HTTPStatus.ACCEPTED)

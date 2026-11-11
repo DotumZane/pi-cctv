@@ -521,6 +521,24 @@ class DeviceRuntime:
                         print(f"Unable to report server-address status to previous dashboard: {exc}", flush=True)
                 else:
                     self.report_maintenance("server-address", "failed", message)
+            elif command_name == "set_hostname":
+                payload = command.get("payload", {})
+                new_hostname = payload.get("hostname") if isinstance(payload, dict) else None
+                if not isinstance(new_hostname, str) or not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", new_hostname):
+                    print("Ignoring hostname change with an invalid hostname", flush=True)
+                    continue
+                result = subprocess.run(
+                    ["hostnamectl", "set-hostname", new_hostname],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                )
+                if result.returncode:
+                    detail = _command_output(result) or str(result.returncode)
+                    print(f"Unable to change hostname: {detail}", flush=True)
+                else:
+                    print(f"Hostname changed to {new_hostname}; the device ID remains {self.device_id}", flush=True)
             elif command_name == "diagnostics":
                 report = collect_diagnostics(self.role, self.device_id, self.media_server, self.processes)
                 try:

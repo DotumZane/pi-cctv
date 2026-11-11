@@ -35,6 +35,13 @@ class RuntimeTests(unittest.TestCase):
         with patch("cctv.runtime.http_json", return_value={"commands": [{"command": "show_stats"}]}):
             camera.poll_commands()
 
+    def test_set_hostname_uses_hostnamectl(self):
+        runtime = DeviceRuntime("camera", "cam-1", "Camera", "", "http://server", "media")
+        with patch("cctv.runtime.http_json", return_value={"commands": [{"command": "set_hostname", "payload": {"hostname": "front-door"}}]}), \
+                patch("cctv.runtime.subprocess.run", return_value=Mock(returncode=0, stdout="", stderr="")) as run:
+            runtime.poll_commands()
+        run.assert_called_once_with(["hostnamectl", "set-hostname", "front-door"], check=False, capture_output=True, text=True, timeout=15)
+
     def test_server_address_change_verifies_before_persisting(self):
         runtime = DeviceRuntime("camera", "cam-1", "Camera", "", "https://old.example", "old-media", token="device-token")
         with TemporaryDirectory() as directory:
