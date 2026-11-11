@@ -54,7 +54,7 @@ def consume_request() -> dict | None:
             payload = json.load(stream)
     finally:
         REQUEST.unlink(missing_ok=True)
-    if not isinstance(payload, dict) or payload.get("action") != "update":
+    if not isinstance(payload, dict) or payload.get("action") not in {"update", "check"}:
         return {"id": "invalid", "action": "invalid"}
     request_id = payload.get("id", "")
     if not isinstance(request_id, str) or not re.fullmatch(r"[a-f0-9]{32}", request_id):
@@ -89,7 +89,7 @@ def main() -> int:
             return 0
         request_id = request["id"]
         status = {"request_id": request_id, "state": "running", "started_at": now(), "log": ""}
-        if request.get("action") != "update":
+        if request.get("action") not in {"update", "check"}:
             status.update(state="failed", finished_at=now(), error="Invalid update request")
             write_status(status)
             return 1
@@ -116,6 +116,10 @@ def main() -> int:
             status["available_commit"] = target[:12]
             status["current_version"] = version_at(repo, "HEAD")
             status["available_version"] = version_at(repo, "origin/main")
+            if request.get("action") == "check":
+                status.update(state="idle", checked_at=now(), finished_at=now())
+                write_status(status)
+                return 0
             if before != target:
                 merge_code, merge_log = run(["git", "merge", "--ff-only", "origin/main"], repo, timeout=60)
                 status["log"] = (status["log"] + "\n" + merge_log).strip()[-12000:]

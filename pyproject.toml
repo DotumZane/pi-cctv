@@ -1,6 +1,6 @@
 [project]
 name = "pi-cctv"
-version = "0.1.26"
+version = "0.1.27"
 description = "Low-latency, centrally managed Raspberry Pi CCTV system"
 requires-python = ">=3.10"
 dependencies = []

@@ -704,7 +704,7 @@ class Handler(BaseHTTPRequestHandler):
                 })
                 self.send_json({"job": job, "started": started}, HTTPStatus.ACCEPTED)
                 return
-            if parsed.path == "/api/server/update":
+            if parsed.path in {"/api/server/update", "/api/server/update/check"}:
                 if not self.store.user_count():
                     self.send_json({"error": "create an administrator account before using server updates"}, HTTPStatus.UNAUTHORIZED)
                     return
@@ -736,7 +736,7 @@ class Handler(BaseHTTPRequestHandler):
                     os.fchown(descriptor, -1, host_update_dir.stat().st_gid)
                     os.fchmod(descriptor, 0o640)
                     with os.fdopen(descriptor, "w") as stream:
-                        json.dump({"id": request_id, "action": "update"}, stream)
+                        json.dump({"id": request_id, "action": "check" if parsed.path.endswith("/check") else "update"}, stream)
                         stream.flush()
                         os.fsync(stream.fileno())
                     status = {"request_id": request_id, "state": "queued", "requested_at": datetime.now(timezone.utc).isoformat()}
@@ -752,7 +752,7 @@ class Handler(BaseHTTPRequestHandler):
                 finally:
                     if os.path.exists(temporary):
                         os.unlink(temporary)
-                self.store.audit("server.update.request", "server", self.client_address[0], {"request_id": request_id})
+                self.store.audit("server.update.check" if parsed.path.endswith("/check") else "server.update.request", "server", self.client_address[0], {"request_id": request_id})
                 self.send_json({"ok": True, **status}, HTTPStatus.ACCEPTED)
                 return
             if parsed.path == "/api/server/os-update":
