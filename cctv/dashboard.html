@@ -452,4 +452,18 @@ const loadCameraTimelineBeforePolishedTimeline=loadCameraTimeline;loadCameraTime
 const previewWorkspaceTimelineBeforePolishedTimeline=previewWorkspaceTimeline;previewWorkspaceTimeline=function(value){workspaceTimelineLastValue=Number(value)||0;cancelAnimationFrame(workspaceTimelineSeekFrame);workspaceTimelineSeekFrame=requestAnimationFrame(()=>{previewWorkspaceTimelineBeforePolishedTimeline(value)})}
 const playWorkspaceRecordingBeforeAccurateTimeline=playWorkspaceRecording;playWorkspaceRecording=async function(url,path,offset=0){const video=document.querySelector('#workspace-live'),record=timelineRecordForUrl(url);workspacePlaybackStartSeconds=record?timelineSeconds(record):0;workspacePlaybackUrl=url;video.ontimeupdate=()=>{if(video.dataset.playback==='recording')updateTimelinePlayhead(workspacePlaybackStartSeconds+video.currentTime)};await playWorkspaceRecordingBeforeAccurateTimeline(url,path,offset);if(record)updateTimelinePlayhead(workspacePlaybackStartSeconds+Math.max(0,offset))}
 </script>
+<script>
+const workspacePageStyle=document.createElement('style');workspacePageStyle.textContent=`
+body.workspace-page-open>.app{display:none!important}body.workspace-page-open{background:var(--bg);overflow:auto}body.workspace-page-open>#live-workspace{position:relative;inset:auto;z-index:1;min-height:100dvh;background:var(--bg);padding:24px}body.workspace-page-open .live-workspace-inner{width:min(1500px,100%)}
+.workspace-back{display:inline-flex;align-items:center;gap:7px;margin:0 0 12px;padding:7px 11px}.workspace-back:before{content:'←';font-size:16px;line-height:1}.workspace-page-open .live-workspace-head{margin-bottom:16px}
+@media(max-width:600px){body.workspace-page-open>#live-workspace{padding:12px}.workspace-back{margin-bottom:8px}}
+`;document.head.appendChild(workspacePageStyle);
+let workspacePageClosing=false;
+function ensureWorkspaceBackButton(){const head=document.querySelector('.live-workspace-head');if(!head||head.querySelector('.workspace-back'))return;const button=document.createElement('button');button.className='ghost workspace-back';button.type='button';button.textContent='Back to live views';button.onclick=()=>closeLiveWorkspace();head.parentElement.insertBefore(button,head)}
+function showWorkspacePage(){document.body.classList.add('workspace-page-open');ensureWorkspaceBackButton();document.title=`${document.querySelector('#workspace-title')?.textContent||'Camera'} · Pi CCTV`}
+function hideWorkspacePage(){document.body.classList.remove('workspace-page-open');const video=document.querySelector('#workspace-live');video?.pause();document.title='Pi CCTV'}
+const openWorkspaceAsPage=openLiveWorkspace;openLiveWorkspace=async function(id){if(!workspacePageClosing){history.pushState({camera:id},'',`${location.pathname}#camera/${encodeURIComponent(id)}`)}showWorkspacePage();await openWorkspaceAsPage(id);showWorkspacePage()}
+const closeWorkspaceAsPage=closeLiveWorkspace;closeLiveWorkspace=function(){if(workspacePageClosing)return;workspacePageClosing=true;closeWorkspaceAsPage();hideWorkspacePage();if(history.state?.camera)history.back();else workspacePageClosing=false};
+window.addEventListener('popstate',()=>{if(document.body.classList.contains('workspace-page-open')){workspacePageClosing=true;closeWorkspaceAsPage();hideWorkspacePage();workspacePageClosing=false}});
+</script>
 </body></html>
