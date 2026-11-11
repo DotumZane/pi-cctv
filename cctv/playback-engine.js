@@ -222,12 +222,25 @@
     const offset = Math.max(0, selected - timelineSeconds(record));
     const url = sourceFor(record);
     const same = video && workspacePlaybackUrl === record.url && video.dataset.playback === 'recording' && video.readyState >= 1;
-    hidePreview();
+    // Keep the last decoded preview frame over the player while the main
+    // element seeks. Replacing the source first and hiding the preview here
+    // caused the visible black flash during every scrub commit.
+    showPreview();
     if (same) {
       video.pause();
       try { video.currentTime = offset; } catch {}
-      if (typeof updateTimelinePlayhead === 'function') updateTimelinePlayhead(selected);
-      if (typeof setWorkspaceMode === 'function') setWorkspaceMode('recording');
+      await new Promise(resolve => {
+        let settled = false;
+        const finish = () => { if (settled) return; settled = true; video.removeEventListener('seeked', finish); resolve(); };
+        video.addEventListener('seeked', finish, { once: true });
+        setTimeout(finish, 1200);
+      });
+      if (token === state.requestToken) {
+        drawMainFrame();
+        if (typeof updateTimelinePlayhead === 'function') updateTimelinePlayhead(selected);
+        if (typeof setWorkspaceMode === 'function') setWorkspaceMode('recording');
+        hidePreview();
+      }
       return;
     }
     state.committing = true;
@@ -252,9 +265,18 @@
       if (token !== state.requestToken) return;
       if (Number.isFinite(video.duration)) video.currentTime = Math.min(offset, Math.max(0, video.duration - 0.05));
       video.pause();
+      await new Promise(resolve => {
+        let settled = false;
+        const finish = () => { if (settled) return; settled = true; video.removeEventListener('seeked', finish); resolve(); };
+        video.addEventListener('seeked', finish, { once: true });
+        setTimeout(finish, 1200);
+      });
+      if (token !== state.requestToken) return;
+      drawMainFrame();
       if (typeof updateTimelinePlayhead === 'function') updateTimelinePlayhead(selected);
       updateStatus('Playback paused · press Play to continue.');
       if (typeof setWorkspaceMode === 'function') setWorkspaceMode('recording');
+      hidePreview();
       log('commit:ready', { selected, offset });
     } catch (error) {
       if (token === state.requestToken) updateStatus(`Playback unavailable: ${error.message}`);
