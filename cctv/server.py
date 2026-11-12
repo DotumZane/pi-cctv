@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+from collections import OrderedDict
 import json
+import math
 import os
 import re
 import secrets
@@ -35,6 +37,9 @@ DEFAULT_NVR_SETTINGS = {
     "camera_recording": {},
 }
 PLAYBACK_CACHE_LOCK = threading.Lock()
+SCRUB_FRAME_LOCK = threading.Lock()
+SCRUB_FRAME_SLOTS = threading.BoundedSemaphore(2)
+SCRUB_FRAME_CACHE: OrderedDict[tuple[str, int, int, int], bytes] = OrderedDict()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -640,12 +645,58 @@ class Handler(BaseHTTPRequestHandler):
             relative_text = unquote(parse_qs(parsed.query).get("path", [""])[0])
             try:
                 requested = (root / relative_text).resolve()
-                seconds = max(0.0, min(3600.0, float(parse_qs(parsed.query).get("at", [0])[0])))
+                seconds = float(parse_qs(parsed.query).get("at", [0])[0])
+                if not math.isfinite(seconds):
+                    raise ValueError("non-finite snapshot time")
+                seconds = max(0.0, min(3600.0, seconds))
             except (TypeError, ValueError):
                 self.send_json({"error": "invalid snapshot request"}, HTTPStatus.BAD_REQUEST)
                 return
             if root not in requested.parents or not requested.is_file() or requested.suffix not in {".mkv", ".mp4"}:
                 self.send_json({"error": "recording not found"}, HTTPStatus.NOT_FOUND)
+                return
+            if parse_qs(parsed.query).get("preview", [""])[0] == "1":
+                # Keep trick-play frames independent of the ordinary thumbnail
+                # cache. Quarter-second targets let slow scrubs show detail,
+                # while the bounded cache and decoder slots protect the NVR.
+                tick = round(seconds * 4)
+                stat = requested.stat()
+                key = (str(requested), stat.st_mtime_ns, stat.st_size, tick)
+                with SCRUB_FRAME_LOCK:
+                    image = SCRUB_FRAME_CACHE.get(key)
+                    if image is not None:
+                        SCRUB_FRAME_CACHE.move_to_end(key)
+                if image is None:
+                    if not SCRUB_FRAME_SLOTS.acquire(timeout=0.15):
+                        self.send_json({"error": "preview busy"}, HTTPStatus.SERVICE_UNAVAILABLE)
+                        return
+                    try:
+                        result = subprocess.run(
+                            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin",
+                             "-ss", f"{tick / 4:.3f}", "-i", str(requested),
+                             "-map", "0:v:0", "-frames:v", "1", "-vf", "scale=640:-2",
+                             "-q:v", "5", "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1"],
+                            capture_output=True, timeout=8,
+                        )
+                    except (OSError, subprocess.TimeoutExpired):
+                        result = None
+                    finally:
+                        SCRUB_FRAME_SLOTS.release()
+                    if result is None or result.returncode != 0 or not result.stdout.startswith(b"\xff\xd8"):
+                        self.send_json({"error": "preview frame unavailable"}, HTTPStatus.UNPROCESSABLE_ENTITY)
+                        return
+                    image = result.stdout
+                    with SCRUB_FRAME_LOCK:
+                        SCRUB_FRAME_CACHE[key] = image
+                        SCRUB_FRAME_CACHE.move_to_end(key)
+                        while len(SCRUB_FRAME_CACHE) > 256:
+                            SCRUB_FRAME_CACHE.popitem(last=False)
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "image/jpeg")
+                self.send_header("Cache-Control", "private, max-age=60")
+                self.send_header("Content-Length", str(len(image)))
+                self.end_headers()
+                self.wfile.write(image)
                 return
             cache = root / ".snapshot-cache" / requested.relative_to(root).parent / f"{requested.stem}-{int(seconds):04d}.jpg"
             cache.parent.mkdir(parents=True, exist_ok=True)

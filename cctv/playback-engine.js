@@ -4,24 +4,29 @@
  * The dashboard stores recordings as individual MP4/MKV segments, not as one
  * HLS/DASH VOD presentation.  A manifest player would therefore not solve
  * seeking by itself.  Instead we keep the live/normal player stable and use a
- * second decoder plus a canvas for continuous, latest-target-wins scrubbing.
+ * server-extracted frames plus a canvas for bidirectional scrubbing.
  */
 (function () {
   'use strict';
 
   const debug = new URLSearchParams(location.search).has('debugPlayback');
   const state = {
-    preview: null,
     canvas: null,
     ctx: null,
     frame: 0,
     target: null,
     targetRecord: null,
     targetOffset: 0,
-    sourceUrl: '',
-    loadToken: 0,
+    inFlight: false,
+    pending: null,
+    lastRequestedAt: 0,
+    lastFrameTime: null,
+    lastBitmap: null,
+    motionDirection: 0,
+    motionEpoch: 0,
+    camera: null,
+    frameCache: new Map(),
     requestToken: 0,
-    previewToken: 0,
     lastInputAt: 0,
     lastValue: null,
     lastTime: 0,
@@ -78,20 +83,6 @@
     if (!video || !host) return false;
     disableNativeControls(video);
     instrument(video, 'main');
-    if (!state.preview) {
-      state.preview = document.createElement('video');
-      state.preview.className = 'workspace-scrub-decoder';
-      state.preview.muted = true;
-      state.preview.preload = 'auto';
-      state.preview.playsInline = true;
-      disableNativeControls(state.preview);
-      host.appendChild(state.preview);
-      instrument(state.preview, 'scrub');
-      state.preview.addEventListener('loadedmetadata', () => seekPreview());
-      state.preview.addEventListener('canplay', () => seekPreview());
-      state.preview.addEventListener('seeked', drawPreviewFrame);
-      state.preview.addEventListener('error', () => log('scrub:error', state.preview.error));
-    }
     if (!state.canvas) {
       state.canvas = document.createElement('canvas');
       state.canvas.className = 'workspace-scrub-frame';
@@ -110,7 +101,17 @@
     if (canvas.width !== width || canvas.height !== height) {
       canvas.width = width;
       canvas.height = height;
+      if (state.active && state.lastBitmap) paintBitmap(state.lastBitmap);
     }
+  }
+
+  function paintBitmap(bitmap) {
+    const canvas = state.canvas;
+    const scale = Math.min(canvas.width / bitmap.width, canvas.height / bitmap.height);
+    const width = bitmap.width * scale, height = bitmap.height * scale;
+    state.ctx.fillStyle = '#030507';
+    state.ctx.fillRect(0, 0, canvas.width, canvas.height);
+    state.ctx.drawImage(bitmap, (canvas.width - width) / 2, (canvas.height - height) / 2, width, height);
   }
 
   function drawImage(source) {
@@ -136,42 +137,72 @@
     if (state.active && video?.readyState >= 2) drawImage(video);
   }
 
-  function drawPreviewFrame() {
-    const preview = state.preview;
-    if (!state.active || !preview || preview.readyState < 2 || !state.targetRecord) return;
-    // requestToken belongs to main-player commits while loadToken belongs to
-    // the hidden preview decoder. They are independent counters, so comparing
-    // them caused valid preview frames to be discarded after a source switch.
-    if (state.sourceUrl !== sourceFor(state.targetRecord) ||
-        preview.currentSrc !== new URL(state.sourceUrl, location.href).href) return;
-    if (Math.abs(preview.currentTime - state.targetOffset) > 0.08) {
-      seekPreview();
-      return;
-    }
-    if (drawImage(preview)) {
-      log('scrub:frame', { target: state.target, offset: preview.currentTime });
-      if (typeof updateTimelinePlayhead === 'function') updateTimelinePlayhead(state.target);
-    }
+  function drawExtractedFrame(bitmap, request) {
+    if (!state.active || !state.ctx || !bitmap) return;
+    fitCanvas();
+    paintBitmap(bitmap);
+    state.hasFrame = true;
+    state.lastBitmap = bitmap;
+    state.lastFrameTime = request.selected;
+    canvas.classList.add('visible');
+    log('scrub:frame', { requested: request.selected, displayed: state.lastFrameTime,
+      latencyMs: Math.round(performance.now() - request.startedAt) });
   }
 
-  function seekPreview() {
-    const preview = state.preview;
-    if (!preview || !state.active || state.target === null) return;
-    const target = Math.max(0, Number(state.targetOffset) || 0);
-    if (preview.readyState < 1 || preview.seeking) return;
+  function frameKey(request) {
+    return `${request.record.path}:${Math.round(request.offset * 4)}`;
+  }
+
+  async function fetchFrame(request) {
+    state.inFlight = true;
+    request.startedAt = performance.now();
     try {
-      if (Math.abs((preview.currentTime || 0) - target) > 0.015) preview.currentTime = target;
-      else drawPreviewFrame();
-    } catch (error) { log('scrub:seek-failed', error); }
+      const key = frameKey(request);
+      let bitmap = state.frameCache.get(key);
+      if (!bitmap) {
+        const url = `/api/recordings/snapshot?preview=1&path=${encodeURIComponent(request.record.path)}&at=${(Math.round(request.offset * 4) / 4).toFixed(2)}`;
+        const response = await api(url, { credentials: 'same-origin' });
+        if (!response.ok) throw new Error(`frame request ${response.status}`);
+        bitmap = await createImageBitmap(await response.blob());
+        state.frameCache.set(key, bitmap);
+        if (state.frameCache.size > 80) {
+          const oldest = state.frameCache.keys().next().value;
+          const evicted = state.frameCache.get(oldest);
+          if (evicted !== state.lastBitmap) evicted?.close?.();
+          state.frameCache.delete(oldest);
+        }
+      } else {
+        state.frameCache.delete(key);
+        state.frameCache.set(key, bitmap);
+      }
+      // A frame can trail the cursor during a fast move, but cannot replace a
+      // newer frame or a frame from the opposite side after direction changes.
+      const alreadyPassed = state.lastFrameTime !== null && request.direction &&
+        Math.sign(request.selected - state.lastFrameTime) === -request.direction;
+      if (state.active && request.epoch === state.motionEpoch && !alreadyPassed && state.targetRecord &&
+          state.targetRecord.path === request.record.path) drawExtractedFrame(bitmap, request);
+    } catch (error) { log('scrub:frame-error', error.message); }
+    finally {
+      state.inFlight = false;
+      if (state.pending && state.active) scheduleFrame();
+    }
   }
 
-  function tick() {
-    state.frame = 0;
-    if (!state.active || state.target === null) return;
-    const now = performance.now();
-    state.lastTime = now;
-    seekPreview();
-    if (now - state.lastInputAt < 120) state.frame = requestAnimationFrame(tick);
+  function scheduleFrame() {
+    if (state.frame || state.inFlight || !state.pending) return;
+    state.frame = requestAnimationFrame(() => {
+      state.frame = 0;
+      if (!state.active || state.inFlight || !state.pending) return;
+      const request = state.pending;
+      const interval = Math.max(0, 90 - (performance.now() - state.lastRequestedAt));
+      if (interval) {
+        state.frame = requestAnimationFrame(() => { state.frame = 0; scheduleFrame(); });
+        return;
+      }
+      state.pending = null;
+      state.lastRequestedAt = performance.now();
+      void fetchFrame(request);
+    });
   }
 
   function showPreview() {
@@ -183,6 +214,9 @@
 
   function hidePreview() {
     state.active = false;
+    state.pending = null;
+    state.lastFrameTime = null;
+    state.motionDirection = 0;
     if (state.canvas) state.canvas.classList.remove('visible');
     if (state.frame) cancelAnimationFrame(state.frame);
     state.frame = 0;
@@ -191,34 +225,38 @@
   function setTarget(value, velocity) {
     const selected = Math.max(0, Math.min(timelineDayLength(workspaceTimelineDate) - 1, Number(value) || 0));
     const record = timelineRecordAt(selected);
+    if (state.camera !== window.workspaceCamera) {
+      state.camera = window.workspaceCamera;
+      state.motionEpoch += 1;
+      state.lastFrameTime = null;
+      state.lastBitmap = null;
+      state.hasFrame = false;
+      state.canvas?.classList.remove('visible');
+    }
+    const direction = state.target === null ? 0 : Math.sign(selected - state.target);
+    if (direction && state.motionDirection && direction !== state.motionDirection) state.motionEpoch += 1;
+    if (direction) state.motionDirection = direction;
     state.lastInputAt = performance.now();
     state.lastValue = selected;
     state.target = selected;
     state.targetRecord = record;
     state.targetOffset = record ? Math.max(0, selected - timelineSeconds(record)) : 0;
+    const playing = mainVideo();
+    if (playing?.dataset.playback === 'recording' && !playing.paused) playing.pause();
     showPreview();
     if (typeof workspaceTimelineLastValue !== 'undefined') workspaceTimelineLastValue = selected;
     if (typeof verticalTimelineSetPosition === 'function') verticalTimelineSetPosition(selected, false);
     if (typeof updateTimelinePlayhead === 'function') updateTimelinePlayhead(selected);
     if (!record) {
       log('scrub:gap', { selected });
+      state.pending = null;
       if (state.frame) cancelAnimationFrame(state.frame);
       state.frame = 0;
       return;
     }
-    const url = sourceFor(record);
-    if (url !== state.sourceUrl) {
-      state.sourceUrl = url;
-    state.previewToken += 1;
-      const previewToken = state.previewToken;
-      state.preview.pause();
-      state.preview.src = url;
-      state.preview.load();
-      log('scrub:source', { url, selected, velocity, previewToken });
-    } else {
-      seekPreview();
-    }
-    if (!state.frame) state.frame = requestAnimationFrame(tick);
+    state.pending = { selected, record, offset: state.targetOffset,
+      direction: state.motionDirection, epoch: state.motionEpoch };
+    scheduleFrame();
   }
 
   function updateStatus(message) {
@@ -247,12 +285,8 @@
     if (same) {
       video.pause();
       try { video.currentTime = offset; } catch {}
-      await new Promise(resolve => {
-        let settled = false;
-        const finish = () => { if (settled) return; settled = true; video.removeEventListener('seeked', finish); resolve(); };
-        video.addEventListener('seeked', finish, { once: true });
-        setTimeout(finish, 1200);
-      });
+      try { await waitForDisplayedFrame(video); }
+      catch (error) { if (token === state.requestToken) updateStatus(`Playback unavailable: ${error.message}`); return; }
       if (token === state.requestToken) {
         drawMainFrame();
         if (typeof updateTimelinePlayhead === 'function') updateTimelinePlayhead(selected);
@@ -265,6 +299,7 @@
     updateStatus('Loading selected recording…');
     disableNativeControls(video);
     video.pause();
+    video.onerror = null;
     video.dataset.playback = 'recording';
     video.src = url;
     video.load();
@@ -283,12 +318,7 @@
       if (token !== state.requestToken) return;
       if (Number.isFinite(video.duration)) video.currentTime = Math.min(offset, Math.max(0, video.duration - 0.05));
       video.pause();
-      await new Promise(resolve => {
-        let settled = false;
-        const finish = () => { if (settled) return; settled = true; video.removeEventListener('seeked', finish); resolve(); };
-        video.addEventListener('seeked', finish, { once: true });
-        setTimeout(finish, 1200);
-      });
+      await waitForDisplayedFrame(video);
       if (token !== state.requestToken) return;
       drawMainFrame();
       if (typeof updateTimelinePlayhead === 'function') updateTimelinePlayhead(selected);
@@ -302,6 +332,30 @@
     } finally { state.committing = false; }
   }
 
+  function waitForDisplayedFrame(video) {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = error => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        video.removeEventListener('seeked', ready);
+        video.removeEventListener('error', failed);
+        error ? reject(error) : resolve();
+      };
+      const ready = () => {
+        if (video.readyState < 2) return;
+        if (video.requestVideoFrameCallback) video.requestVideoFrameCallback(() => finish());
+        else finish();
+      };
+      const failed = () => finish(video.error || new Error('frame decode failed'));
+      const timer = setTimeout(() => finish(new Error('frame decode timed out')), 8000);
+      video.addEventListener('seeked', ready);
+      video.addEventListener('error', failed);
+      if (!video.seeking && video.readyState >= 2) ready();
+    });
+  }
+
   function install() {
     const video = mainVideo();
     if (!video || document.documentElement.dataset.playbackEngineInstalled) return;
@@ -311,12 +365,22 @@
     window.previewWorkspaceTimeline = (value) => setTarget(value, 0);
     window.previewWorkspaceTimelineScrub = (value, velocity) => setTarget(value, velocity);
     window.scrubWorkspaceTimeline = (value) => commit(value);
+    const returnToLive = window.returnWorkspaceToLive;
+    window.returnWorkspaceToLive = async (...args) => {
+      state.requestToken += 1;
+      const result = await returnToLive(...args);
+      const video = mainVideo();
+      if (video?.readyState >= 2) hidePreview();
+      else video?.addEventListener('loadeddata', hidePreview, { once: true });
+      return result;
+    };
     window.verticalTimelineSeek = (value) => {
       const now = performance.now();
       const previous = state.lastValue;
       const elapsed = state.lastTime ? Math.max(16, now - state.lastTime) : 0;
       const velocity = previous === null || !elapsed ? 0 : (Number(value) - previous) / (elapsed / 1000);
       setTarget(value, velocity);
+      state.lastTime = now;
       clearTimeout(state.commitTimer);
       // A drag commits on release. Wheel scrolling commits after its momentum
       // settles; neither path replaces the main video during pointer movement.
@@ -345,7 +409,6 @@
     window.addEventListener('resize', fitCanvas, { passive: true });
     new MutationObserver(() => {
       disableNativeControls(mainVideo());
-      disableNativeControls(state.preview);
       if (state.active) fitCanvas();
     }).observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['controls', 'src'] });
     log('installed', { originalScrub: Boolean(originalScrub) });
@@ -353,7 +416,6 @@
 
   const style = document.createElement('style');
   style.textContent = `
-    .workspace-scrub-decoder { position:absolute; width:1px; height:1px; opacity:0; pointer-events:none; }
     .workspace-scrub-frame { position:absolute; inset:0; z-index:5; width:100%; height:100%; object-fit:contain; display:none; pointer-events:none; background:#030507; }
     .workspace-scrub-frame.visible { display:block; }
     #workspace-live, #workspace-live::-webkit-media-controls, #workspace-live::-webkit-media-controls-enclosure { -webkit-appearance:none; }

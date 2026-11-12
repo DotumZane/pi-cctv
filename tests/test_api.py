@@ -1,6 +1,8 @@
 import json
 import os
+import shutil
 import socket
+import subprocess
 import tempfile
 import threading
 import time
@@ -242,6 +244,29 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.status, 200)
         self.assertEqual(response.read(), b"test-video")
         connection.close()
+
+    @unittest.skipUnless(shutil.which("ffmpeg"), "FFmpeg is required for frame extraction")
+    def test_scrub_frame_uses_recording_and_reuses_cached_decode(self):
+        recording = Path(self.recordings.name) / "cam-01" / "2026-11-04" / "06-00-00.mp4"
+        recording.parent.mkdir(parents=True)
+        subprocess.run([
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi",
+            "-i", "color=c=red:s=64x64:r=4:d=2", "-c:v", "mpeg4", str(recording),
+        ], check=True)
+        path = "/api/recordings/snapshot?preview=1&path=cam-01/2026-11-04/06-00-00.mp4&at=0.50"
+        def read_frame():
+            connection = HTTPConnection(*self.base)
+            connection.request("GET", path)
+            response = connection.getresponse()
+            result = response.status, response.read()
+            connection.close()
+            return result
+        status, image = read_frame()
+        self.assertEqual(status, 200)
+        self.assertTrue(image.startswith(b"\xff\xd8"))
+        with patch("cctv.server.subprocess.run", side_effect=AssertionError("cache miss")):
+            self.assertEqual(read_frame(), (200, image))
+        self.assertEqual(self.call("GET", path.replace("0.50", "nan"))[0], 400)
 
     def test_restart_media_command_is_queued_and_consumed(self):
         self.call("POST", "/api/devices", {"id": "cam-1", "kind": "camera", "name": "Saw 1"})
