@@ -500,46 +500,64 @@ const verticalTimelineBaseLoad=loadCameraTimeline;loadCameraTimeline=async funct
 const verticalTimelineBaseUpdate=updateTimelinePlayhead;updateTimelinePlayhead=function(value){verticalTimelineBaseUpdate(value);if(verticalTimelineReady)verticalTimelineSetPosition(value,true)};
 const verticalTimelineBaseOpen=openLiveWorkspace;openLiveWorkspace=async function(id){await verticalTimelineBaseOpen(id);ensureVerticalTimelineStage();buildVerticalTimeline()};
 </script><script>
-// Let the vertical NVR timeline continue across calendar-day boundaries.
-let verticalTimelineDayPaging=false;
-function previousTimelineDate(value){
-  const date=new Date(`${value}T12:00:00`);
-  if(Number.isNaN(date.getTime()))return value;
-  date.setDate(date.getDate()-1);
+// Keep older days in the same scroll surface instead of rebuilding the panel.
+let verticalTimelineDayPaging=false,verticalTimelineLoadedDays=[];
+let verticalTimelineSelectionDate='';
+function timelineDateFromOffset(base,index){
+  const date=new Date(`${base}T12:00:00`);
+  date.setDate(date.getDate()-index);
   return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`;
 }
-async function loadPreviousTimelineDay(){
-  if(verticalTimelineDayPaging||!workspaceTimelineDate||!window.workspaceCamera)return;
-  verticalTimelineDayPaging=true;
-  try{
-    const date=previousTimelineDate(workspaceTimelineDate),input=document.querySelector('#workspace-date');
-    if(!date||date===workspaceTimelineDate)return;
-    if(input)input.value=date;
-    workspaceTimelineLastValue=timelineDayLength(date)-1;
-    await loadCameraTimeline(window.workspaceCamera);
-    verticalTimelineUserScrolling=false;
-    verticalTimelineSetPosition(workspaceTimelineLastValue,true);
-  }finally{verticalTimelineDayPaging=false}
-}
-const buildVerticalTimelineWithDayPaging=buildVerticalTimeline;
-buildVerticalTimeline=function(){
-  buildVerticalTimelineWithDayPaging();
+function verticalTimelineSelection(){
   const scroll=document.querySelector('.vertical-timeline-scroll');
-  if(!scroll||scroll.dataset.dayPagingReady)return;
-  scroll.dataset.dayPagingReady='true';
-  const atBottom=()=>scroll.scrollTop>=scroll.scrollHeight-scroll.clientHeight-2;
-  const continueBackward=event=>{
-    if(verticalTimelineDayPaging||event.deltaY<=0||!atBottom())return;
-    event.preventDefault();
+  if(!scroll||!verticalTimelineLoadedDays.length)return {date:workspaceTimelineDate,seconds:workspaceTimelineLastValue||0};
+  const position=Math.max(0,scroll.scrollTop+26),index=Math.min(verticalTimelineLoadedDays.length-1,Math.floor(position/verticalTimelineHeight)),within=position-index*verticalTimelineHeight;
+  return {date:verticalTimelineLoadedDays[index].date,seconds:Math.max(0,Math.min(timelineDayLength(verticalTimelineLoadedDays[index].date)-1,timelineDayLength(verticalTimelineLoadedDays[index].date)*(1-within/verticalTimelineHeight)))};
+}
+function appendVerticalTimelineDay(date,records,index){
+  const content=document.querySelector('.vertical-timeline-content');
+  if(!content||content.querySelector(`[data-timeline-day="${date}"]`))return;
+  const dayLength=timelineDayLength(date),offset=index*verticalTimelineHeight,fragment=document.createDocumentFragment(),marker=document.createElement('span');
+  marker.className='vertical-timeline-day-marker';marker.dataset.timelineDay=date;marker.style.top=`${offset+8}px`;marker.textContent=date;fragment.appendChild(marker);
+  for(let seconds=0;seconds<=dayLength;seconds+=1800){const label=document.createElement('span');label.className='vertical-timeline-label';label.style.top=`${offset+(1-seconds/dayLength)*verticalTimelineHeight}px`;label.textContent=formatTimelineTime(seconds).slice(0,5);fragment.appendChild(label)}
+  records.forEach((record,recordIndex)=>{const start=Math.max(0,timelineSeconds(record)),duration=workspaceRecordDuration(record,recordIndex,records),range=document.createElement('span');range.className='vertical-timeline-range';range.style.top=`${Math.max(0,offset+(1-(start+duration)/dayLength)*verticalTimelineHeight)}px`;range.style.height=`${Math.max(3,duration/dayLength*verticalTimelineHeight)}px`;range.title=formatTimelineTime(start);fragment.appendChild(range)});
+  content.appendChild(fragment);content.style.height=`${Math.max(3600,(index+1)*verticalTimelineHeight)}px`;content.style.minHeight=content.style.height;
+}
+const buildVerticalTimelineWithContinuousDays=buildVerticalTimeline;
+buildVerticalTimeline=function(){
+  verticalTimelineLoadedDays=[{date:workspaceTimelineDate,records:[...workspaceTimelineRecords]}];
+  verticalTimelineSelectionDate=workspaceTimelineDate;
+  buildVerticalTimelineWithContinuousDays();
+  const content=document.querySelector('.vertical-timeline-content');
+  if(content){content.style.height=`${verticalTimelineHeight}px`;content.style.minHeight=content.style.height}
+  const scroll=document.querySelector('.vertical-timeline-scroll');
+  if(!scroll||scroll.dataset.continuousDaysReady)return;
+  scroll.dataset.continuousDaysReady='true';
+  scroll.addEventListener('scroll',event=>{
+    if(verticalTimelineProgrammatic||verticalTimelineDayPaging)return;
     event.stopImmediatePropagation();
-    loadPreviousTimelineDay();
-  };
-  scroll.addEventListener('wheel',continueBackward,{capture:true,passive:false});
-  scroll.addEventListener('scroll',()=>{
-    if(verticalTimelineDayPaging||!atBottom()||verticalTimelineProgrammatic)return;
-    const seconds=verticalTimelineSecondsFromScroll();
-    if(seconds<=2)loadPreviousTimelineDay();
+    if(scroll.scrollTop>=scroll.scrollHeight-scroll.clientHeight-120){loadPreviousTimelineDay();}
+    const selection=verticalTimelineSelection(),day=verticalTimelineLoadedDays.find(item=>item.date===selection.date);
+    if(!day)return;
+    workspaceTimelineDate=selection.date;workspaceTimelineRecords=day.records;verticalTimelineSelectionDate=selection.date;workspaceTimelineLastValue=selection.seconds;
+    const input=document.querySelector('#workspace-date');if(input)input.value=selection.date;
+    verticalTimelineUserScrolling=true;
+    if(typeof previewWorkspaceTimelineScrub==='function')previewWorkspaceTimelineScrub(selection.seconds,0);
+    else if(typeof previewWorkspaceTimeline==='function')previewWorkspaceTimeline(selection.seconds);
+    clearTimeout(verticalTimelineScrollTimer);verticalTimelineScrollTimer=setTimeout(()=>scrubWorkspaceTimeline(selection.seconds),140);
   },{capture:true,passive:true});
 };
+window.loadPreviousTimelineDay=async function(){
+  if(verticalTimelineDayPaging||!verticalTimelineLoadedDays.length||!window.workspaceCamera)return;
+  verticalTimelineDayPaging=true;
+  try{
+    const newest=verticalTimelineLoadedDays[0].date,index=verticalTimelineLoadedDays.length,date=timelineDateFromOffset(newest,index),response=await api(`/api/recordings?camera_id=${encodeURIComponent(window.workspaceCamera)}`),data=response.ok?await response.json():{recordings:[]},records=(data.recordings||[]).filter(record=>record.start&&localDateKey(record.start)===date).sort((a,b)=>new Date(a.start)-new Date(b.start));
+    if(verticalTimelineLoadedDays.some(item=>item.date===date))return;
+    verticalTimelineLoadedDays.push({date,records});appendVerticalTimelineDay(date,records,index);
+  }finally{verticalTimelineDayPaging=false}
+};
+const verticalTimelineDayStyle=document.createElement('style');
+verticalTimelineDayStyle.textContent='.vertical-timeline-day-marker{position:absolute;left:42px;right:8px;z-index:2;padding:3px 5px;border-top:1px solid #ffffff24;color:var(--muted);font-size:9px;font-weight:700;letter-spacing:.04em;pointer-events:none;background:linear-gradient(90deg,#0b1118dd,transparent)}';
+document.head.appendChild(verticalTimelineDayStyle);
 </script><script src="/playback-engine.js"></script>
 </body></html>
