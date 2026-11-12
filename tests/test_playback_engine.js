@@ -153,6 +153,7 @@ async function atlasScrubbing() {
   const animationFrames = [];
   let mainSeeks = 0;
   let proxyRequests = 0;
+  let sheetRequests = 0;
   const canvas = { width: 0, height: 0, classList: { add() {}, remove() {} }, setAttribute() {},
     getContext() { return { fillRect() {}, drawImage(...args) { draws.push(args); }, set fillStyle(_) {} }; } };
   const host = { appendChild() {} };
@@ -164,19 +165,22 @@ async function atlasScrubbing() {
     createElement(tag) { return tag === 'canvas' ? canvas : { textContent: '' }; },
     querySelector(selector) { return selector === '#workspace-live' ? video : null; }, addEventListener() {} };
   const record = { path: 'cam-1/2026-11-12/06-00-00.mp4', url: '/recordings/cam-1/2026-11-12/06-00-00.mp4' };
+  const nextRecord = { path: 'cam-1/2026-11-12/06-00-30.mp4', url: '/recordings/cam-1/2026-11-12/06-00-30.mp4' };
   const globals = { document, window: { workspaceCamera: 'cam-1', returnWorkspaceToLive: async () => {}, addEventListener() {} },
     URLSearchParams, location: { search: '' }, devicePixelRatio: 1, performance: { now: () => 1000 },
     requestAnimationFrame(callback) { animationFrames.push(callback); return animationFrames.length; },
     cancelAnimationFrame() {}, MutationObserver: class { observe() {} },
-    timelineDayLength: () => 86400, timelineRecordAt: () => record, timelineSeconds: () => 0,
+    timelineDayLength: () => 86400, timelineRecordAt: value => value >= 30 ? nextRecord : record,
+    timelineSeconds: item => item === nextRecord ? 30 : 0,
     workspaceTimelineDate: '2026-11-12', workspaceTimelineLastValue: 0,
     verticalTimelineSetPosition() {}, updateTimelinePlayhead() {},
     async api(url) {
       if (url.includes('/scrub-frames?')) return { ok: true, async json() { return {
-        ready: true, urlBase: '/recordings/.scrub-frames/cam-1/06-00-00/',
+        ready: true, urlBase: `/recordings/.scrub-frames/cam-1/${url.includes('06-00-30') ? '06-00-30' : '06-00-00'}/`,
         manifest: { fps: 15, width: 480, height: 270, columns: 6, rows: 4, frames: 900, sheets: 38 },
       }; } };
       if (url.includes('/trickplay?')) { proxyRequests++; return { ok: true, async json() { return { ready: false }; } }; }
+      sheetRequests++;
       return { ok: true, async blob() { return {}; } };
     },
     async createImageBitmap() { return { width: 2880, height: 1080, close() {} }; },
@@ -194,6 +198,16 @@ async function atlasScrubbing() {
   while (animationFrames.length) animationFrames.shift()();
   assert.notDeepEqual(first.slice(1, 3), second.slice(1, 3), 'forward movement paints another atlas cell');
   assert.deepEqual(first.slice(1, 3), draws.at(-1).slice(1, 3), 'reverse movement paints the earlier cell');
+  const originalSheetRequests = sheetRequests;
+  globals.window.previewWorkspaceTimelineScrub(38, 20);
+  await new Promise(resolve => setImmediate(resolve));
+  while (animationFrames.length) animationFrames.shift()();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.ok(sheetRequests > originalSheetRequests, 'next recording loads its own atlas sheet');
+  const nextSheetRequests = sheetRequests;
+  globals.window.previewWorkspaceTimelineScrub(8, -20);
+  while (animationFrames.length) animationFrames.shift()();
+  assert.equal(sheetRequests, nextSheetRequests, 'reversing across a recording boundary reuses the decoded sheet');
   assert.equal(mainSeeks, 0, 'preview never seeks the main video');
   assert.equal(proxyRequests, 0, 'ready atlas needs no proxy requests');
 }

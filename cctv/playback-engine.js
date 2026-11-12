@@ -33,6 +33,7 @@
     lastTime: 0,
     committing: false,
     commitTimer: 0,
+    pointerDown: false,
     active: false,
     hasFrame: false,
     proxy: null,
@@ -55,6 +56,8 @@
     atlasFailed: false,
     atlasCache: new Map(),
     atlasLoads: new Map(),
+    atlasManifests: new Map(),
+    atlasChecks: new Map(),
     atlasFrame: 0,
   };
 
@@ -178,24 +181,28 @@
 
   function atlasSheetName(index) { return `${String(index).padStart(3, '0')}.jpg`; }
 
+  function atlasKey(path, index) { return `${path}:${index}`; }
+
   function loadAtlasSheet(index) {
     const manifest = state.atlasManifest, path = state.atlasPath, base = state.atlasBase;
-    if (!manifest || index < 0 || index >= manifest.sheets || state.atlasCache.has(index) || state.atlasLoads.has(index)) return;
+    const key = atlasKey(path, index);
+    if (!manifest || index < 0 || index >= manifest.sheets || state.atlasCache.has(key) || state.atlasLoads.has(key)) return;
     const job = api(base + atlasSheetName(index), { credentials: 'same-origin' })
       .then(response => { if (!response.ok) throw new Error(`atlas ${response.status}`); return response.blob(); })
       .then(blob => createImageBitmap(blob))
       .then(bitmap => {
-        if (state.atlasPath !== path || state.atlasBase !== base) { bitmap.close?.(); return; }
-        state.atlasCache.set(index, bitmap);
-        if (state.atlasCache.size > 6) {
+        // Retain decoded sheets across short recording boundaries. A wheel
+        // gesture commonly crosses several 30-second files and then reverses.
+        state.atlasCache.set(key, bitmap);
+        if (state.atlasCache.size > 8) {
           const oldest = state.atlasCache.keys().next().value;
           state.atlasCache.get(oldest)?.close?.();
           state.atlasCache.delete(oldest);
         }
-        scheduleAtlasFrame();
+        if (state.atlasPath === path && state.atlasBase === base) scheduleAtlasFrame();
       }).catch(error => log('scrub:atlas-sheet-error', error.message))
-      .finally(() => { if (state.atlasPath === path) state.atlasLoads.delete(index); });
-    state.atlasLoads.set(index, job);
+      .finally(() => state.atlasLoads.delete(key));
+    state.atlasLoads.set(key, job);
   }
 
   function scheduleAtlasFrame() {
@@ -207,10 +214,11 @@
       const perSheet = manifest.columns * manifest.rows;
       const index = Math.min(manifest.frames - 1, Math.max(0, Math.floor(state.targetOffset * manifest.fps)));
       const sheet = Math.floor(index / perSheet);
-      const bitmap = state.atlasCache.get(sheet);
+      const key = atlasKey(state.atlasPath, sheet);
+      const bitmap = state.atlasCache.get(key);
       if (!bitmap) { loadAtlasSheet(sheet); return; }
-      state.atlasCache.delete(sheet);
-      state.atlasCache.set(sheet, bitmap);
+      state.atlasCache.delete(key);
+      state.atlasCache.set(key, bitmap);
       const cell = index % perSheet;
       fitCanvas();
       const cw = state.canvas.width, ch = state.canvas.height;
@@ -234,30 +242,38 @@
       state.atlasPath = record.path;
       state.atlasManifest = null;
       state.atlasBase = null;
-      state.atlasChecking = null;
+      state.atlasChecking = state.atlasChecks.get(record.path) || null;
       state.atlasWaiting = false;
       state.atlasFailed = false;
       clearTimeout(state.atlasRetry);
       if (state.atlasFrame) cancelAnimationFrame(state.atlasFrame);
       state.atlasFrame = 0;
-      for (const bitmap of state.atlasCache.values()) bitmap.close?.();
-      state.atlasCache.clear();
-      state.atlasLoads.clear();
+      const cached = state.atlasManifests.get(record.path);
+      if (cached) {
+        state.atlasManifest = cached.manifest;
+        state.atlasBase = cached.urlBase;
+        state.atlasManifests.delete(record.path);
+        state.atlasManifests.set(record.path, cached);
+      }
     }
     if (state.atlasManifest) return true;
     if (state.atlasFailed || state.atlasWaiting || state.atlasChecking) return false;
     const path = record.path;
-    state.atlasChecking = api(`/api/recordings/scrub-frames?path=${encodeURIComponent(path)}`)
+    const check = api(`/api/recordings/scrub-frames?path=${encodeURIComponent(path)}`)
       .then(response => response.ok ? response.json() : null)
       .then(result => {
-        if (state.atlasPath !== path) return;
         if (result?.ready && result.manifest?.frames && result.urlBase) {
-          state.atlasManifest = result.manifest;
-          state.atlasBase = result.urlBase;
-          state.pending = null;
-          scheduleAtlasFrame();
-        } else if (result?.failed) state.atlasFailed = true;
+          state.atlasManifests.set(path, result);
+          if (state.atlasManifests.size > 16) state.atlasManifests.delete(state.atlasManifests.keys().next().value);
+          if (state.atlasPath === path) {
+            state.atlasManifest = result.manifest;
+            state.atlasBase = result.urlBase;
+            state.pending = null;
+            scheduleAtlasFrame();
+          }
+        } else if (result?.failed && state.atlasPath === path) state.atlasFailed = true;
         else {
+          if (state.atlasPath !== path) return;
           state.atlasWaiting = true;
           state.atlasRetry = setTimeout(() => {
             state.atlasWaiting = false;
@@ -265,7 +281,12 @@
           }, 1200);
         }
       }).catch(error => log('scrub:atlas-error', error.message))
-      .finally(() => { if (state.atlasPath === path) state.atlasChecking = null; });
+      .finally(() => {
+        state.atlasChecks.delete(path);
+        if (state.atlasPath === path) state.atlasChecking = null;
+      });
+    state.atlasChecking = check;
+    state.atlasChecks.set(path, check);
     return false;
   }
 
@@ -443,6 +464,12 @@
   function setTarget(value, velocity) {
     const selected = Math.max(0, Math.min(timelineDayLength(workspaceTimelineDate) - 1, Number(value) || 0));
     const record = timelineRecordAt(selected);
+    // A seek started before this movement may still be decoding. Its result
+    // must never hide or overwrite the frame selected by the new movement.
+    if (selected !== state.target || record?.path !== state.targetRecord?.path) {
+      state.requestToken += 1;
+      clearTimeout(state.commitTimer);
+    }
     if (state.camera !== window.workspaceCamera) {
       state.camera = window.workspaceCamera;
       state.motionEpoch += 1;
@@ -621,18 +648,24 @@
       if (!event.target?.closest?.('.vertical-timeline-scroll')) return;
       if (typeof verticalTimelineProgrammatic !== 'undefined' && verticalTimelineProgrammatic) return;
       clearTimeout(state.commitTimer);
+      if (state.pointerDown) return;
       state.commitTimer = setTimeout(() => {
         if (state.active && state.lastValue !== null) void commit(state.lastValue);
       }, 550);
     }, true);
     document.addEventListener('pointerdown', event => {
-      if (event.target?.closest?.('.vertical-timeline-scroll')) clearTimeout(state.commitTimer);
+      if (event.target?.closest?.('.vertical-timeline-scroll')) {
+        state.pointerDown = true;
+        clearTimeout(state.commitTimer);
+      }
     }, true);
     document.addEventListener('pointerup', event => {
-      if (!event.target?.closest?.('.vertical-timeline-scroll')) return;
+      if (!state.pointerDown) return;
+      state.pointerDown = false;
       clearTimeout(state.commitTimer);
       if (state.lastValue !== null) void commit(state.lastValue);
     }, true);
+    document.addEventListener('pointercancel', () => { state.pointerDown = false; }, true);
     video.addEventListener('timeupdate', () => {
       if (video.dataset.playback === 'recording' && !state.active && typeof workspacePlaybackStartSeconds !== 'undefined') {
         updateTimelinePlayhead(workspacePlaybackStartSeconds + video.currentTime);
