@@ -499,5 +499,47 @@ function ensureVerticalTimelineStage(){const inner=document.querySelector('.live
 const verticalTimelineBaseLoad=loadCameraTimeline;loadCameraTimeline=async function(id){await verticalTimelineBaseLoad(id);ensureVerticalTimelineStage();buildVerticalTimeline();};
 const verticalTimelineBaseUpdate=updateTimelinePlayhead;updateTimelinePlayhead=function(value){verticalTimelineBaseUpdate(value);if(verticalTimelineReady)verticalTimelineSetPosition(value,true)};
 const verticalTimelineBaseOpen=openLiveWorkspace;openLiveWorkspace=async function(id){await verticalTimelineBaseOpen(id);ensureVerticalTimelineStage();buildVerticalTimeline()};
+</script><script>
+// Let the vertical NVR timeline continue across calendar-day boundaries.
+let verticalTimelineDayPaging=false;
+function previousTimelineDate(value){
+  const date=new Date(`${value}T12:00:00`);
+  if(Number.isNaN(date.getTime()))return value;
+  date.setDate(date.getDate()-1);
+  return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`;
+}
+async function loadPreviousTimelineDay(){
+  if(verticalTimelineDayPaging||!workspaceTimelineDate||!window.workspaceCamera)return;
+  verticalTimelineDayPaging=true;
+  try{
+    const date=previousTimelineDate(workspaceTimelineDate),input=document.querySelector('#workspace-date');
+    if(!date||date===workspaceTimelineDate)return;
+    if(input)input.value=date;
+    workspaceTimelineLastValue=timelineDayLength(date)-1;
+    await loadCameraTimeline(window.workspaceCamera);
+    verticalTimelineUserScrolling=false;
+    verticalTimelineSetPosition(workspaceTimelineLastValue,true);
+  }finally{verticalTimelineDayPaging=false}
+}
+const buildVerticalTimelineWithDayPaging=buildVerticalTimeline;
+buildVerticalTimeline=function(){
+  buildVerticalTimelineWithDayPaging();
+  const scroll=document.querySelector('.vertical-timeline-scroll');
+  if(!scroll||scroll.dataset.dayPagingReady)return;
+  scroll.dataset.dayPagingReady='true';
+  const atBottom=()=>scroll.scrollTop>=scroll.scrollHeight-scroll.clientHeight-2;
+  const continueBackward=event=>{
+    if(verticalTimelineDayPaging||event.deltaY<=0||!atBottom())return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    loadPreviousTimelineDay();
+  };
+  scroll.addEventListener('wheel',continueBackward,{capture:true,passive:false});
+  scroll.addEventListener('scroll',()=>{
+    if(verticalTimelineDayPaging||!atBottom()||verticalTimelineProgrammatic)return;
+    const seconds=verticalTimelineSecondsFromScroll();
+    if(seconds<=2)loadPreviousTimelineDay();
+  },{capture:true,passive:true});
+};
 </script><script src="/playback-engine.js"></script>
 </body></html>
