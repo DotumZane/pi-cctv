@@ -98,6 +98,8 @@ python3 -m cctv.media quad rtsp://MEDIA_SERVER:8554/cam-1 rtsp://MEDIA_SERVER:85
 
 `mediamtx.yml` provides the relay baseline. The management server is deliberately not placed in the live-video path. The exact GStreamer element names and supported decode throughput must be verified on the selected Pi OS image and Pi 4/Pi 5 hardware.
 
+The [target outage-resilient architecture](docs/architecture.md#target-keep-local-monitors-running-through-router-and-nvr-outages) would move monitor video to direct camera-to-monitor paths while retaining a separate NVR feed and central assignment control. This is planned work; the current monitor path still depends on MediaMTX.
+
 For a Raspberry Pi, the initial installer is intentionally dependency-light:
 
 ```bash
