@@ -21,6 +21,7 @@
     sourceUrl: '',
     loadToken: 0,
     requestToken: 0,
+    previewToken: 0,
     lastInputAt: 0,
     lastValue: null,
     lastTime: 0,
@@ -135,7 +136,10 @@
   function drawPreviewFrame() {
     const preview = state.preview;
     if (!state.active || !preview || preview.readyState < 2 || !state.targetRecord) return;
-    if (state.requestToken !== state.loadToken && state.sourceUrl !== sourceFor(state.targetRecord)) return;
+    // requestToken belongs to main-player commits while loadToken belongs to
+    // the hidden preview decoder. They are independent counters, so comparing
+    // them caused valid preview frames to be discarded after a source switch.
+    if (state.sourceUrl !== sourceFor(state.targetRecord)) return;
     if (drawImage(preview)) {
       log('scrub:frame', { target: state.target, offset: preview.currentTime });
       if (typeof updateTimelinePlayhead === 'function') updateTimelinePlayhead(state.target);
@@ -197,11 +201,12 @@
     const url = sourceFor(record);
     if (url !== state.sourceUrl) {
       state.sourceUrl = url;
-      state.loadToken += 1;
+      state.previewToken += 1;
+      const previewToken = state.previewToken;
       state.preview.pause();
       state.preview.src = url;
       state.preview.load();
-      log('scrub:source', { url, selected, velocity });
+      log('scrub:source', { url, selected, velocity, previewToken });
     } else {
       seekPreview();
     }
