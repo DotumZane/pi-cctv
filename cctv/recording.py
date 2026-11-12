@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -27,6 +28,62 @@ def recording_files(root: Path) -> list[Path]:
 def trickplay_path(root: Path, recording: Path) -> Path:
     relative = recording.relative_to(root)
     return root / ".trickplay-cache" / relative.parent / f"{relative.stem}.mp4"
+
+
+def scrub_frames_dir(root: Path, recording: Path) -> Path:
+    relative = recording.relative_to(root)
+    return root / ".scrub-frames" / relative.parent / relative.stem
+
+
+def scrub_frames_ready(source: Path, directory: Path) -> bool:
+    manifest = directory / "manifest.json"
+    return manifest.is_file() and manifest.stat().st_mtime_ns >= source.stat().st_mtime_ns
+
+
+def prepare_scrub_frames(source: Path, directory: Path) -> None:
+    """Build a dense sequence of real frames in seek-free JPEG atlases."""
+    temporary = directory.with_name(f"{directory.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    failure = directory.with_suffix(".failed")
+    success = False
+    try:
+        directory.parent.mkdir(parents=True, exist_ok=True)
+        probe = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", str(source)],
+            capture_output=True, text=True, timeout=20,
+        )
+        duration = float(probe.stdout.strip()) if probe.returncode == 0 else 0
+        if not math.isfinite(duration) or duration <= 0:
+            return
+        temporary.mkdir(parents=True, exist_ok=True)
+        result = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+             "-i", str(source), "-map", "0:v:0", "-an",
+             "-vf", "fps=15,scale=480:270:force_original_aspect_ratio=decrease,"
+                    "pad=480:270:(ow-iw)/2:(oh-ih)/2,tile=6x4",
+             "-fps_mode", "vfr", "-q:v", "7", "-start_number", "0",
+             str(temporary / "%03d.jpg")],
+            capture_output=True, timeout=180,
+        )
+        sheets = sorted(temporary.glob("*.jpg"))
+        if result.returncode != 0 or not sheets:
+            return
+        frame_count = min(math.ceil(duration * 15), len(sheets) * 24)
+        (temporary / "manifest.json").write_text(json.dumps({
+            "fps": 15, "width": 480, "height": 270, "columns": 6, "rows": 4,
+            "frames": frame_count, "sheets": len(sheets),
+        }))
+        if directory.exists():
+            shutil.rmtree(directory)
+        temporary.replace(directory)
+        failure.unlink(missing_ok=True)
+        success = True
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        pass
+    finally:
+        shutil.rmtree(temporary, ignore_errors=True)
+        if not success and directory.parent.is_dir():
+            failure.touch()
 
 
 def prepare_trickplay(recording: Path, target: Path) -> None:
@@ -88,6 +145,9 @@ def prune_recordings(output_dir: Path, retention_hours: int, now: datetime | Non
             proxy = trickplay_path(output_dir, path)
             proxy.unlink(missing_ok=True)
             proxy.with_suffix(".failed").unlink(missing_ok=True)
+            frames = scrub_frames_dir(output_dir, path)
+            shutil.rmtree(frames, ignore_errors=True)
+            frames.with_suffix(".failed").unlink(missing_ok=True)
             removed += 1
     for proxy in (output_dir / ".trickplay-cache").glob("**/*.mp4"):
         source = output_dir / proxy.relative_to(output_dir / ".trickplay-cache")
@@ -97,12 +157,26 @@ def prune_recordings(output_dir: Path, retention_hours: int, now: datetime | Non
         source = output_dir / failure.relative_to(output_dir / ".trickplay-cache").with_suffix(".mp4")
         if not source.is_file() and not source.with_suffix(".mkv").is_file():
             failure.unlink(missing_ok=True)
+    frame_root = output_dir / ".scrub-frames"
+    for manifest in frame_root.glob("**/manifest.json"):
+        source = output_dir / manifest.parent.relative_to(frame_root).with_suffix(".mp4")
+        if not source.is_file() and not source.with_suffix(".mkv").is_file():
+            shutil.rmtree(manifest.parent, ignore_errors=True)
+    for failure in frame_root.glob("**/*.failed"):
+        source = output_dir / failure.relative_to(frame_root).with_suffix(".mp4")
+        if not source.is_file() and not source.with_suffix(".mkv").is_file():
+            failure.unlink(missing_ok=True)
     return removed
 
 
 def enforce_storage_limit(output_dir: Path, limit_gb: int) -> int:
     files = sorted(recording_files(output_dir), key=lambda path: path.stat().st_mtime)
-    total = sum(path.stat().st_size + (trickplay_path(output_dir, path).stat().st_size if trickplay_path(output_dir, path).is_file() else 0) for path in files)
+    def assets_size(path: Path) -> int:
+        proxy = trickplay_path(output_dir, path)
+        frames = scrub_frames_dir(output_dir, path)
+        return ((proxy.stat().st_size if proxy.is_file() else 0)
+                + sum(frame.stat().st_size for frame in frames.glob("*.jpg")))
+    total = sum(path.stat().st_size + assets_size(path) for path in files)
     removed = 0
     limit = max(1, limit_gb) * 1024**3
     for path in files:
@@ -110,9 +184,12 @@ def enforce_storage_limit(output_dir: Path, limit_gb: int) -> int:
         size = path.stat().st_size
         path.unlink()
         proxy = trickplay_path(output_dir, path)
-        proxy_size = proxy.stat().st_size if proxy.is_file() else 0
+        proxy_size = assets_size(path)
         proxy.unlink(missing_ok=True)
         proxy.with_suffix(".failed").unlink(missing_ok=True)
+        frames = scrub_frames_dir(output_dir, path)
+        shutil.rmtree(frames, ignore_errors=True)
+        frames.with_suffix(".failed").unlink(missing_ok=True)
         total -= size + proxy_size
         removed += 1
     return removed
@@ -249,17 +326,17 @@ class RecorderSupervisor:
                 # Prepare one closed segment at a time without blocking the
                 # stream-copy recorder or opening another camera connection.
                 if not self._trickplay_job or self._trickplay_job.done():
-                    candidates = sorted(recording_files(self.output_dir), key=lambda p: p.stat().st_mtime, reverse=True)[:12]
+                    candidates = sorted(recording_files(self.output_dir), key=lambda p: p.stat().st_mtime, reverse=True)[:24]
                     for source in candidates:
                         if time.time() - source.stat().st_mtime < 8:
                             continue
-                        proxy = trickplay_path(self.output_dir, source)
-                        if proxy.is_file() and proxy.stat().st_mtime_ns >= source.stat().st_mtime_ns:
+                        frames = scrub_frames_dir(self.output_dir, source)
+                        if scrub_frames_ready(source, frames):
                             continue
-                        failure = proxy.with_suffix(".failed")
+                        failure = frames.with_suffix(".failed")
                         if failure.is_file() and failure.stat().st_mtime_ns >= source.stat().st_mtime_ns:
                             continue
-                        self._trickplay_job = self._trickplay_pool.submit(prepare_trickplay, source, proxy)
+                        self._trickplay_job = self._trickplay_pool.submit(prepare_scrub_frames, source, frames)
                         break
 
                 if time.monotonic() - last_cleanup >= 300:

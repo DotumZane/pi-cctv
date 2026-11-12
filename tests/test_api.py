@@ -299,6 +299,33 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(len(response.read()), 16)
         connection.close()
 
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg and ffprobe are required")
+    def test_scrub_atlas_serves_indexed_frames_without_listing_them_as_recordings(self):
+        from datetime import datetime
+        from cctv.recording import prepare_scrub_frames, scrub_frames_dir
+        root = Path(self.recordings.name)
+        recording = root / "cam-01" / datetime.now().strftime("%Y-%m-%d") / "06-00-00.mp4"
+        recording.parent.mkdir(parents=True)
+        subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi",
+                        "-i", "testsrc2=s=160x90:r=12:d=2", "-c:v", "mpeg4", str(recording)], check=True)
+        os.utime(recording, (time.time() - 20, time.time() - 20))
+        directory = scrub_frames_dir(root, recording)
+        prepare_scrub_frames(recording, directory)
+        relative = recording.relative_to(root).as_posix()
+        status, result = self.call("GET", f"/api/recordings/scrub-frames?path={relative}")
+        self.assertEqual(status, 200)
+        self.assertTrue(result["ready"])
+        self.assertEqual(result["manifest"]["frames"], 30)
+        self.assertEqual(result["manifest"]["sheets"], 2)
+        self.assertEqual([item["path"] for item in self.call("GET", "/api/recordings")[1]["recordings"]], [relative])
+        connection = HTTPConnection(*self.base)
+        connection.request("GET", result["urlBase"] + "000.jpg")
+        response = connection.getresponse()
+        self.assertEqual(response.status, 200)
+        self.assertEqual(response.getheader("Content-Type"), "image/jpeg")
+        self.assertTrue(response.read().startswith(b"\xff\xd8"))
+        connection.close()
+
     def test_restart_media_command_is_queued_and_consumed(self):
         self.call("POST", "/api/devices", {"id": "cam-1", "kind": "camera", "name": "Saw 1"})
         status, command = self.call("POST", "/api/devices/cam-1/commands", {"command": "restart_media"})

@@ -4,8 +4,8 @@
  * The dashboard stores recordings as individual MP4/MKV segments, not as one
  * HLS/DASH VOD presentation.  A manifest player would therefore not solve
  * seeking by itself.  Instead we keep the live/normal player stable and use a
- * an independently decodable proxy plus a canvas for bidirectional scrubbing.
- * Server-extracted frames remain a fallback while a proxy is prepared.
+ * a dense frame atlas plus a canvas for bidirectional scrubbing. The proxy
+ * and server-extracted frames remain fallbacks while an atlas is prepared.
  */
 (function () {
   'use strict';
@@ -46,6 +46,16 @@
     proxyDesired: null,
     proxySeeking: false,
     proxyFrame: 0,
+    atlasPath: null,
+    atlasManifest: null,
+    atlasBase: null,
+    atlasChecking: null,
+    atlasWaiting: false,
+    atlasRetry: 0,
+    atlasFailed: false,
+    atlasCache: new Map(),
+    atlasLoads: new Map(),
+    atlasFrame: 0,
   };
 
   function log(event, details) {
@@ -114,6 +124,7 @@
       canvas.width = width;
       canvas.height = height;
       if (state.active && state.lastBitmap) paintBitmap(state.lastBitmap);
+      if (state.active && state.atlasManifest) scheduleAtlasFrame();
     }
   }
 
@@ -165,8 +176,101 @@
     return `${request.record.path}:${Math.round(request.offset * 4)}`;
   }
 
+  function atlasSheetName(index) { return `${String(index).padStart(3, '0')}.jpg`; }
+
+  function loadAtlasSheet(index) {
+    const manifest = state.atlasManifest, path = state.atlasPath, base = state.atlasBase;
+    if (!manifest || index < 0 || index >= manifest.sheets || state.atlasCache.has(index) || state.atlasLoads.has(index)) return;
+    const job = api(base + atlasSheetName(index), { credentials: 'same-origin' })
+      .then(response => { if (!response.ok) throw new Error(`atlas ${response.status}`); return response.blob(); })
+      .then(blob => createImageBitmap(blob))
+      .then(bitmap => {
+        if (state.atlasPath !== path || state.atlasBase !== base) { bitmap.close?.(); return; }
+        state.atlasCache.set(index, bitmap);
+        if (state.atlasCache.size > 6) {
+          const oldest = state.atlasCache.keys().next().value;
+          state.atlasCache.get(oldest)?.close?.();
+          state.atlasCache.delete(oldest);
+        }
+        scheduleAtlasFrame();
+      }).catch(error => log('scrub:atlas-sheet-error', error.message))
+      .finally(() => { if (state.atlasPath === path) state.atlasLoads.delete(index); });
+    state.atlasLoads.set(index, job);
+  }
+
+  function scheduleAtlasFrame() {
+    if (state.atlasFrame || !state.active || !state.atlasManifest) return;
+    state.atlasFrame = requestAnimationFrame(() => {
+      state.atlasFrame = 0;
+      const manifest = state.atlasManifest;
+      if (!state.active || !manifest || state.targetRecord?.path !== state.atlasPath) return;
+      const perSheet = manifest.columns * manifest.rows;
+      const index = Math.min(manifest.frames - 1, Math.max(0, Math.floor(state.targetOffset * manifest.fps)));
+      const sheet = Math.floor(index / perSheet);
+      const bitmap = state.atlasCache.get(sheet);
+      if (!bitmap) { loadAtlasSheet(sheet); return; }
+      state.atlasCache.delete(sheet);
+      state.atlasCache.set(sheet, bitmap);
+      const cell = index % perSheet;
+      fitCanvas();
+      const cw = state.canvas.width, ch = state.canvas.height;
+      const scale = Math.min(cw / manifest.width, ch / manifest.height);
+      const dw = manifest.width * scale, dh = manifest.height * scale;
+      state.ctx.fillStyle = '#030507';
+      state.ctx.fillRect(0, 0, cw, ch);
+      state.ctx.drawImage(bitmap, (cell % manifest.columns) * manifest.width,
+        Math.floor(cell / manifest.columns) * manifest.height, manifest.width, manifest.height,
+        (cw - dw) / 2, (ch - dh) / 2, dw, dh);
+      state.hasFrame = true;
+      state.canvas.classList.add('visible');
+      state.lastFrameTime = state.target;
+      loadAtlasSheet(sheet + (state.motionDirection >= 0 ? 1 : -1));
+    });
+  }
+
+  function ensureAtlas(record) {
+    if (!record || !ensurePreview()) return false;
+    if (state.atlasPath !== record.path) {
+      state.atlasPath = record.path;
+      state.atlasManifest = null;
+      state.atlasBase = null;
+      state.atlasChecking = null;
+      state.atlasWaiting = false;
+      state.atlasFailed = false;
+      clearTimeout(state.atlasRetry);
+      if (state.atlasFrame) cancelAnimationFrame(state.atlasFrame);
+      state.atlasFrame = 0;
+      for (const bitmap of state.atlasCache.values()) bitmap.close?.();
+      state.atlasCache.clear();
+      state.atlasLoads.clear();
+    }
+    if (state.atlasManifest) return true;
+    if (state.atlasFailed || state.atlasWaiting || state.atlasChecking) return false;
+    const path = record.path;
+    state.atlasChecking = api(`/api/recordings/scrub-frames?path=${encodeURIComponent(path)}`)
+      .then(response => response.ok ? response.json() : null)
+      .then(result => {
+        if (state.atlasPath !== path) return;
+        if (result?.ready && result.manifest?.frames && result.urlBase) {
+          state.atlasManifest = result.manifest;
+          state.atlasBase = result.urlBase;
+          state.pending = null;
+          scheduleAtlasFrame();
+        } else if (result?.failed) state.atlasFailed = true;
+        else {
+          state.atlasWaiting = true;
+          state.atlasRetry = setTimeout(() => {
+            state.atlasWaiting = false;
+            if (state.atlasPath === path && state.active) ensureAtlas(record);
+          }, 1200);
+        }
+      }).catch(error => log('scrub:atlas-error', error.message))
+      .finally(() => { if (state.atlasPath === path) state.atlasChecking = null; });
+    return false;
+  }
+
   function seekProxy() {
-    if (state.proxyFrame || !state.proxyReady || state.proxySeeking || !state.proxy || !state.active) return;
+    if (state.proxyFrame || !state.proxyReady || state.proxySeeking || !state.proxy || !state.active || state.atlasManifest) return;
     state.proxyFrame = requestAnimationFrame(() => {
       state.proxyFrame = 0;
       const desired = state.proxyDesired;
@@ -231,7 +335,7 @@
             });
             proxy.addEventListener('seeked', () => {
               state.proxySeeking = false;
-              if (state.active && state.proxyReady && state.targetRecord?.path === state.proxyPath) {
+              if (state.active && state.proxyReady && !state.atlasManifest && state.targetRecord?.path === state.proxyPath) {
                 // Show every decoded intermediate frame during movement. A
                 // direction change starts seeking toward the newest target.
                 drawImage(proxy);
@@ -284,7 +388,7 @@
       // newer frame or a frame from the opposite side after direction changes.
       const alreadyPassed = state.lastFrameTime !== null && request.direction &&
         Math.sign(request.selected - state.lastFrameTime) === -request.direction;
-      if (state.active && !state.proxyReady && request.epoch === state.motionEpoch && !alreadyPassed && state.targetRecord &&
+      if (state.active && !state.proxyReady && !state.atlasManifest && request.epoch === state.motionEpoch && !alreadyPassed && state.targetRecord &&
           state.targetRecord.path === request.record.path) drawExtractedFrame(bitmap, request);
     } catch (error) { log('scrub:frame-error', error.message); }
     finally {
@@ -327,6 +431,10 @@
     state.proxyWaiting = false;
     if (state.proxyFrame) cancelAnimationFrame(state.proxyFrame);
     state.proxyFrame = 0;
+    if (state.atlasFrame) cancelAnimationFrame(state.atlasFrame);
+    state.atlasFrame = 0;
+    clearTimeout(state.atlasRetry);
+    state.atlasWaiting = false;
     if (state.canvas) state.canvas.classList.remove('visible');
     if (state.frame) cancelAnimationFrame(state.frame);
     state.frame = 0;
@@ -364,7 +472,14 @@
       state.frame = 0;
       return;
     }
-    const proxyReady = ensureProxy(record);
+    if (ensureAtlas(record)) {
+      state.pending = null;
+      scheduleAtlasFrame();
+      return;
+    }
+    // Atlas generation has priority. An extra proxy encode for the same
+    // segment would contend with it and postpone the seek-free preview.
+    const proxyReady = state.atlasFailed ? ensureProxy(record) : false;
     state.proxyDesired = state.targetOffset;
     if (proxyReady) {
       state.pending = null;

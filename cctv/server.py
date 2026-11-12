@@ -24,7 +24,8 @@ from urllib import request as urllib_request
 
 from . import __agent_version__, __version__
 from .fleet import FleetAgentUpdateCoordinator, FleetOsUpdateCoordinator
-from .recording import RecorderSupervisor, prepare_trickplay, trickplay_path
+from .recording import (RecorderSupervisor, prepare_scrub_frames, prepare_trickplay,
+                        scrub_frames_dir, scrub_frames_ready, trickplay_path)
 from .store import Store
 
 
@@ -51,6 +52,15 @@ def _prepare_trickplay_job(recording: Path, target: Path) -> None:
     finally:
         with TRICKPLAY_LOCK:
             TRICKPLAY_JOBS.discard(str(target))
+        TRICKPLAY_SLOTS.release()
+
+
+def _prepare_scrub_frames_job(recording: Path, directory: Path) -> None:
+    try:
+        prepare_scrub_frames(recording, directory)
+    finally:
+        with TRICKPLAY_LOCK:
+            TRICKPLAY_JOBS.discard(str(directory))
         TRICKPLAY_SLOTS.release()
 
 
@@ -650,7 +660,7 @@ class Handler(BaseHTTPRequestHandler):
             entries.sort(key=lambda entry: entry["modified"], reverse=True)
             self.send_json({"recordings": entries})
             return
-        if parsed.path == "/api/recordings/trickplay":
+        if parsed.path in {"/api/recordings/trickplay", "/api/recordings/scrub-frames"}:
             if not self.require_read_auth():
                 return
             root = Path(getattr(self.server, "recordings_dir", "recordings")).resolve()
@@ -658,22 +668,29 @@ class Handler(BaseHTTPRequestHandler):
             if root not in requested.parents or any(part.startswith(".") for part in requested.relative_to(root).parts) or requested.suffix not in {".mp4", ".mkv"} or not requested.is_file():
                 self.send_json({"error": "recording not found"}, HTTPStatus.NOT_FOUND)
                 return
-            target = trickplay_path(root, requested)
-            ready = target.is_file() and target.stat().st_mtime_ns >= requested.stat().st_mtime_ns
+            frames = parsed.path.endswith("/scrub-frames")
+            target = scrub_frames_dir(root, requested) if frames else trickplay_path(root, requested)
+            ready = scrub_frames_ready(requested, target) if frames else target.is_file() and target.stat().st_mtime_ns >= requested.stat().st_mtime_ns
             failure = target.with_suffix(".failed")
             failed = failure.is_file() and failure.stat().st_mtime_ns >= requested.stat().st_mtime_ns
             # An open MP4 may not yet have its moov atom. Wait for the recorder
             # to close it before starting a conversion.
-            if not ready and not failed and time.time() - requested.stat().st_mtime > 8 and shutil.which("ffmpeg"):
+            if not ready and not failed and time.time() - requested.stat().st_mtime > 8 and shutil.which("ffmpeg") and (not frames or shutil.which("ffprobe")):
                 with TRICKPLAY_LOCK:
                     if str(target) not in TRICKPLAY_JOBS and TRICKPLAY_SLOTS.acquire(blocking=False):
                         TRICKPLAY_JOBS.add(str(target))
                         try:
-                            threading.Thread(target=_prepare_trickplay_job, args=(requested, target), daemon=True).start()
+                            job = _prepare_scrub_frames_job if frames else _prepare_trickplay_job
+                            threading.Thread(target=job, args=(requested, target), daemon=True).start()
                         except RuntimeError:
                             TRICKPLAY_JOBS.discard(str(target))
                             TRICKPLAY_SLOTS.release()
-            self.send_json({"ready": ready, "failed": failed, "url": "/recordings/" + quote(str(target.relative_to(root))) if ready else None})
+            if frames:
+                manifest = json.loads((target / "manifest.json").read_text()) if ready else None
+                self.send_json({"ready": ready, "failed": failed, "manifest": manifest,
+                                "urlBase": "/recordings/" + quote(str(target.relative_to(root))) + "/" if ready else None})
+            else:
+                self.send_json({"ready": ready, "failed": failed, "url": "/recordings/" + quote(str(target.relative_to(root))) if ready else None})
             return
         if parsed.path == "/api/recordings/snapshot":
             if not self.require_read_auth():
@@ -768,10 +785,19 @@ class Handler(BaseHTTPRequestHandler):
                 return
             root = Path(getattr(self.server, "recordings_dir", "recordings")).resolve()
             requested = (root / unquote(parsed.path.removeprefix("/recordings/"))).resolve()
-            if root not in requested.parents or not requested.is_file() or requested.suffix not in {".mkv", ".mp4"}:
+            is_atlas = requested.suffix == ".jpg" and (root / ".scrub-frames") in requested.parents
+            if root not in requested.parents or not requested.is_file() or (not is_atlas and requested.suffix not in {".mkv", ".mp4"}):
                 self.send_json({"error": "recording not found"}, HTTPStatus.NOT_FOUND)
                 return
-            if parse_qs(parsed.query).get("format", [""])[0] == "mp4":
+            if is_atlas:
+                relative = requested.parent.relative_to(root / ".scrub-frames")
+                source = root / relative.with_suffix(".mp4")
+                if not source.is_file():
+                    source = source.with_suffix(".mkv")
+                if not source.is_file() or not scrub_frames_ready(source, requested.parent):
+                    self.send_json({"error": "recording not found"}, HTTPStatus.NOT_FOUND)
+                    return
+            if not is_atlas and parse_qs(parsed.query).get("format", [""])[0] == "mp4":
                 if not shutil.which("ffmpeg"):
                     self.send_json({"error": "MP4 playback conversion is unavailable"}, HTTPStatus.NOT_IMPLEMENTED)
                     return
@@ -823,7 +849,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(status)
             if status == HTTPStatus.PARTIAL_CONTENT:
                 self.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")
-            self.send_header("Content-Type", "video/mp4" if requested.suffix == ".mp4" else "video/x-matroska")
+            self.send_header("Content-Type", "image/jpeg" if is_atlas else "video/mp4" if requested.suffix == ".mp4" else "video/x-matroska")
             self.send_header("Accept-Ranges", "bytes")
             self.send_header("Content-Length", str(length))
             self.end_headers()

@@ -48,6 +48,7 @@ async function main() {
     workspaceTimelineLastValue: 0, verticalTimelineSetPosition() {},
     updateTimelinePlayhead() {}, esc: value => value,
     async api(url) {
+      if (url.includes('/scrub-frames?')) return { ok: true, async json() { return { ready: false }; } };
       if (url.includes('/trickplay?')) return { ok: true, async json() { return { ready: false }; } };
       fetched++;
       return { ok: true, async blob() { return {}; } };
@@ -120,6 +121,7 @@ async function proxyScrubbing() {
     timelineSeconds: () => 0, workspaceTimelineDate: '2026-11-12',
     workspaceTimelineLastValue: 0, verticalTimelineSetPosition() {}, updateTimelinePlayhead() {},
     async api(url) {
+      if (url.includes('/scrub-frames?')) return { ok: true, async json() { return { ready: false, failed: true }; } };
       if (url.includes('/trickplay?')) return { ok: true, async json() { return { ready: true, url: '/recordings/.trickplay-cache/cam-1/proxy.mp4' }; } };
       snapshotRequests++;
       return { ok: true, async blob() { return {}; } };
@@ -129,6 +131,10 @@ async function proxyScrubbing() {
   };
   const source = fs.readFileSync(path.join(__dirname, '..', 'cctv', 'playback-engine.js'), 'utf8');
   vm.runInNewContext(source, globals);
+  globals.window.previewWorkspaceTimelineScrub(8, -20);
+  await new Promise(resolve => setImmediate(resolve));
+  // The atlas failure is observed on the next pointer update before falling
+  // back to the old proxy for this segment.
   globals.window.previewWorkspaceTimelineScrub(8, -20);
   await new Promise(resolve => setImmediate(resolve));
   for (const callback of listeners.get('loadedmetadata') || []) callback();
@@ -142,4 +148,56 @@ async function proxyScrubbing() {
   assert.equal(snapshotRequests, 0, 'ready proxy needs no still-frame requests');
 }
 
-Promise.resolve().then(main).then(proxyScrubbing).catch(error => { console.error(error); process.exitCode = 1; });
+async function atlasScrubbing() {
+  const draws = [];
+  const animationFrames = [];
+  let mainSeeks = 0;
+  let proxyRequests = 0;
+  const canvas = { width: 0, height: 0, classList: { add() {}, remove() {} }, setAttribute() {},
+    getContext() { return { fillRect() {}, drawImage(...args) { draws.push(args); }, set fillStyle(_) {} }; } };
+  const host = { appendChild() {} };
+  const video = { dataset: { playback: 'live' }, clientWidth: 640, clientHeight: 360,
+    readyState: 0, paused: true, controls: false, closest() { return host; },
+    setAttribute() {}, removeAttribute() {}, addEventListener() {},
+    set currentTime(_) { mainSeeks++; }, pause() {} };
+  const document = { body: {}, head: { appendChild() {} }, documentElement: { dataset: {} },
+    createElement(tag) { return tag === 'canvas' ? canvas : { textContent: '' }; },
+    querySelector(selector) { return selector === '#workspace-live' ? video : null; }, addEventListener() {} };
+  const record = { path: 'cam-1/2026-11-12/06-00-00.mp4', url: '/recordings/cam-1/2026-11-12/06-00-00.mp4' };
+  const globals = { document, window: { workspaceCamera: 'cam-1', returnWorkspaceToLive: async () => {}, addEventListener() {} },
+    URLSearchParams, location: { search: '' }, devicePixelRatio: 1, performance: { now: () => 1000 },
+    requestAnimationFrame(callback) { animationFrames.push(callback); return animationFrames.length; },
+    cancelAnimationFrame() {}, MutationObserver: class { observe() {} },
+    timelineDayLength: () => 86400, timelineRecordAt: () => record, timelineSeconds: () => 0,
+    workspaceTimelineDate: '2026-11-12', workspaceTimelineLastValue: 0,
+    verticalTimelineSetPosition() {}, updateTimelinePlayhead() {},
+    async api(url) {
+      if (url.includes('/scrub-frames?')) return { ok: true, async json() { return {
+        ready: true, urlBase: '/recordings/.scrub-frames/cam-1/06-00-00/',
+        manifest: { fps: 15, width: 480, height: 270, columns: 6, rows: 4, frames: 900, sheets: 38 },
+      }; } };
+      if (url.includes('/trickplay?')) { proxyRequests++; return { ok: true, async json() { return { ready: false }; } }; }
+      return { ok: true, async blob() { return {}; } };
+    },
+    async createImageBitmap() { return { width: 2880, height: 1080, close() {} }; },
+    setTimeout, clearTimeout, console,
+  };
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', 'cctv', 'playback-engine.js'), 'utf8'), globals);
+  globals.window.previewWorkspaceTimelineScrub(8, 20);
+  await new Promise(resolve => setImmediate(resolve));
+  for (let i = 0; i < 4; i++) { while (animationFrames.length) animationFrames.shift()(); await new Promise(resolve => setImmediate(resolve)); }
+  const first = draws.at(-1);
+  globals.window.previewWorkspaceTimelineScrub(9, 20);
+  while (animationFrames.length) animationFrames.shift()();
+  const second = draws.at(-1);
+  globals.window.previewWorkspaceTimelineScrub(8, -20);
+  while (animationFrames.length) animationFrames.shift()();
+  assert.notDeepEqual(first.slice(1, 3), second.slice(1, 3), 'forward movement paints another atlas cell');
+  assert.deepEqual(first.slice(1, 3), draws.at(-1).slice(1, 3), 'reverse movement paints the earlier cell');
+  assert.equal(mainSeeks, 0, 'preview never seeks the main video');
+  assert.equal(proxyRequests, 0, 'ready atlas needs no proxy requests');
+}
+
+Promise.resolve().then(main).then(proxyScrubbing).then(atlasScrubbing)
+  .then(() => process.exit(0))
+  .catch(error => { console.error(error); process.exit(1); });
