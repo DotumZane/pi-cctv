@@ -144,7 +144,7 @@
     state.hasFrame = true;
     state.lastBitmap = bitmap;
     state.lastFrameTime = request.selected;
-    canvas.classList.add('visible');
+    state.canvas.classList.add('visible');
     log('scrub:frame', { requested: request.selected, displayed: state.lastFrameTime,
       latencyMs: Math.round(performance.now() - request.startedAt) });
   }
