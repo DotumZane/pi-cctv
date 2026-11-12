@@ -24,7 +24,7 @@ from urllib import request as urllib_request
 
 from . import __agent_version__, __version__
 from .fleet import FleetAgentUpdateCoordinator, FleetOsUpdateCoordinator
-from .recording import RecorderSupervisor
+from .recording import RecorderSupervisor, prepare_trickplay, trickplay_path
 from .store import Store
 
 
@@ -40,6 +40,18 @@ PLAYBACK_CACHE_LOCK = threading.Lock()
 SCRUB_FRAME_LOCK = threading.Lock()
 SCRUB_FRAME_SLOTS = threading.BoundedSemaphore(2)
 SCRUB_FRAME_CACHE: OrderedDict[tuple[str, int, int, int], bytes] = OrderedDict()
+TRICKPLAY_LOCK = threading.Lock()
+TRICKPLAY_JOBS: set[str] = set()
+TRICKPLAY_SLOTS = threading.BoundedSemaphore(2)
+
+
+def _prepare_trickplay_job(recording: Path, target: Path) -> None:
+    try:
+        prepare_trickplay(recording, target)
+    finally:
+        with TRICKPLAY_LOCK:
+            TRICKPLAY_JOBS.discard(str(target))
+        TRICKPLAY_SLOTS.release()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -617,9 +629,9 @@ class Handler(BaseHTTPRequestHandler):
             entries = []
             recordings = (*root.glob("**/*.mkv"), *root.glob("**/*.mp4"))
             for recording in recordings:
-                relative = recording.relative_to(root)
-                if any(part.startswith(".") for part in relative.parts):
+                if any(part.startswith(".") for part in recording.relative_to(root).parts):
                     continue
+                relative = recording.relative_to(root)
                 if camera_id and relative.parts[0] != camera_id:
                     continue
                 stat = recording.stat()
@@ -637,6 +649,31 @@ class Handler(BaseHTTPRequestHandler):
                 entries.append({"path": str(relative), "camera_id": relative.parts[0] if relative.parts else "", "bytes": stat.st_size, "modified": modified_at.isoformat(), "start": start.isoformat() if start else None, "url": "/recordings/" + str(relative)})
             entries.sort(key=lambda entry: entry["modified"], reverse=True)
             self.send_json({"recordings": entries})
+            return
+        if parsed.path == "/api/recordings/trickplay":
+            if not self.require_read_auth():
+                return
+            root = Path(getattr(self.server, "recordings_dir", "recordings")).resolve()
+            requested = (root / unquote(parse_qs(parsed.query).get("path", [""])[0])).resolve()
+            if root not in requested.parents or any(part.startswith(".") for part in requested.relative_to(root).parts) or requested.suffix not in {".mp4", ".mkv"} or not requested.is_file():
+                self.send_json({"error": "recording not found"}, HTTPStatus.NOT_FOUND)
+                return
+            target = trickplay_path(root, requested)
+            ready = target.is_file() and target.stat().st_mtime_ns >= requested.stat().st_mtime_ns
+            failure = target.with_suffix(".failed")
+            failed = failure.is_file() and failure.stat().st_mtime_ns >= requested.stat().st_mtime_ns
+            # An open MP4 may not yet have its moov atom. Wait for the recorder
+            # to close it before starting a conversion.
+            if not ready and not failed and time.time() - requested.stat().st_mtime > 8 and shutil.which("ffmpeg"):
+                with TRICKPLAY_LOCK:
+                    if str(target) not in TRICKPLAY_JOBS and TRICKPLAY_SLOTS.acquire(blocking=False):
+                        TRICKPLAY_JOBS.add(str(target))
+                        try:
+                            threading.Thread(target=_prepare_trickplay_job, args=(requested, target), daemon=True).start()
+                        except RuntimeError:
+                            TRICKPLAY_JOBS.discard(str(target))
+                            TRICKPLAY_SLOTS.release()
+            self.send_json({"ready": ready, "failed": failed, "url": "/recordings/" + quote(str(target.relative_to(root))) if ready else None})
             return
         if parsed.path == "/api/recordings/snapshot":
             if not self.require_read_auth():

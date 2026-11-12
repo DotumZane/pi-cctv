@@ -268,6 +268,37 @@ class ApiTests(unittest.TestCase):
             self.assertEqual(read_frame(), (200, image))
         self.assertEqual(self.call("GET", path.replace("0.50", "nan"))[0], 400)
 
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg and ffprobe are required")
+    def test_trickplay_proxy_is_seekable_and_hidden_from_recording_index(self):
+        from datetime import datetime
+        from cctv.recording import prepare_trickplay, trickplay_path
+        root = Path(self.recordings.name)
+        recording = root / "cam-01" / datetime.now().strftime("%Y-%m-%d") / "06-00-00.mp4"
+        recording.parent.mkdir(parents=True)
+        subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi",
+                        "-i", "testsrc2=s=160x90:r=12:d=2", "-c:v", "mpeg4", str(recording)], check=True)
+        os.utime(recording, (time.time() - 20, time.time() - 20))
+        proxy = trickplay_path(root, recording)
+        prepare_trickplay(recording, proxy)
+        self.assertTrue(proxy.is_file())
+        probe = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0",
+                                "-show_entries", "frame=key_frame", "-of", "csv=p=0", str(proxy)],
+                               capture_output=True, text=True, check=True)
+        self.assertTrue(probe.stdout.strip())
+        self.assertTrue(all(line.split(",", 1)[0].strip() == "1" for line in probe.stdout.splitlines()))
+        relative = recording.relative_to(root).as_posix()
+        path = f"/api/recordings/trickplay?path={relative}"
+        status, result = self.call("GET", path)
+        self.assertEqual(status, 200)
+        self.assertTrue(result["ready"])
+        self.assertEqual([item["path"] for item in self.call("GET", "/api/recordings")[1]["recordings"]], [relative])
+        connection = HTTPConnection(*self.base)
+        connection.request("GET", result["url"], headers={"Range": "bytes=0-15"})
+        response = connection.getresponse()
+        self.assertEqual(response.status, 206)
+        self.assertEqual(len(response.read()), 16)
+        connection.close()
+
     def test_restart_media_command_is_queued_and_consumed(self):
         self.call("POST", "/api/devices", {"id": "cam-1", "kind": "camera", "name": "Saw 1"})
         status, command = self.call("POST", "/api/devices/cam-1/commands", {"command": "restart_media"})

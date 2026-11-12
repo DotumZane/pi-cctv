@@ -4,7 +4,8 @@
  * The dashboard stores recordings as individual MP4/MKV segments, not as one
  * HLS/DASH VOD presentation.  A manifest player would therefore not solve
  * seeking by itself.  Instead we keep the live/normal player stable and use a
- * server-extracted frames plus a canvas for bidirectional scrubbing.
+ * an independently decodable proxy plus a canvas for bidirectional scrubbing.
+ * Server-extracted frames remain a fallback while a proxy is prepared.
  */
 (function () {
   'use strict';
@@ -34,6 +35,17 @@
     commitTimer: 0,
     active: false,
     hasFrame: false,
+    proxy: null,
+    proxyPath: null,
+    proxyReady: false,
+    proxyLoading: false,
+    proxyChecking: null,
+    proxyRetry: 0,
+    proxyWaiting: false,
+    proxyFailed: false,
+    proxyDesired: null,
+    proxySeeking: false,
+    proxyFrame: 0,
   };
 
   function log(event, details) {
@@ -153,6 +165,99 @@
     return `${request.record.path}:${Math.round(request.offset * 4)}`;
   }
 
+  function seekProxy() {
+    if (state.proxyFrame || !state.proxyReady || state.proxySeeking || !state.proxy || !state.active) return;
+    state.proxyFrame = requestAnimationFrame(() => {
+      state.proxyFrame = 0;
+      const desired = state.proxyDesired;
+      if (desired === null || !state.proxyReady || state.proxySeeking || !state.active) return;
+      const proxy = state.proxy;
+      const target = Math.max(0, Math.min(desired, Math.max(0, proxy.duration - 0.125)));
+      if (Math.abs(proxy.currentTime - target) < 0.07 && proxy.readyState >= 2) {
+        drawImage(proxy);
+        return;
+      }
+      state.proxySeeking = true;
+      try { proxy.currentTime = target; }
+      catch { state.proxySeeking = false; }
+    });
+  }
+
+  function ensureProxy(record) {
+    if (!record || !ensurePreview()) return false;
+    if (!state.proxy && !document.createElement('video').addEventListener) return false;
+    if (state.proxyPath !== record.path) {
+      state.proxyPath = record.path;
+      state.proxyReady = false;
+      state.proxyLoading = false;
+      state.proxyDesired = null;
+      state.proxySeeking = false;
+      state.proxyChecking = null;
+      state.proxyWaiting = false;
+      state.proxyFailed = false;
+      clearTimeout(state.proxyRetry);
+      if (state.proxyFrame) cancelAnimationFrame(state.proxyFrame);
+      state.proxyFrame = 0;
+      if (state.proxy) {
+        state.proxy.removeAttribute('src');
+        state.proxy.load();
+      }
+    }
+    if (state.proxyReady) return true;
+    if (state.proxyFailed || state.proxyWaiting) return false;
+    if (state.proxyLoading) return false;
+    if (state.proxyChecking) return false;
+    // Keep the still-frame fallback until the proxy for this segment is ready.
+    const path = record.path;
+    state.proxyChecking = api(`/api/recordings/trickplay?path=${encodeURIComponent(path)}`)
+      .then(response => response.ok ? response.json() : null)
+      .then(result => {
+        if (state.proxyPath !== path) return;
+        if (result?.ready && result.url) {
+          if (!state.proxy) {
+            const proxy = document.createElement('video');
+            if (!proxy.addEventListener) return;
+            proxy.className = 'workspace-scrub-proxy';
+            proxy.muted = true;
+            proxy.preload = 'auto';
+            proxy.setAttribute('playsinline', '');
+            shell().appendChild(proxy);
+            proxy.addEventListener('loadedmetadata', () => {
+              state.proxyReady = true;
+              state.proxyLoading = false;
+              state.pending = null;
+              state.proxyDesired = state.targetOffset;
+              seekProxy();
+            });
+            proxy.addEventListener('seeked', () => {
+              state.proxySeeking = false;
+              if (state.active && state.proxyReady && state.targetRecord?.path === state.proxyPath) {
+                // Show every decoded intermediate frame during movement. A
+                // direction change starts seeking toward the newest target.
+                drawImage(proxy);
+                seekProxy();
+              }
+            });
+            proxy.addEventListener('error', () => { state.proxyReady = false; state.proxyLoading = false; state.proxySeeking = false; });
+            state.proxy = proxy;
+          }
+          state.proxyLoading = true;
+          state.proxy.src = result.url;
+          state.proxy.load();
+        } else if (result?.failed) {
+          state.proxyFailed = true;
+        } else {
+          state.proxyWaiting = true;
+          state.proxyRetry = setTimeout(() => {
+            state.proxyWaiting = false;
+            if (state.proxyPath === path && state.active) ensureProxy(record);
+          }, 2000);
+        }
+      }).catch(error => log('scrub:proxy-error', error.message))
+      .finally(() => { if (state.proxyPath === path) state.proxyChecking = null; });
+    return false;
+  }
+
   async function fetchFrame(request) {
     state.inFlight = true;
     request.startedAt = performance.now();
@@ -179,7 +284,7 @@
       // newer frame or a frame from the opposite side after direction changes.
       const alreadyPassed = state.lastFrameTime !== null && request.direction &&
         Math.sign(request.selected - state.lastFrameTime) === -request.direction;
-      if (state.active && request.epoch === state.motionEpoch && !alreadyPassed && state.targetRecord &&
+      if (state.active && !state.proxyReady && request.epoch === state.motionEpoch && !alreadyPassed && state.targetRecord &&
           state.targetRecord.path === request.record.path) drawExtractedFrame(bitmap, request);
     } catch (error) { log('scrub:frame-error', error.message); }
     finally {
@@ -217,6 +322,11 @@
     state.pending = null;
     state.lastFrameTime = null;
     state.motionDirection = 0;
+    state.proxyDesired = null;
+    clearTimeout(state.proxyRetry);
+    state.proxyWaiting = false;
+    if (state.proxyFrame) cancelAnimationFrame(state.proxyFrame);
+    state.proxyFrame = 0;
     if (state.canvas) state.canvas.classList.remove('visible');
     if (state.frame) cancelAnimationFrame(state.frame);
     state.frame = 0;
@@ -252,6 +362,13 @@
       state.pending = null;
       if (state.frame) cancelAnimationFrame(state.frame);
       state.frame = 0;
+      return;
+    }
+    const proxyReady = ensureProxy(record);
+    state.proxyDesired = state.targetOffset;
+    if (proxyReady) {
+      state.pending = null;
+      seekProxy();
       return;
     }
     state.pending = { selected, record, offset: state.targetOffset,
@@ -418,6 +535,7 @@
   style.textContent = `
     .workspace-scrub-frame { position:absolute; inset:0; z-index:5; width:100%; height:100%; object-fit:contain; display:none; pointer-events:none; background:#030507; }
     .workspace-scrub-frame.visible { display:block; }
+    .workspace-scrub-proxy { position:absolute; width:1px; height:1px; opacity:0; pointer-events:none; }
     #workspace-live, #workspace-live::-webkit-media-controls, #workspace-live::-webkit-media-controls-enclosure { -webkit-appearance:none; }
     #workspace-live::-webkit-media-controls { display:none !important; }
   `;

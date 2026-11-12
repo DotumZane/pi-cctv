@@ -47,7 +47,11 @@ async function main() {
     timelineSeconds: () => 0, workspaceTimelineDate: '2026-11-12',
     workspaceTimelineLastValue: 0, verticalTimelineSetPosition() {},
     updateTimelinePlayhead() {}, esc: value => value,
-    async api() { fetched++; return { ok: true, async blob() { return {}; } }; },
+    async api(url) {
+      if (url.includes('/trickplay?')) return { ok: true, async json() { return { ready: false }; } };
+      fetched++;
+      return { ok: true, async blob() { return {}; } };
+    },
     async createImageBitmap() { return { width: 640, height: 360 }; },
     setTimeout, clearTimeout, console,
   };
@@ -71,4 +75,71 @@ async function main() {
   assert.equal(committed, 0);
 }
 
-main().catch(error => { console.error(error); process.exitCode = 1; });
+async function proxyScrubbing() {
+  const drawnTimes = [];
+  const pendingFrames = [];
+  const listeners = new Map();
+  let snapshotRequests = 0;
+  let playbackLoads = 0;
+  let position = 0;
+  const proxy = {
+    duration: 30, readyState: 2, videoWidth: 640, videoHeight: 360,
+    muted: false, preload: '',
+    set currentTime(value) {
+      position = value;
+      for (const callback of listeners.get('seeked') || []) callback();
+    },
+    get currentTime() { return position; },
+    addEventListener(type, callback) { listeners.set(type, [...(listeners.get(type) || []), callback]); },
+    setAttribute() {}, removeAttribute() {}, load() { playbackLoads++; },
+  };
+  const host = { appendChild() {} };
+  const video = {
+    dataset: { playback: 'live' }, clientWidth: 640, clientHeight: 360,
+    readyState: 0, paused: true, controls: false,
+    closest() { return host; }, setAttribute() {}, removeAttribute() {}, addEventListener() {},
+    pause() { throw new Error('normal player paused while scrubbing live'); },
+  };
+  const canvas = {
+    width: 0, height: 0, classList: { add() {}, remove() {} }, setAttribute() {},
+    getContext() { return { fillRect() {}, drawImage(source) { if (source === proxy) drawnTimes.push(position); }, set fillStyle(_) {} }; },
+  };
+  const document = {
+    body: {}, head: { appendChild() {} }, documentElement: { dataset: {} },
+    createElement(tag) { return tag === 'video' ? proxy : tag === 'canvas' ? canvas : { textContent: '' }; },
+    querySelector(selector) { return selector === '#workspace-live' ? video : null; }, addEventListener() {},
+  };
+  const record = { path: 'cam-1/2026-11-12/06-00-00.mp4', url: '/recordings/cam-1/2026-11-12/06-00-00.mp4' };
+  const globals = {
+    document, window: { workspaceCamera: 'cam-1', returnWorkspaceToLive: async () => {}, addEventListener() {} },
+    URLSearchParams, location: { search: '' }, devicePixelRatio: 1,
+    performance: { now: () => 1000 },
+    requestAnimationFrame(callback) { pendingFrames.push(callback); return pendingFrames.length; },
+    cancelAnimationFrame() {}, MutationObserver: class { observe() {} },
+    timelineDayLength: () => 86400, timelineRecordAt: () => record,
+    timelineSeconds: () => 0, workspaceTimelineDate: '2026-11-12',
+    workspaceTimelineLastValue: 0, verticalTimelineSetPosition() {}, updateTimelinePlayhead() {},
+    async api(url) {
+      if (url.includes('/trickplay?')) return { ok: true, async json() { return { ready: true, url: '/recordings/.trickplay-cache/cam-1/proxy.mp4' }; } };
+      snapshotRequests++;
+      return { ok: true, async blob() { return {}; } };
+    },
+    async createImageBitmap() { return { width: 640, height: 360 }; },
+    setTimeout, clearTimeout, console,
+  };
+  const source = fs.readFileSync(path.join(__dirname, '..', 'cctv', 'playback-engine.js'), 'utf8');
+  vm.runInNewContext(source, globals);
+  globals.window.previewWorkspaceTimelineScrub(8, -20);
+  await new Promise(resolve => setImmediate(resolve));
+  for (const callback of listeners.get('loadedmetadata') || []) callback();
+  while (pendingFrames.length) pendingFrames.shift()();
+  globals.window.previewWorkspaceTimelineScrub(12, 20);
+  while (pendingFrames.length) pendingFrames.shift()();
+  globals.window.previewWorkspaceTimelineScrub(4, -20);
+  while (pendingFrames.length) pendingFrames.shift()();
+  assert.deepEqual(drawnTimes.filter((value, index, array) => index === 0 || value !== array[index - 1]), [8, 12, 4]);
+  assert.equal(playbackLoads, 1, 'proxy stays loaded across direction changes');
+  assert.equal(snapshotRequests, 0, 'ready proxy needs no still-frame requests');
+}
+
+Promise.resolve().then(main).then(proxyScrubbing).catch(error => { console.error(error); process.exitCode = 1; });
