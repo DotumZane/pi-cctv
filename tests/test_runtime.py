@@ -7,10 +7,44 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from cctv.agent import run_pending
-from cctv.runtime import DeviceRuntime, _monitor_output_size, apply_monitor_schedule, command_for_assignment, commands_for_assignment, managed_monitor_commands
+from cctv.runtime import DeviceRuntime, _monitor_output_size, apply_monitor_schedule, camera_stream_published, command_for_assignment, commands_for_assignment, managed_monitor_commands
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_camera_publisher_probe_checks_metadata_only(self):
+        connection = Mock()
+        connection.recv.return_value = b"RTSP/1.0 404 Not Found\r\n"
+        connection.__enter__ = Mock(return_value=connection)
+        connection.__exit__ = Mock(return_value=None)
+        with patch("cctv.runtime.socket.create_connection", return_value=connection):
+            self.assertFalse(camera_stream_published("media", "cam-1"))
+        sent = connection.sendall.call_args.args[0]
+        self.assertIn(b"DESCRIBE rtsp://media:8554/cam-1", sent)
+        self.assertNotIn(b"PLAY ", sent)
+
+    def test_camera_falls_back_when_high_resolution_never_publishes(self):
+        processes = []
+        def factory(*args, **kwargs):
+            process = Mock()
+            process.poll.return_value = None
+            processes.append(process)
+            return process
+        runtime = DeviceRuntime("camera", "cam-1", "Camera", "", "http://server", "media", process_factory=factory)
+        device = {"metadata": '{"settings":{"width":2560,"height":1440}}'}
+        clock = [0]
+        with patch("cctv.runtime.http_json", return_value=device), \
+                patch("cctv.runtime.camera_stream_published", return_value=False), \
+                patch.object(runtime, "stop_media", side_effect=lambda: runtime.processes.clear()), \
+                patch("cctv.runtime.time.monotonic", side_effect=lambda: clock[0]):
+            runtime.reconcile_media()
+            clock[0] = 21
+            runtime.reconcile_media()
+            clock[0] = 42
+            runtime.reconcile_media()
+        self.assertEqual(len(processes), 3)
+        self.assertIn("--width 2560 --height 1440", runtime.camera_requested_command[0])
+        self.assertIn("--width 1920 --height 1080", runtime.last_command[0])
+
     def test_monitor_media_is_wrapped_in_controllable_player(self):
         command = managed_monitor_commands(['gst-launch-1.0 -e videotestsrc ! textoverlay text="camera name" ! fakesink'], "monitor-01")
         self.assertEqual(len(command), 1)

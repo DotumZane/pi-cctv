@@ -153,6 +153,20 @@ def http_json(url: str, method: str = "GET", payload: dict | None = None, token:
         return json.load(response)
 
 
+def camera_stream_published(media_server: str, device_id: str) -> bool:
+    """Check RTSP metadata without opening a second camera video stream."""
+    path = urllib.parse.quote(device_id, safe="")
+    request = f"DESCRIBE rtsp://{media_server}:8554/{path} RTSP/1.0\r\nCSeq: 1\r\nAccept: application/sdp\r\n\r\n"
+    try:
+        with socket.create_connection((media_server, 8554), timeout=2) as connection:
+            connection.settimeout(2)
+            connection.sendall(request.encode("ascii"))
+            status = connection.recv(128).split(b"\r\n", 1)[0]
+    except OSError:
+        return False
+    return status.startswith(b"RTSP/1.0 200 ")
+
+
 def command_for_assignment(assignment: dict, media_server: str, settings: dict | None = None) -> str | None:
     settings = settings or {}
     cameras = json.loads(assignment.get("cameras", "[]")) if isinstance(assignment.get("cameras"), str) else assignment.get("cameras", [])
@@ -284,6 +298,10 @@ class DeviceRuntime:
         self.next_media_retry = 0.0
         self.last_preview_seen_mtime_ns = 0
         self.monitor_blanking_value: bool | None = None
+        self.camera_requested_command: tuple[str, ...] | None = None
+        self.camera_fallback_active = False
+        self.camera_failures = 0
+        self.media_started_at = 0.0
 
     def enroll(self) -> None:
         http_json(f"{self.server}/api/devices", "POST", {
@@ -600,7 +618,7 @@ class DeviceRuntime:
                     continue
                 raise SystemExit("reboot requested")
 
-    def desired_command(self) -> list[str]:
+    def desired_command(self, camera_size_override: tuple[int, int] | None = None) -> list[str]:
         if self.role == "camera":
             device = http_json(f"{self.server}/api/devices/{self.device_id}", token=self.token)
             try:
@@ -616,7 +634,8 @@ class DeviceRuntime:
                 exposure_profile = "long" if settings.get("low_light_mode") == "on" else "normal"
             return [CameraMedia(
                 f"rtsp://{self.media_server}:8554/{self.device_id}",
-                width=settings.get("width", 1920), height=settings.get("height", 1080),
+                width=camera_size_override[0] if camera_size_override else settings.get("width", 1920),
+                height=camera_size_override[1] if camera_size_override else settings.get("height", 1080),
                 fps=settings.get("fps", 30), bitrate=settings.get("bitrate", 6_000_000),
                 flip_horizontal=settings.get("flip_horizontal", False), flip_vertical=settings.get("flip_vertical", False),
                 brightness=settings.get("brightness", 0.0), contrast=settings.get("contrast", 1.0), saturation=settings.get("saturation", 1.0),
@@ -672,9 +691,36 @@ class DeviceRuntime:
         )
 
     def reconcile_media(self) -> None:
-        commands = self.desired_command()
+        requested = self.desired_command()
+        if self.role == "camera":
+            requested_signature = tuple(requested)
+            if requested_signature != self.camera_requested_command:
+                self.camera_requested_command = requested_signature
+                self.camera_fallback_active = False
+                self.camera_failures = 0
+            now = time.monotonic()
+            expected_command = tuple(self.desired_command((1920, 1080))) if self.camera_fallback_active else requested_signature
+            if self.processes and self.last_command == expected_command and all(process.poll() is None for process in self.processes):
+                if camera_stream_published(self.media_server, self.device_id):
+                    self.camera_failures = 0
+                    return
+                if now - self.media_started_at < 20:
+                    return
+                self.camera_failures += 1
+                print(f"Camera stream is unpublished after startup ({self.camera_failures}); restarting publisher", flush=True)
+            elif self.processes and now - self.media_started_at >= 5:
+                self.camera_failures += 1
+            width = re.search(r"--width (\d+)", requested[0])
+            height = re.search(r"--height (\d+)", requested[0])
+            high_resolution = bool(width and height and (int(width[1]) > 1920 or int(height[1]) > 1080))
+            if self.camera_failures >= 2 and not self.camera_fallback_active and high_resolution:
+                self.camera_fallback_active = True
+                print("High-resolution camera output failed; falling back to 1920x1080", flush=True)
+            commands = self.desired_command((1920, 1080)) if self.camera_fallback_active else requested
+        else:
+            commands = requested
         signature = tuple(commands)
-        if signature == self.last_command and self.processes and all(process.poll() is None for process in self.processes):
+        if self.role != "camera" and signature == self.last_command and self.processes and all(process.poll() is None for process in self.processes):
             # A missing dashboard JPEG is not proof that the monitor's display
             # stream has failed. Restarting here blanks the physical display.
             return
@@ -686,6 +732,7 @@ class DeviceRuntime:
             print(f"Starting media pipeline for {self.device_id}", flush=True)
             self.processes.append(self.process_factory(command, shell=True, start_new_session=True))
         if commands:
+            self.media_started_at = time.monotonic()
             self.next_media_retry = time.monotonic() + self.media_retry_seconds
             self.last_preview_seen_mtime_ns = 0
 
