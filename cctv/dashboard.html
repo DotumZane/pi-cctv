@@ -591,5 +591,17 @@ window.reloadCameraPreview=function(id){
   const video=document.querySelector(`[data-camera-preview="${CSS.escape(id)}"]`);
   if(video)resetLiveVideo(video,id);
 };
+const originalCameraSettingsRender=renderSettings;
+renderSettings=function(){
+  originalCameraSettingsRender();
+  document.querySelectorAll('#settings [data-camera-card] button').forEach(button=>{button.type='button'});
+};
+const originalCameraSettingsSave=saveSettings;
+saveSettings=async function(id){
+  localStorage.cctvView='settings';
+  const result=await originalCameraSettingsSave(id);
+  selectView('settings');
+  return result;
+};
 </script><script src="/playback-engine.js"></script>
 </body></html>
