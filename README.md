@@ -12,6 +12,8 @@ A low-latency, centrally managed industrial CCTV system for Raspberry Pi-based c
 - Secure, repeatable one-command device installation
 - Automatic recovery after network, software, or power interruptions
 
+The [baseline system goals and architecture](docs/architecture.md#baseline-system-goals) record the original industrial requirements and the planned direct camera-to-monitor outage behavior. Performance targets there require hardware testing.
+
 ## Planned components
 
 - Camera software for Raspberry Pi camera devices
