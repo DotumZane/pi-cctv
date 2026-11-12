@@ -517,11 +517,12 @@ function verticalTimelineSelection(){
 function appendVerticalTimelineDay(date,records,index){
   const content=document.querySelector('.vertical-timeline-content');
   if(!content||content.querySelector(`[data-timeline-day="${date}"]`))return;
-  const dayLength=timelineDayLength(date),offset=index*verticalTimelineHeight,fragment=document.createDocumentFragment(),marker=document.createElement('span');
-  marker.className='vertical-timeline-day-marker';marker.dataset.timelineDay=date;marker.style.top=`${offset+8}px`;marker.textContent=date;fragment.appendChild(marker);
-  for(let seconds=0;seconds<=dayLength;seconds+=1800){const label=document.createElement('span');label.className='vertical-timeline-label';label.style.top=`${offset+(1-seconds/dayLength)*verticalTimelineHeight}px`;label.textContent=formatTimelineTime(seconds).slice(0,5);fragment.appendChild(label)}
-  records.forEach((record,recordIndex)=>{const start=Math.max(0,timelineSeconds(record)),duration=workspaceRecordDuration(record,recordIndex,records),range=document.createElement('span');range.className='vertical-timeline-range';range.style.top=`${Math.max(0,offset+(1-(start+duration)/dayLength)*verticalTimelineHeight)}px`;range.style.height=`${Math.max(3,duration/dayLength*verticalTimelineHeight)}px`;range.title=formatTimelineTime(start);fragment.appendChild(range)});
-  content.appendChild(fragment);content.style.height=`${Math.max(3600,(index+1)*verticalTimelineHeight)}px`;content.style.minHeight=content.style.height;
+  const dayLength=timelineDayLength(date),offset=index*verticalTimelineHeight,layer=document.createElement('div');
+  layer.className='vertical-timeline-day-layer';layer.dataset.timelineDay=date;layer.dataset.loading=records.length?'false':'true';layer.style.top=`${offset}px`;layer.style.height=`${verticalTimelineHeight}px`;
+  const marker=document.createElement('span');marker.className='vertical-timeline-day-marker';marker.style.top='8px';marker.textContent=date;layer.appendChild(marker);
+  for(let seconds=0;seconds<=dayLength;seconds+=1800){const label=document.createElement('span');label.className='vertical-timeline-label';label.style.top=`${(1-seconds/dayLength)*verticalTimelineHeight}px`;label.textContent=formatTimelineTime(seconds).slice(0,5);layer.appendChild(label)}
+  records.forEach((record,recordIndex)=>{const start=Math.max(0,timelineSeconds(record)),duration=workspaceRecordDuration(record,recordIndex,records),range=document.createElement('span');range.className='vertical-timeline-range';range.style.top=`${Math.max(0,(1-(start+duration)/dayLength)*verticalTimelineHeight)}px`;range.style.height=`${Math.max(3,duration/dayLength*verticalTimelineHeight)}px`;range.title=formatTimelineTime(start);layer.appendChild(range)});
+  content.appendChild(layer);content.style.height=`${Math.max(3600,(index+1)*verticalTimelineHeight)}px`;content.style.minHeight=content.style.height;
 }
 const buildVerticalTimelineWithContinuousDays=buildVerticalTimeline;
 buildVerticalTimeline=function(){
@@ -536,7 +537,7 @@ buildVerticalTimeline=function(){
   scroll.addEventListener('scroll',event=>{
     if(verticalTimelineProgrammatic||verticalTimelineDayPaging)return;
     event.stopImmediatePropagation();
-    if(scroll.scrollTop>=scroll.scrollHeight-scroll.clientHeight-120){loadPreviousTimelineDay();}
+    if(scroll.scrollTop>=scroll.scrollHeight-scroll.clientHeight-900){loadPreviousTimelineDay();}
     const selection=verticalTimelineSelection(),day=verticalTimelineLoadedDays.find(item=>item.date===selection.date);
     if(!day)return;
     workspaceTimelineDate=selection.date;workspaceTimelineRecords=day.records;verticalTimelineSelectionDate=selection.date;workspaceTimelineLastValue=selection.seconds;
@@ -551,13 +552,19 @@ window.loadPreviousTimelineDay=async function(){
   if(verticalTimelineDayPaging||!verticalTimelineLoadedDays.length||!window.workspaceCamera)return;
   verticalTimelineDayPaging=true;
   try{
-    const newest=verticalTimelineLoadedDays[0].date,index=verticalTimelineLoadedDays.length,date=timelineDateFromOffset(newest,index),response=await api(`/api/recordings?camera_id=${encodeURIComponent(window.workspaceCamera)}`),data=response.ok?await response.json():{recordings:[]},records=(data.recordings||[]).filter(record=>record.start&&localDateKey(record.start)===date).sort((a,b)=>new Date(a.start)-new Date(b.start));
+    const newest=verticalTimelineLoadedDays[0].date,index=verticalTimelineLoadedDays.length,date=timelineDateFromOffset(newest,index);
     if(verticalTimelineLoadedDays.some(item=>item.date===date))return;
-    verticalTimelineLoadedDays.push({date,records});appendVerticalTimelineDay(date,records,index);
+    // Extend the scroll range before waiting on the recordings API. This keeps
+    // the user's scroll gesture moving while the older day's metadata loads.
+    const day={date,records:[]};verticalTimelineLoadedDays.push(day);appendVerticalTimelineDay(date,day.records,index);
+    const response=await api(`/api/recordings?camera_id=${encodeURIComponent(window.workspaceCamera)}`),data=response.ok?await response.json():{recordings:[]};
+    day.records=(data.recordings||[]).filter(record=>record.start&&localDateKey(record.start)===date).sort((a,b)=>new Date(a.start)-new Date(b.start));
+    const layer=document.querySelector(`.vertical-timeline-day-layer[data-timeline-day="${date}"]`);
+    if(layer){layer.dataset.loading='false';layer.querySelectorAll('.vertical-timeline-range').forEach(range=>range.remove());const dayLength=timelineDayLength(date);day.records.forEach((record,recordIndex)=>{const start=Math.max(0,timelineSeconds(record)),duration=workspaceRecordDuration(record,recordIndex,day.records),range=document.createElement('span');range.className='vertical-timeline-range';range.style.top=`${Math.max(0,(1-(start+duration)/dayLength)*verticalTimelineHeight)}px`;range.style.height=`${Math.max(3,duration/dayLength*verticalTimelineHeight)}px`;range.title=formatTimelineTime(start);layer.appendChild(range)})}
   }finally{verticalTimelineDayPaging=false}
 };
 const verticalTimelineDayStyle=document.createElement('style');
-verticalTimelineDayStyle.textContent='.vertical-timeline-day-marker{position:absolute;left:42px;right:8px;z-index:2;padding:3px 5px;border-top:1px solid #ffffff24;color:var(--muted);font-size:9px;font-weight:700;letter-spacing:.04em;pointer-events:none;background:linear-gradient(90deg,#0b1118dd,transparent)}';
+verticalTimelineDayStyle.textContent='.vertical-timeline-day-layer{position:absolute;left:0;right:0}.vertical-timeline-day-layer[data-loading="true"]{background:linear-gradient(90deg,transparent,#ffffff05,transparent);background-size:200% 100%;animation:verticalTimelineLoading 1.2s linear infinite}.vertical-timeline-day-marker{position:absolute;left:42px;right:8px;z-index:2;padding:3px 5px;border-top:1px solid #ffffff24;color:var(--muted);font-size:9px;font-weight:700;letter-spacing:.04em;pointer-events:none;background:linear-gradient(90deg,#0b1118dd,transparent)}@keyframes verticalTimelineLoading{from{background-position:200% 0}to{background-position:-200% 0}}';
 document.head.appendChild(verticalTimelineDayStyle);
 </script><script src="/playback-engine.js"></script>
 </body></html>
