@@ -537,7 +537,7 @@ buildVerticalTimeline=function(){
   scroll.addEventListener('scroll',event=>{
     if(verticalTimelineProgrammatic||verticalTimelineDayPaging)return;
     event.stopImmediatePropagation();
-    if(scroll.scrollTop>=scroll.scrollHeight-scroll.clientHeight-900){loadPreviousTimelineDay();}
+    if(scroll.scrollTop>=scroll.scrollHeight-scroll.clientHeight-1800){loadPreviousTimelineDay();}
     const selection=verticalTimelineSelection(),day=verticalTimelineLoadedDays.find(item=>item.date===selection.date);
     if(!day)return;
     workspaceTimelineDate=selection.date;workspaceTimelineRecords=day.records;verticalTimelineSelectionDate=selection.date;workspaceTimelineLastValue=selection.seconds;
@@ -552,15 +552,17 @@ window.loadPreviousTimelineDay=async function(){
   if(verticalTimelineDayPaging||!verticalTimelineLoadedDays.length||!window.workspaceCamera)return;
   verticalTimelineDayPaging=true;
   try{
-    const newest=verticalTimelineLoadedDays[0].date,index=verticalTimelineLoadedDays.length,date=timelineDateFromOffset(newest,index);
-    if(verticalTimelineLoadedDays.some(item=>item.date===date))return;
-    // Extend the scroll range before waiting on the recordings API. This keeps
-    // the user's scroll gesture moving while the older day's metadata loads.
-    const day={date,records:[]};verticalTimelineLoadedDays.push(day);appendVerticalTimelineDay(date,day.records,index);
+    const newest=verticalTimelineLoadedDays[0].date,index=verticalTimelineLoadedDays.length,pending=[];
+    // Reserve two complete days immediately. This keeps a generous scroll
+    // buffer available even when the recordings request is slow.
+    for(let offset=index;offset<index+2;offset++){
+      const date=timelineDateFromOffset(newest,offset);
+      if(verticalTimelineLoadedDays.some(item=>item.date===date))continue;
+      const day={date,records:[]};verticalTimelineLoadedDays.push(day);pending.push(day);appendVerticalTimelineDay(date,day.records,verticalTimelineLoadedDays.length-1);
+    }
+    if(!pending.length)return;
     const response=await api(`/api/recordings?camera_id=${encodeURIComponent(window.workspaceCamera)}`),data=response.ok?await response.json():{recordings:[]};
-    day.records=(data.recordings||[]).filter(record=>record.start&&localDateKey(record.start)===date).sort((a,b)=>new Date(a.start)-new Date(b.start));
-    const layer=document.querySelector(`.vertical-timeline-day-layer[data-timeline-day="${date}"]`);
-    if(layer){layer.dataset.loading='false';layer.querySelectorAll('.vertical-timeline-range').forEach(range=>range.remove());const dayLength=timelineDayLength(date);day.records.forEach((record,recordIndex)=>{const start=Math.max(0,timelineSeconds(record)),duration=workspaceRecordDuration(record,recordIndex,day.records),range=document.createElement('span');range.className='vertical-timeline-range';range.style.top=`${Math.max(0,(1-(start+duration)/dayLength)*verticalTimelineHeight)}px`;range.style.height=`${Math.max(3,duration/dayLength*verticalTimelineHeight)}px`;range.title=formatTimelineTime(start);layer.appendChild(range)})}
+    pending.forEach(day=>{day.records=(data.recordings||[]).filter(record=>record.start&&localDateKey(record.start)===day.date).sort((a,b)=>new Date(a.start)-new Date(b.start));const layer=document.querySelector(`.vertical-timeline-day-layer[data-timeline-day="${day.date}"]`);if(layer){layer.dataset.loading='false';layer.querySelectorAll('.vertical-timeline-range').forEach(range=>range.remove());const dayLength=timelineDayLength(day.date);day.records.forEach((record,recordIndex)=>{const start=Math.max(0,timelineSeconds(record)),duration=workspaceRecordDuration(record,recordIndex,day.records),range=document.createElement('span');range.className='vertical-timeline-range';range.style.top=`${Math.max(0,(1-(start+duration)/dayLength)*verticalTimelineHeight)}px`;range.style.height=`${Math.max(3,duration/dayLength*verticalTimelineHeight)}px`;range.title=formatTimelineTime(start);layer.appendChild(range)})}})
   }finally{verticalTimelineDayPaging=false}
 };
 const verticalTimelineDayStyle=document.createElement('style');
