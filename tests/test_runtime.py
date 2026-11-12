@@ -262,7 +262,7 @@ class RuntimeTests(unittest.TestCase):
     def test_adopted_enrollment_token_persists_and_is_reused_after_restart(self):
         with TemporaryDirectory() as directory:
             state_path = Path(directory) / "device.json"
-            adopted = {"status": "adopted", "kind": "camera", "name": "Cam 1", "location": "", "device_token": "device-secret"}
+            adopted = {"status": "adopted", "id": "cctv-cam-01", "kind": "camera", "name": "Cam 1", "location": "", "device_token": "device-secret"}
             with patch("cctv.agent.socket.gethostname", return_value="cctv-cam-01"), \
                     patch("cctv.agent.request", side_effect=[{"status": "pending"}, adopted]), \
                     patch("cctv.agent.DeviceRuntime") as runtime_class:

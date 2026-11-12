@@ -43,13 +43,14 @@ class ServerUpdaterTests(unittest.TestCase):
     def test_update_uses_only_fast_forward_git_and_compose_commands(self):
         responses = [
             (0, ""), (0, "main"), (0, "Fetched"), (0, "a" * 40),
-            (0, "b" * 40), (0, "Fast-forward"), (0, "Rebuilt"), (0, "b" * 12),
+            (0, "b" * 40), (0, "__version__ = '0.1.1'"), (0, "__version__ = '0.1.2'"),
+            (0, "Fast-forward"), (0, "Rebuilt"), (0, "b" * 12),
         ]
         with patch.object(updater, "run", side_effect=responses) as run:
             self.assertEqual(updater.main(), 0)
         commands = [call.args[0] for call in run.call_args_list]
         self.assertIn(["git", "merge", "--ff-only", "origin/main"], commands)
-        self.assertIn(["docker", "compose", "up", "-d", "--build", "management"], commands)
+        self.assertIn(["docker", "compose", "up", "-d", "--build", "management", "discovery", "media"], commands)
         self.assertTrue(all(isinstance(command, list) for command in commands))
         self.assertFalse((self.state / "request.json").exists())
         status = json.loads((self.state / "status.json").read_text())

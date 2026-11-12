@@ -623,7 +623,10 @@ class Handler(BaseHTTPRequestHandler):
                     continue
                 start = None
                 try:
-                    start = datetime.strptime(f"{relative.parts[-2]} {recording.stem}", "%Y-%m-%d %H-%M-%S").replace(tzinfo=timezone.utc)
+                    # FFmpeg's strftime names use the recorder host's local clock.
+                    # Interpret that wall time in the same timezone before sending
+                    # an absolute timestamp to browser clients.
+                    start = datetime.strptime(f"{relative.parts[-2]} {recording.stem}", "%Y-%m-%d %H-%M-%S").astimezone(timezone.utc)
                 except (IndexError, ValueError):
                     pass
                 entries.append({"path": str(relative), "camera_id": relative.parts[0] if relative.parts else "", "bytes": stat.st_size, "modified": modified_at.isoformat(), "start": start.isoformat() if start else None, "url": "/recordings/" + str(relative)})

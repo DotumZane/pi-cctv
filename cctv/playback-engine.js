@@ -28,6 +28,7 @@
     committing: false,
     commitTimer: 0,
     active: false,
+    hasFrame: false,
   };
 
   function log(event, details) {
@@ -125,6 +126,8 @@
     state.ctx.fillStyle = '#030507';
     state.ctx.fillRect(0, 0, cw, ch);
     state.ctx.drawImage(source, (cw - dw) / 2, (ch - dh) / 2, dw, dh);
+    state.hasFrame = true;
+    if (state.active) state.canvas.classList.add('visible');
     return true;
   }
 
@@ -139,7 +142,12 @@
     // requestToken belongs to main-player commits while loadToken belongs to
     // the hidden preview decoder. They are independent counters, so comparing
     // them caused valid preview frames to be discarded after a source switch.
-    if (state.sourceUrl !== sourceFor(state.targetRecord)) return;
+    if (state.sourceUrl !== sourceFor(state.targetRecord) ||
+        preview.currentSrc !== new URL(state.sourceUrl, location.href).href) return;
+    if (Math.abs(preview.currentTime - state.targetOffset) > 0.08) {
+      seekPreview();
+      return;
+    }
     if (drawImage(preview)) {
       log('scrub:frame', { target: state.target, offset: preview.currentTime });
       if (typeof updateTimelinePlayhead === 'function') updateTimelinePlayhead(state.target);
@@ -150,7 +158,7 @@
     const preview = state.preview;
     if (!preview || !state.active || state.target === null) return;
     const target = Math.max(0, Number(state.targetOffset) || 0);
-    if (preview.readyState < 1) return;
+    if (preview.readyState < 1 || preview.seeking) return;
     try {
       if (Math.abs((preview.currentTime || 0) - target) > 0.015) preview.currentTime = target;
       else drawPreviewFrame();
@@ -169,8 +177,8 @@
   function showPreview() {
     if (!ensurePreview()) return;
     state.active = true;
-    state.canvas.classList.add('visible');
-    drawMainFrame();
+    if (!state.hasFrame) drawMainFrame();
+    if (state.hasFrame) state.canvas.classList.add('visible');
   }
 
   function hidePreview() {
@@ -201,7 +209,7 @@
     const url = sourceFor(record);
     if (url !== state.sourceUrl) {
       state.sourceUrl = url;
-      state.previewToken += 1;
+    state.previewToken += 1;
       const previewToken = state.previewToken;
       state.preview.pause();
       state.preview.src = url;
@@ -310,8 +318,25 @@
       const velocity = previous === null || !elapsed ? 0 : (Number(value) - previous) / (elapsed / 1000);
       setTarget(value, velocity);
       clearTimeout(state.commitTimer);
-      state.commitTimer = setTimeout(() => commit(state.lastValue), 130);
+      // A drag commits on release. Wheel scrolling commits after its momentum
+      // settles; neither path replaces the main video during pointer movement.
     };
+    document.addEventListener('scroll', event => {
+      if (!event.target?.closest?.('.vertical-timeline-scroll')) return;
+      if (typeof verticalTimelineProgrammatic !== 'undefined' && verticalTimelineProgrammatic) return;
+      clearTimeout(state.commitTimer);
+      state.commitTimer = setTimeout(() => {
+        if (state.active && state.lastValue !== null) void commit(state.lastValue);
+      }, 550);
+    }, true);
+    document.addEventListener('pointerdown', event => {
+      if (event.target?.closest?.('.vertical-timeline-scroll')) clearTimeout(state.commitTimer);
+    }, true);
+    document.addEventListener('pointerup', event => {
+      if (!event.target?.closest?.('.vertical-timeline-scroll')) return;
+      clearTimeout(state.commitTimer);
+      if (state.lastValue !== null) void commit(state.lastValue);
+    }, true);
     video.addEventListener('timeupdate', () => {
       if (video.dataset.playback === 'recording' && !state.active && typeof workspacePlaybackStartSeconds !== 'undefined') {
         updateTimelinePlayhead(workspacePlaybackStartSeconds + video.currentTime);
