@@ -20,6 +20,7 @@ import datetime
 import sys
 import tempfile
 import secrets
+import ipaddress
 from shlex import quote
 from pathlib import Path
 from dataclasses import dataclass
@@ -118,7 +119,7 @@ def collect_diagnostics(role: str, device_id: str, media_server: str, processes:
     checks=[]
     # MediaMTX and recording run on the dashboard host. A Pi report must only
     # check services that are actually expected to be local to the device.
-    for service in ("pi-cctv-agent",):
+    for service in (("pi-cctv-agent", "pi-cctv-relay") if role == "camera" else ("pi-cctv-agent",)):
         try:
             p=subprocess.run(["systemctl","is-active",service],capture_output=True,text=True,timeout=3,check=False)
             checks.append({"service":service,"active":p.stdout.strip()=="active","state":p.stdout.strip() or "unknown"})
@@ -167,12 +168,24 @@ def camera_stream_published(media_server: str, device_id: str) -> bool:
     return status.startswith(b"RTSP/1.0 200 ")
 
 
+def _camera_url(camera_id: str, assignment: dict, media_server: str) -> str:
+    """Prefer the camera's local relay; older servers can still use the NVR."""
+    address = (assignment.get("camera_sources") or {}).get(camera_id, "")
+    try:
+        address = str(ipaddress.ip_address(address))
+        if ":" in address:
+            address = f"[{address}]"
+    except ValueError:
+        address = media_server
+    return f"rtsp://{address}:8554/{urllib.parse.quote(camera_id, safe='')}"
+
+
 def command_for_assignment(assignment: dict, media_server: str, settings: dict | None = None) -> str | None:
     settings = settings or {}
     cameras = json.loads(assignment.get("cameras", "[]")) if isinstance(assignment.get("cameras"), str) else assignment.get("cameras", [])
     if not cameras:
         return None
-    urls = [f"rtsp://{media_server}:8554/{camera}" for camera in cameras]
+    urls = [_camera_url(camera, assignment, media_server) for camera in cameras]
     width, height = _monitor_output_size(settings)
     if assignment.get("layout", "single") == "2x2":
         return quad_pipeline(urls, width or 1920, height or 1080, preview_id=settings.get("preview_id", "default"))
@@ -202,7 +215,7 @@ def commands_for_assignment(assignment: dict, media_server: str, settings: dict 
             settings = settings or {}
             width, height = _monitor_output_size(settings, connector_id)
             commands.append(MonitorMedia(
-                f"rtsp://{media_server}:8554/{cameras[0]}", connector_id=connector_id,
+                _camera_url(cameras[0], assignment, media_server), connector_id=connector_id,
                 fullscreen=settings.get("kiosk", True), width=width, height=height,
                 scale_mode=settings.get("scale_mode", "fit"),
                 orientation=settings.get("orientation", 0), show_camera_name=settings.get("show_camera_name", False),
@@ -302,6 +315,70 @@ class DeviceRuntime:
         self.camera_fallback_active = False
         self.camera_failures = 0
         self.media_started_at = 0.0
+        self.forwarder: subprocess.Popen | None = None
+        self.next_forward_retry = 0.0
+        self.runtime_cache_path = Path(os.environ.get("CCTV_RUNTIME_CACHE_FILE", "/var/lib/pi-cctv/runtime-cache.json"))
+
+    def _cached_config(self, settings: dict | None = None, assignment: dict | None = None) -> tuple[dict, dict]:
+        """Persist the last authorized routing and settings for offline boots."""
+        try:
+            cached = json.loads(self.runtime_cache_path.read_text())
+            if not isinstance(cached, dict) or cached.get("device_id") != self.device_id or cached.get("role") != self.role:
+                cached = {}
+        except (OSError, ValueError, AttributeError):
+            cached = {}
+        if settings is None and assignment is None:
+            return cached.get("settings", {}), cached.get("assignment", {})
+        previous = {key: cached.get(key) for key in ("device_id", "role", "settings", "assignment")}
+        cached.update({"device_id": self.device_id, "role": self.role})
+        if settings is not None:
+            cached["settings"] = settings
+        if assignment is not None:
+            cached["assignment"] = assignment
+        if previous == {key: cached.get(key) for key in previous}:
+            return cached.get("settings", {}), cached.get("assignment", {})
+        try:
+            self.runtime_cache_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            descriptor, temporary = tempfile.mkstemp(prefix=".runtime-", dir=self.runtime_cache_path.parent, text=True)
+            try:
+                os.fchmod(descriptor, 0o600)
+                with os.fdopen(descriptor, "w") as stream:
+                    json.dump(cached, stream)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(temporary, self.runtime_cache_path)
+            finally:
+                if os.path.exists(temporary):
+                    os.unlink(temporary)
+        except OSError as exc:
+            print(f"Unable to cache offline routing: {exc}", flush=True)
+        return cached.get("settings", {}), cached.get("assignment", {})
+
+    def _device_settings(self) -> dict:
+        try:
+            device = http_json(f"{self.server}/api/devices/{self.device_id}", token=self.token)
+            settings = json.loads(device.get("metadata", "{}")).get("settings", {})
+            self._cached_config(settings=settings)
+            return settings
+        except Exception as exc:
+            settings, _ = self._cached_config()
+            print(f"Dashboard settings unavailable; using saved settings: {exc}", flush=True)
+            return settings
+
+    def reconcile_forwarder(self) -> None:
+        """Forward one local camera stream to the NVR without restarting capture."""
+        if self.role != "camera" or not self.processes or any(p.poll() is not None for p in self.processes):
+            return
+        if self.forwarder and self.forwarder.poll() is None:
+            return
+        if time.monotonic() < self.next_forward_retry:
+            return
+        local = f"rtsp://127.0.0.1:8554/{urllib.parse.quote(self.device_id, safe='')}"
+        remote = f"rtsp://{self.media_server}:8554/{urllib.parse.quote(self.device_id, safe='')}"
+        args = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "warning", "-rtsp_transport", "tcp",
+                "-i", local, "-map", "0:v:0", "-c:v", "copy", "-an", "-f", "rtsp", "-rtsp_transport", "tcp", remote]
+        self.forwarder = self.process_factory(" ".join(quote(arg) for arg in args), shell=True, start_new_session=True)
+        self.next_forward_retry = time.monotonic() + 10
 
     def enroll(self) -> None:
         http_json(f"{self.server}/api/devices", "POST", {
@@ -620,11 +697,7 @@ class DeviceRuntime:
 
     def desired_command(self, camera_size_override: tuple[int, int] | None = None) -> list[str]:
         if self.role == "camera":
-            device = http_json(f"{self.server}/api/devices/{self.device_id}", token=self.token)
-            try:
-                settings = json.loads(device.get("metadata", "{}")).get("settings", {})
-            except json.JSONDecodeError:
-                settings = {}
+            settings = self._device_settings()
             legacy_iso = settings.get("iso", 0)
             gain = settings.get("gain")
             if gain is None:
@@ -633,7 +706,7 @@ class DeviceRuntime:
             if exposure_profile is None:
                 exposure_profile = "long" if settings.get("low_light_mode") == "on" else "normal"
             return [CameraMedia(
-                f"rtsp://{self.media_server}:8554/{self.device_id}",
+                f"rtsp://127.0.0.1:8554/{self.device_id}",
                 width=camera_size_override[0] if camera_size_override else settings.get("width", 1920),
                 height=camera_size_override[1] if camera_size_override else settings.get("height", 1080),
                 fps=settings.get("fps", 30), bitrate=settings.get("bitrate", 6_000_000),
@@ -645,11 +718,7 @@ class DeviceRuntime:
                 keyframe_interval=settings.get("keyframe_interval", settings.get("fps", 30)),
                 h264_profile=settings.get("live_profile", "main"),
             ).pipeline()]
-        device = http_json(f"{self.server}/api/devices/{self.device_id}", token=self.token)
-        try:
-            settings = json.loads(device.get("metadata", "{}")).get("settings", {})
-        except json.JSONDecodeError:
-            settings = {}
+        settings = self._device_settings().copy()
         try:
             self.media_retry_seconds = max(1, min(120, int(settings.get("reconnect_seconds", 5))))
         except (TypeError, ValueError):
@@ -657,9 +726,16 @@ class DeviceRuntime:
         self.apply_monitor_blanking(settings.get("prevent_blanking", True))
         settings["camera_name"] = self.name
         settings["preview_id"] = self.device_id
-        assignment = http_json(f"{self.server}/api/monitors/{self.device_id}/assignment", token=self.token)
+        try:
+            assignment = http_json(f"{self.server}/api/monitors/{self.device_id}/assignment", token=self.token)
+            self._cached_config(assignment=assignment)
+            assignment_online = True
+        except Exception as exc:
+            _, assignment = self._cached_config()
+            assignment_online = False
+            print(f"Dashboard assignment unavailable; using saved route: {exc}", flush=True)
         assignment = apply_monitor_schedule(assignment, settings)
-        offline_cameras = set(assignment.get("offline_cameras", []))
+        offline_cameras = set(assignment.get("offline_cameras", [])) if assignment_online else set()
         fallback_camera = assignment.get("fallback_camera")
         if fallback_camera and offline_cameras:
             try:
@@ -701,7 +777,7 @@ class DeviceRuntime:
             now = time.monotonic()
             expected_command = tuple(self.desired_command((1920, 1080))) if self.camera_fallback_active else requested_signature
             if self.processes and self.last_command == expected_command and all(process.poll() is None for process in self.processes):
-                if camera_stream_published(self.media_server, self.device_id):
+                if camera_stream_published("127.0.0.1", self.device_id):
                     self.camera_failures = 0
                     return
                 if now - self.media_started_at < 20:
@@ -758,7 +834,7 @@ class DeviceRuntime:
                 os.close(terminal)
 
     def stop_media(self) -> None:
-        for process in self.processes:
+        for process in [*self.processes, *([self.forwarder] if self.forwarder else [])]:
             if process.poll() is not None:
                 continue
             try:
@@ -774,6 +850,7 @@ class DeviceRuntime:
                     process.kill()
                 process.wait(timeout=5)
         self.processes = []
+        self.forwarder = None
 
     def upload_monitor_preview(self) -> None:
         """Upload the newest completed, low-rate display pipeline JPEG."""
@@ -835,6 +912,11 @@ class DeviceRuntime:
                     print(f"Enrollment failed: {exc}; retrying", flush=True)
                     time.sleep(5)
         self.activate_monitor_display()
+        if self.role == "camera":
+            relay = subprocess.run(["systemctl", "enable", "--now", "pi-cctv-relay.service"],
+                                   capture_output=True, text=True, timeout=20, check=False)
+            if relay.returncode:
+                print(f"Local camera relay could not start: {_command_output(relay)}", flush=True)
         try:
             try:
                 self.sync_setup_ap_once_per_boot()
@@ -842,13 +924,12 @@ class DeviceRuntime:
                 print(f"Unable to apply setup Wi-Fi profile at startup: {exc}", flush=True)
             self.confirm_reboot_after_boot()
             while True:
-                try:
-                    self.heartbeat()
-                    self.poll_commands()
-                    self.reconcile_media()
-                    self.upload_monitor_preview()
-                except Exception as exc:
-                    print(f"Runtime check failed: {exc}; retrying", flush=True)
+                for task in (self.heartbeat, self.poll_commands, self.reconcile_media,
+                             self.reconcile_forwarder, self.upload_monitor_preview):
+                    try:
+                        task()
+                    except Exception as exc:
+                        print(f"{task.__name__} failed: {exc}; retrying", flush=True)
                 time.sleep(self.heartbeat_interval)
         finally:
             self.stop_media()

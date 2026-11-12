@@ -881,6 +881,17 @@ class Handler(BaseHTTPRequestHandler):
                 if camera.get("status") != "online"
             )
             assignment["fallback_camera"] = fallback_id if fallback and fallback.get("status") == "online" else ""
+            # Monitors read the camera Pi directly. Keep this map with the
+            # assignment so a monitor can cache the route for server outages.
+            assignment["camera_sources"] = {}
+            for camera_id, camera in cameras.items():
+                try:
+                    version = json.loads(camera.get("metadata") or "{}").get("agent_version", "")
+                    version_parts = tuple(int(part) for part in version.split("."))
+                except (ValueError, TypeError, AttributeError, json.JSONDecodeError):
+                    continue
+                if version_parts >= (0, 1, 28) and camera.get("ip_address"):
+                    assignment["camera_sources"][camera_id] = camera["ip_address"]
             self.send_json(assignment)
             return
         self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)

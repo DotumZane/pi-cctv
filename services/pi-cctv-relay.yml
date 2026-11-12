@@ -1,0 +1,10 @@
+logLevel: warn
+rtspAddress: :8554
+rtspTransports: [tcp]
+rtmp: no
+hls: no
+webrtc: no
+srt: no
+paths:
+  all:
+    source: publisher

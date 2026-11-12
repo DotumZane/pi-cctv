@@ -178,6 +178,20 @@ def main() -> int:
             return 0
 
         install_monitor_stats_dependencies()
+        try:
+            camera_role = json.loads(DEVICE_STATE.read_text()).get("kind") == "camera"
+        except (OSError, ValueError):
+            camera_role = False
+        if camera_role:
+            ffmpeg_probe = run(["bash", "-lc", "command -v ffmpeg"], timeout=15)
+            if ffmpeg_probe.returncode:
+                refreshed = run(["apt-get", "update"], timeout=180)
+                installed = run(["apt-get", "install", "-y", "--no-install-recommends", "ffmpeg"], timeout=180) if not refreshed.returncode else refreshed
+                if installed.returncode:
+                    raise RuntimeError(f"NVR forwarder dependency installation failed: {(installed.stderr or installed.stdout).strip()[-1000:]}")
+            relay = run(["bash", str(INSTALL_DIR / "scripts" / "install-camera-relay.sh")], timeout=180)
+            if relay.returncode:
+                raise RuntimeError(f"Local camera relay installation failed: {(relay.stderr or relay.stdout).strip()[-1000:]}")
 
         print("Running: systemctl daemon-reload", flush=True)
         daemon_reload = run(["systemctl", "daemon-reload"], timeout=30)

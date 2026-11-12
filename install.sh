@@ -53,7 +53,7 @@ if [[ "$SKIP_PACKAGES" != "true" && -x "$(command -v apt-get 2>/dev/null || true
     git python3 python3-gi gir1.2-gstreamer-1.0 \
     gstreamer1.0-tools gstreamer1.0-libcamera gstreamer1.0-rtsp \
     gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
-    gstreamer1.0-plugins-bad gstreamer1.0-libav
+    gstreamer1.0-plugins-bad gstreamer1.0-libav ffmpeg
 fi
 
 configure_imx477() {
@@ -88,6 +88,10 @@ if [[ -d "$INSTALL_DIR/.git" ]]; then
   git -c "safe.directory=$INSTALL_DIR" -C "$INSTALL_DIR" pull --ff-only origin main
 else
   git clone "$REPO_URL" "$INSTALL_DIR"
+fi
+
+if [[ "$ROLE" == "camera" || "$DISCOVER" == "true" || "$ENROLL" == "true" || -f /var/lib/pi-cctv/device.json ]]; then
+  CCTV_INSTALL_DIR="$INSTALL_DIR" bash "$INSTALL_DIR/scripts/install-camera-relay.sh"
 fi
 
 configure_setup_ap() {

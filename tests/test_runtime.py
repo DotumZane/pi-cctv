@@ -112,6 +112,63 @@ class RuntimeTests(unittest.TestCase):
         command = command_for_assignment({"layout": "single", "cameras": '["cam-7"]'}, "media")
         self.assertIn("rtsp://media:8554/cam-7", command)
 
+    def test_direct_sources_work_for_single_quad_and_multiple_outputs(self):
+        assignment = {"layout": "2x2", "cameras": '["a", "b"]',
+                      "camera_sources": {"a": "192.168.10.21", "b": "192.168.10.22"}}
+        quad = command_for_assignment(assignment, "nvr")
+        self.assertIn("rtsp://192.168.10.21:8554/a", quad)
+        self.assertIn("rtsp://192.168.10.22:8554/b", quad)
+        assignment["outputs"] = '[{"cameras":["a"]},{"cameras":["b"]}]'
+        commands = commands_for_assignment(assignment, "nvr")
+        self.assertIn("rtsp://192.168.10.21:8554/a", commands[0])
+        self.assertIn("rtsp://192.168.10.22:8554/b", commands[1])
+
+    def test_monitor_uses_cached_direct_route_when_dashboard_is_unavailable(self):
+        with TemporaryDirectory() as directory:
+            runtime = DeviceRuntime("monitor", "mon-1", "Monitor", "", "https://server", "nvr")
+            runtime.runtime_cache_path = Path(directory) / "runtime-cache.json"
+            device = {"metadata": '{"settings":{"kiosk":true}}'}
+            assignment = {"layout": "single", "cameras": '["cam-1"]',
+                          "camera_sources": {"cam-1": "192.168.10.21"},
+                          "offline_cameras": ["cam-1"], "fallback_camera": "cam-backup"}
+            with patch("cctv.runtime.http_json", side_effect=[device, assignment]), \
+                    patch("cctv.runtime.connected_displays", return_value=[]), \
+                    patch.object(runtime, "apply_monitor_blanking"):
+                first = runtime.desired_command()
+            with patch("cctv.runtime.http_json", side_effect=OSError("server down")), \
+                    patch("cctv.runtime.connected_displays", return_value=[]), \
+                    patch.object(runtime, "apply_monitor_blanking"):
+                restarted = DeviceRuntime("monitor", "mon-1", "Monitor", "", "https://server", "nvr")
+                restarted.runtime_cache_path = runtime.runtime_cache_path
+                recovered = restarted.desired_command()
+            self.assertIn("rtsp://nvr:8554/cam-backup", first[0])
+            self.assertIn("rtsp://192.168.10.21:8554/cam-1", recovered[0])
+            self.assertEqual(runtime.runtime_cache_path.stat().st_mode & 0o777, 0o600)
+
+    def test_nvr_forwarder_copies_local_stream_without_new_encoder(self):
+        camera = DeviceRuntime("camera", "cam-1", "Camera", "", "https://server", "nvr")
+        camera.processes = [Mock(poll=Mock(return_value=None))]
+        camera.process_factory = Mock(return_value=Mock(poll=Mock(return_value=None)))
+        camera.reconcile_forwarder()
+        command = camera.process_factory.call_args.args[0]
+        self.assertIn("-c:v copy", command)
+        self.assertIn("rtsp://127.0.0.1:8554/cam-1", command)
+        self.assertIn("rtsp://nvr:8554/cam-1", command)
+        self.assertNotIn("rpicam-vid", command)
+        camera.reconcile_forwarder()
+        camera.process_factory.assert_called_once()
+
+    def test_camera_keeps_local_capture_when_dashboard_is_unavailable(self):
+        with TemporaryDirectory() as directory:
+            camera = DeviceRuntime("camera", "cam-1", "Camera", "", "https://server", "nvr")
+            camera.runtime_cache_path = Path(directory) / "runtime-cache.json"
+            camera._cached_config(settings={"width": 1280, "height": 720})
+            with patch("cctv.runtime.http_json", side_effect=OSError("server down")):
+                command = camera.desired_command()[0]
+            self.assertIn("--width 1280 --height 720", command)
+            self.assertIn("rtsp://127.0.0.1:8554/cam-1", command)
+            self.assertNotIn("rtsp://nvr:8554", command)
+
     def test_monitor_auto_resolution_uses_detected_native_mode(self):
         settings = {"auto_resolution": True, "display_modes": {"32": {"width": "800", "height": "480"}}}
         self.assertEqual(_monitor_output_size(settings, "32"), (800, 480))
@@ -224,7 +281,7 @@ class RuntimeTests(unittest.TestCase):
         command = process_factory.call_args.args[0]
         self.assertIsInstance(command, str)
         self.assertTrue(command.startswith("rpicam-vid -n -t 0 --inline --codec h264"))
-        self.assertIn("rtspclientsink location=rtsp://media:8554/cam-7", command)
+        self.assertIn("rtspclientsink location=rtsp://127.0.0.1:8554/cam-7", command)
         self.assertEqual(process_factory.call_args.kwargs, {"shell": True, "start_new_session": True})
 
     def test_camera_runtime_applies_saved_encoder_controls(self):
