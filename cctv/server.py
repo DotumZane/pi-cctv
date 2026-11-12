@@ -886,11 +886,12 @@ class Handler(BaseHTTPRequestHandler):
             assignment["camera_sources"] = {}
             for camera_id, camera in cameras.items():
                 try:
-                    version = json.loads(camera.get("metadata") or "{}").get("agent_version", "")
+                    metadata = json.loads(camera.get("metadata") or "{}")
+                    version = metadata.get("agent_version", "")
                     version_parts = tuple(int(part) for part in version.split("."))
                 except (ValueError, TypeError, AttributeError, json.JSONDecodeError):
                     continue
-                if version_parts >= (0, 1, 28) and camera.get("ip_address"):
+                if version_parts >= (0, 1, 29) and metadata.get("direct_rtsp_ready") is True and camera.get("ip_address"):
                     assignment["camera_sources"][camera_id] = camera["ip_address"]
             self.send_json(assignment)
             return

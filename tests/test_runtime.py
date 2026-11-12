@@ -169,6 +169,15 @@ class RuntimeTests(unittest.TestCase):
             self.assertIn("rtsp://127.0.0.1:8554/cam-1", command)
             self.assertNotIn("rtsp://nvr:8554", command)
 
+    def test_camera_only_advertises_direct_route_after_stream_is_published(self):
+        camera = DeviceRuntime("camera", "cam-1", "Camera", "", "https://server", "nvr")
+        with patch("cctv.runtime.camera_stream_published", side_effect=[False, True]), \
+                patch("cctv.runtime.http_json", return_value={}) as request:
+            camera.heartbeat()
+            camera.heartbeat()
+        self.assertFalse(request.call_args_list[0].args[2]["direct_rtsp_ready"])
+        self.assertTrue(request.call_args_list[1].args[2]["direct_rtsp_ready"])
+
     def test_monitor_auto_resolution_uses_detected_native_mode(self):
         settings = {"auto_resolution": True, "display_modes": {"32": {"width": "800", "height": "480"}}}
         self.assertEqual(_monitor_output_size(settings, "32"), (800, 480))

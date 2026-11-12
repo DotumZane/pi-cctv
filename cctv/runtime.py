@@ -390,6 +390,8 @@ class DeviceRuntime:
 
     def heartbeat(self) -> None:
         payload = {"runtime": "v1", "agent_version": __agent_version__, "metrics": system_metrics(), "recent_logs": recent_logs()}
+        if self.role == "camera":
+            payload["direct_rtsp_ready"] = camera_stream_published("127.0.0.1", self.device_id)
         if self.role == "monitor":
             payload["displays"] = connected_displays()
         http_json(f"{self.server}/api/devices/{self.device_id}/heartbeat", "POST", payload, self.token)
