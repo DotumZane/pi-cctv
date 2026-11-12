@@ -592,15 +592,31 @@ window.reloadCameraPreview=function(id){
   if(video)resetLiveVideo(video,id);
 };
 const originalCameraSettingsRender=renderSettings;
+const originalCameraSettingsSave=saveSettings;
+function bindCameraSettingsSave(){
+  const button=document.querySelector('#settings [data-camera-card] button.primary:last-of-type');
+  if(!button)return;
+  const card=button.closest('[data-camera-card]');
+  if(!card)return;
+  const id=card.dataset.cameraCard;
+  button.type='button';
+  button.formNoValidate=true;
+  button.onclick=event=>{
+    event.preventDefault();
+    event.stopPropagation();
+    void saveSettings(id);
+  };
+}
 renderSettings=function(){
   originalCameraSettingsRender();
-  document.querySelectorAll('#settings [data-camera-card] button').forEach(button=>{button.type='button'});
+  bindCameraSettingsSave();
 };
-const originalCameraSettingsSave=saveSettings;
 saveSettings=async function(id){
   localStorage.cctvView='settings';
   const result=await originalCameraSettingsSave(id);
+  localStorage.cctvView='settings';
   selectView('settings');
+  bindCameraSettingsSave();
   return result;
 };
 </script><script src="/playback-engine.js"></script>
