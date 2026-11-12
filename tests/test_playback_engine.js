@@ -29,7 +29,7 @@ async function main() {
   const status = { innerHTML: '' };
   const document = {
     body: {}, head: { appendChild() {} }, documentElement: { dataset: {} },
-    createElement(tag) { return tag === 'canvas' ? canvas : { textContent: '' }; },
+    createElement(tag) { return tag === 'canvas' ? canvas : { textContent: '', setAttribute() {}, classList: { toggle() {} } }; },
     querySelector(selector) {
       return selector === '#workspace-live' ? video :
         selector === '#workspace-player' ? status : null;
@@ -43,8 +43,9 @@ async function main() {
     performance: { now: () => clock },
     requestAnimationFrame(callback) { animationFrames.push(callback); return animationFrames.length; },
     cancelAnimationFrame() {}, MutationObserver: class { observe() {} },
-    timelineDayLength: () => 86400, timelineRecordAt: () => record,
+    timelineDayLength: () => 86400, timelineRecordAt: value => value === 40 ? null : record,
     timelineSeconds: () => 0, workspaceTimelineDate: '2026-11-12',
+    formatTimelineTime: value => `00:00:${String(value).padStart(2, '0')}`,
     workspaceTimelineLastValue: 0, verticalTimelineSetPosition() {},
     updateTimelinePlayhead() {}, esc: value => value,
     async api(url) {
@@ -74,6 +75,11 @@ async function main() {
   assert.equal(fetched, 2, 'reverse movement should request another frame');
   assert.equal(drawn, 2, 'reverse frame should appear before playback commits');
   assert.equal(committed, 0);
+  window.previewWorkspaceTimelineScrub(40, 20);
+  assert.match(status.innerHTML, /No recording/);
+  assert.equal(visible.has('visible'), true, 'a gap covers the previous video frame');
+  window.previewWorkspaceTimelineScrub(20, -20);
+  assert.doesNotMatch(status.innerHTML, /No recording/, 'returning to footage clears the gap status');
 }
 
 async function proxyScrubbing() {
@@ -107,7 +113,7 @@ async function proxyScrubbing() {
   };
   const document = {
     body: {}, head: { appendChild() {} }, documentElement: { dataset: {} },
-    createElement(tag) { return tag === 'video' ? proxy : tag === 'canvas' ? canvas : { textContent: '' }; },
+    createElement(tag) { return tag === 'video' ? proxy : tag === 'canvas' ? canvas : { textContent: '', setAttribute() {}, classList: { toggle() {} } }; },
     querySelector(selector) { return selector === '#workspace-live' ? video : null; }, addEventListener() {},
   };
   const record = { path: 'cam-1/2026-11-12/06-00-00.mp4', url: '/recordings/cam-1/2026-11-12/06-00-00.mp4' };
@@ -162,7 +168,7 @@ async function atlasScrubbing() {
     setAttribute() {}, removeAttribute() {}, addEventListener() {},
     set currentTime(_) { mainSeeks++; }, pause() {} };
   const document = { body: {}, head: { appendChild() {} }, documentElement: { dataset: {} },
-    createElement(tag) { return tag === 'canvas' ? canvas : { textContent: '' }; },
+    createElement(tag) { return tag === 'canvas' ? canvas : { textContent: '', setAttribute() {}, classList: { toggle() {} } }; },
     querySelector(selector) { return selector === '#workspace-live' ? video : null; }, addEventListener() {} };
   const record = { path: 'cam-1/2026-11-12/06-00-00.mp4', url: '/recordings/cam-1/2026-11-12/06-00-00.mp4' };
   const nextRecord = { path: 'cam-1/2026-11-12/06-00-30.mp4', url: '/recordings/cam-1/2026-11-12/06-00-30.mp4' };

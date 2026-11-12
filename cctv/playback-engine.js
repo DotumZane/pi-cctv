@@ -14,6 +14,7 @@
   const state = {
     canvas: null,
     ctx: null,
+    scrubMessage: null,
     frame: 0,
     target: null,
     targetRecord: null,
@@ -115,7 +116,20 @@
       host.appendChild(state.canvas);
       state.ctx = state.canvas.getContext('2d', { alpha: false });
     }
+    if (!state.scrubMessage) {
+      state.scrubMessage = document.createElement('div');
+      state.scrubMessage.className = 'workspace-scrub-message';
+      state.scrubMessage.setAttribute('role', 'status');
+      state.scrubMessage.setAttribute('aria-live', 'polite');
+      host.appendChild(state.scrubMessage);
+    }
     return true;
+  }
+
+  function scrubMessage(message) {
+    if (!state.scrubMessage) return;
+    state.scrubMessage.textContent = message || '';
+    state.scrubMessage.classList.toggle('visible', Boolean(message));
   }
 
   function fitCanvas() {
@@ -155,6 +169,7 @@
     state.ctx.drawImage(source, (cw - dw) / 2, (ch - dh) / 2, dw, dh);
     state.hasFrame = true;
     if (state.active) state.canvas.classList.add('visible');
+    scrubMessage('');
     return true;
   }
 
@@ -171,6 +186,7 @@
     state.lastBitmap = bitmap;
     state.lastFrameTime = request.selected;
     state.canvas.classList.add('visible');
+    scrubMessage('');
     log('scrub:frame', { requested: request.selected, displayed: state.lastFrameTime,
       latencyMs: Math.round(performance.now() - request.startedAt) });
   }
@@ -231,6 +247,7 @@
         (cw - dw) / 2, (ch - dh) / 2, dw, dh);
       state.hasFrame = true;
       state.canvas.classList.add('visible');
+      scrubMessage('');
       state.lastFrameTime = state.target;
       loadAtlasSheet(sheet + (state.motionDirection >= 0 ? 1 : -1));
     });
@@ -457,6 +474,7 @@
     clearTimeout(state.atlasRetry);
     state.atlasWaiting = false;
     if (state.canvas) state.canvas.classList.remove('visible');
+    scrubMessage('');
     if (state.frame) cancelAnimationFrame(state.frame);
     state.frame = 0;
   }
@@ -464,6 +482,7 @@
   function setTarget(value, velocity) {
     const selected = Math.max(0, Math.min(timelineDayLength(workspaceTimelineDate) - 1, Number(value) || 0));
     const record = timelineRecordAt(selected);
+    const wasGap = state.target !== null && !state.targetRecord;
     // A seek started before this movement may still be decoding. Its result
     // must never hide or overwrite the frame selected by the new movement.
     if (selected !== state.target || record?.path !== state.targetRecord?.path) {
@@ -497,8 +516,22 @@
       state.pending = null;
       if (state.frame) cancelAnimationFrame(state.frame);
       state.frame = 0;
+      // Do not leave the last decoded frame (or live video) visible for a gap.
+      fitCanvas();
+      state.ctx.fillStyle = '#030507';
+      state.ctx.fillRect(0, 0, state.canvas.width, state.canvas.height);
+      state.lastBitmap = null;
+      state.lastFrameTime = null;
+      state.hasFrame = true;
+      state.canvas.classList.add('visible');
+      const date = workspaceTimelineDate;
+      const loading = document.querySelector(`.vertical-timeline-day-layer[data-timeline-day="${date}"]`)?.dataset.loading === 'true';
+      scrubMessage(loading ? 'Loading recordings…' : `No recording · ${date} ${formatTimelineTime(selected)}`);
+      if (!loading) updateStatus('No recording is available at the selected time.');
       return;
     }
+    scrubMessage('');
+    if (wasGap) updateStatus('Loading recording preview…');
     if (ensureAtlas(record)) {
       state.pending = null;
       scheduleAtlasFrame();
@@ -683,6 +716,8 @@
   style.textContent = `
     .workspace-scrub-frame { position:absolute; inset:0; z-index:5; width:100%; height:100%; object-fit:contain; display:none; pointer-events:none; background:#030507; }
     .workspace-scrub-frame.visible { display:block; }
+    .workspace-scrub-message { position:absolute; inset:0; z-index:5; display:none; align-items:center; justify-content:center; padding:20px; color:#d5dce7; background:#030507; font-size:clamp(14px,1.5vw,20px); font-weight:600; text-align:center; pointer-events:none; }
+    .workspace-scrub-message.visible { display:flex; }
     .workspace-scrub-proxy { position:absolute; width:1px; height:1px; opacity:0; pointer-events:none; }
     #workspace-live, #workspace-live::-webkit-media-controls, #workspace-live::-webkit-media-controls-enclosure { -webkit-appearance:none; }
     #workspace-live::-webkit-media-controls { display:none !important; }

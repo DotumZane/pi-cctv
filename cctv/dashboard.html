@@ -591,6 +591,11 @@ window.loadPreviousTimelineDay=async function(){
     if(!pending.length)return;
     const response=await api(`/api/recordings?camera_id=${encodeURIComponent(window.workspaceCamera)}`),data=response.ok?await response.json():{recordings:[]};
     pending.forEach(day=>{day.records=(data.recordings||[]).filter(record=>record.start&&localDateKey(record.start)===day.date).sort((a,b)=>new Date(a.start)-new Date(b.start));const layer=document.querySelector(`.vertical-timeline-day-layer[data-timeline-day="${day.date}"]`);if(layer){layer.dataset.loading='false';layer.querySelectorAll('.vertical-timeline-range').forEach(range=>range.remove());const dayLength=timelineDayLength(day.date);day.records.forEach((record,recordIndex)=>{const start=Math.max(0,timelineSeconds(record)),duration=workspaceRecordDuration(record,recordIndex,day.records),range=document.createElement('span');range.className='vertical-timeline-range';range.style.top=`${Math.max(0,(1-(start+duration)/dayLength)*verticalTimelineHeight)}px`;range.style.height=`${Math.max(3,duration/dayLength*verticalTimelineHeight)}px`;range.title=formatTimelineTime(start);layer.appendChild(range)})}})
+    // A user may have stopped on this day while its metadata was loading.
+    // Re-evaluate that selected time so Loading becomes No recording or a frame.
+    const selected=verticalTimelineSelection();
+    if(pending.some(day=>day.date===selected.date)&&typeof previewWorkspaceTimelineScrub==='function')
+      previewWorkspaceTimelineScrub(selected.seconds,0);
   }finally{verticalTimelineDayPaging=false}
 };
 const verticalTimelineDayStyle=document.createElement('style');
