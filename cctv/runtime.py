@@ -160,6 +160,24 @@ def recent_logs() -> list[str]:
         return []
 
 
+def collect_log_export(hours: int, limit: int = 500_000) -> list[str]:
+    """Collect a bounded journal window for an on-demand dashboard download."""
+    bounded_hours = max(1, min(int(hours), 168))
+    try:
+        result = subprocess.run(
+            ["journalctl", "-u", "pi-cctv-agent", "--since", f"{bounded_hours} hours ago",
+             "--no-pager", "-o", "short-iso"],
+            capture_output=True, text=True, timeout=20, check=False,
+        )
+        output = result.stdout[-limit:]
+        if result.returncode:
+            detail = _command_output(result)
+            return [f"Unable to collect journal logs: {detail or result.returncode}"]
+        return output.splitlines()
+    except (OSError, subprocess.SubprocessError) as exc:
+        return [f"Unable to collect journal logs: {exc}"]
+
+
 def http_json(url: str, method: str = "GET", payload: dict | None = None, token: str = "") -> dict:
     data = json.dumps(payload).encode() if payload is not None else None
     request = urllib.request.Request(url, data=data, method=method)
@@ -363,6 +381,7 @@ class DeviceRuntime:
         self.forwarder: subprocess.Popen | None = None
         self.next_forward_retry = 0.0
         self.runtime_cache_path = Path(os.environ.get("CCTV_RUNTIME_CACHE_FILE", "/var/lib/pi-cctv/runtime-cache.json"))
+        self.pending_log_export: dict | None = None
 
     def _cached_config(self, settings: dict | None = None, assignment: dict | None = None) -> tuple[dict, dict]:
         """Persist the last authorized routing and settings for offline boots."""
@@ -439,7 +458,11 @@ class DeviceRuntime:
             payload["direct_rtsp_ready"] = camera_stream_published("127.0.0.1", self.device_id)
         if self.role == "monitor":
             payload["displays"] = connected_displays()
+        if self.pending_log_export:
+            payload["log_export"] = self.pending_log_export
         http_json(f"{self.server}/api/devices/{self.device_id}/heartbeat", "POST", payload, self.token)
+        if self.pending_log_export:
+            self.pending_log_export = None
 
     def report_maintenance(self, task: str, state: str, message: str, extra_details: dict | None = None) -> None:
         """Report an allowlisted maintenance task result to the dashboard."""
@@ -648,6 +671,21 @@ class DeviceRuntime:
                 temporary_path.chmod(0o600)
                 temporary_path.replace(control_path)
                 print("Monitor stats overlay requested for 60 seconds", flush=True)
+            elif command_name == "collect_logs":
+                payload = command.get("payload", {})
+                try:
+                    hours = max(1, min(int(payload.get("since_hours", 48)), 168))
+                except (TypeError, ValueError, AttributeError):
+                    hours = 48
+                request_id = str(payload.get("request_id", ""))[:100]
+                self.pending_log_export = {
+                    "request_id": request_id,
+                    "since_hours": hours,
+                    "state": "succeeded",
+                    "logs": collect_log_export(hours),
+                    "collected_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                }
+                print(f"Collected {hours}-hour system log export", flush=True)
             elif command_name == "change_server_address":
                 payload = command.get("payload", {})
                 new_server = payload.get("server") if isinstance(payload, dict) else None

@@ -539,8 +539,18 @@ class Handler(BaseHTTPRequestHandler):
             device = self.store.device(device_id)
             if not device:
                 self.send_json({"error":"device not found"}, HTTPStatus.NOT_FOUND); return
-            try: logs = json.loads(device.get("metadata", "{}")).get("recent_logs", [])
-            except (ValueError, TypeError): logs = []
+            query = parse_qs(parsed.query)
+            request_id = query.get("request_id", [""])[0]
+            try:
+                metadata = json.loads(device.get("metadata", "{}"))
+                export = metadata.get("log_export") if isinstance(metadata, dict) else None
+                if query.get("hours") and isinstance(export, dict) and export.get("request_id") == request_id:
+                    self.send_json({"logs": export.get("logs", []), "state": export.get("state", "pending"),
+                                    "since_hours": export.get("since_hours", 48), "collected_at": export.get("collected_at")})
+                    return
+                logs = metadata.get("recent_logs", []) if isinstance(metadata, dict) else []
+            except (ValueError, TypeError):
+                logs = []
             self.send_json({"logs": logs[-200:]})
             return
         if parsed.path.startswith("/api/devices/") and parsed.path.endswith("/maintenance/os-update"):
@@ -1347,7 +1357,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json({"error": "device not found"}, HTTPStatus.NOT_FOUND)
                     return
                 payload = self.body()
-                allowed_commands = {"restart_media", "diagnostics", "restart_agent", "reboot", "update", "update_os", "sync_setup_ap", "change_server_address", "set_hostname", "show_stats"}
+                allowed_commands = {"restart_media", "diagnostics", "restart_agent", "reboot", "update", "update_os", "sync_setup_ap", "change_server_address", "set_hostname", "show_stats", "collect_logs"}
                 command_name = str(payload.get("command", ""))
                 if command_name not in allowed_commands:
                     self.send_json({"error": "unsupported diagnostic command"}, HTTPStatus.BAD_REQUEST)
