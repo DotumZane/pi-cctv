@@ -161,6 +161,9 @@ document.head.appendChild(multiPlaybackVisibilityStyle);
 const multiGridAspectStyle=document.createElement('style');
 multiGridAspectStyle.textContent='#live-workspace.multi-workspace .multi-camera-layout{height:auto;min-height:0;grid-template-rows:auto}#live-workspace.multi-workspace .multi-camera-main{overflow:visible}#live-workspace.multi-workspace .multi-camera-grid{height:auto;flex:none;aspect-ratio:16 / 9;min-height:0}#live-workspace.multi-workspace #workspace-multi-timeline{height:min(72vh,760px);position:sticky;top:12px;align-self:start}';
 document.head.appendChild(multiGridAspectStyle);
+const multiGridFitStyle=document.createElement('style');
+multiGridFitStyle.textContent='#live-workspace.multi-workspace .multi-camera-grid{width:min(100%,calc((100dvh - 310px) * 16 / 9));align-self:center}#live-workspace.multi-workspace #workspace-multi-timeline{height:clamp(240px,calc(100dvh - 170px),760px)}@media(max-width:600px){#live-workspace.multi-workspace .multi-camera-grid{width:100%}}';
+document.head.appendChild(multiGridFitStyle);
 let multiTimelineDays=[],multiTimelineLoading=false,multiTimelineGeneration=0;
 const multiContinuousHeight=3600;
 function multiAppendDay(date,records){
