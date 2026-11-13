@@ -159,10 +159,10 @@ def _preview_branch(preview_id: str, width: int, height: int) -> str:
 
 
 def _splash_branch(width: int, height: int) -> str:
-    """Decode the bundled logo in user space and fit it to the active display."""
-    splash = quote("/opt/pi-cctv/assets/rsg-monitor-splash.tga")
+    """Decode the bundled PNG logo in user space and fit it to the active display."""
+    splash = quote("/opt/pi-cctv/assets/rsg-monitor-splash.png")
     return (
-        f"filesrc location={splash} ! decodebin ! videoconvert ! imagefreeze ! "
+        f"filesrc location={splash} ! pngdec ! videoconvert ! imagefreeze ! "
         f"videoscale add-borders=true ! video/x-raw,width={width},height={height},framerate=10/1 ! "
         "queue max-size-buffers=2 leaky=downstream ! cctv_splash_selector.sink_1"
     )
