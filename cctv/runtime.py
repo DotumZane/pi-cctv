@@ -207,7 +207,8 @@ def command_for_assignment(assignment: dict, media_server: str, settings: dict |
     urls = [_camera_url(camera, assignment, media_server) for camera in cameras]
     width, height = _monitor_output_size(settings)
     if assignment.get("layout", "single") == "2x2":
-        return quad_pipeline(urls, width or 1920, height or 1080, preview_id=settings.get("preview_id", "default"))
+        width, height = _quad_output_size(settings)
+        return quad_pipeline(urls, width, height, preview_id=settings.get("preview_id", "default"))
     return MonitorMedia(
         urls[0], fullscreen=settings.get("kiosk", True), width=width, height=height,
         scale_mode=settings.get("scale_mode", "fit"),
@@ -283,6 +284,23 @@ def _monitor_output_size(settings: dict | None, connector_id: str | None = None)
                 return width, height
         return None, None
     return settings.get("width"), settings.get("height")
+
+
+def _quad_output_size(settings: dict | None) -> tuple[int, int]:
+    """Choose the current physical display size for the explicit 2×2 canvas."""
+    settings = settings or {}
+    width, height = _monitor_output_size(settings)
+    if width and height:
+        return width, height
+    if settings.get("auto_resolution", True):
+        for display in connected_displays():
+            try:
+                detected_width, detected_height = int(display.get("width", 0)), int(display.get("height", 0))
+            except (TypeError, ValueError):
+                continue
+            if detected_width > 0 and detected_height > 0:
+                return detected_width, detected_height
+    return 1280, 720
 
 
 def apply_monitor_schedule(assignment: dict, settings: dict, now: datetime.datetime | None = None) -> dict:

@@ -174,6 +174,13 @@ class RuntimeTests(unittest.TestCase):
         command = command_for_assignment({"layout": "single", "cameras": '["cam-7"]'}, "media")
         self.assertIn("rtsp://media:8554/cam-7", command)
 
+    def test_quad_layout_uses_live_display_size_when_auto_mode_is_unavailable(self):
+        assignment = {"layout": "2x2", "cameras": '["a", "b"]'}
+        with patch("cctv.runtime.connected_displays", return_value=[{"width": "1280", "height": "720"}]):
+            command = command_for_assignment(assignment, "media")
+        self.assertIn("video/x-raw,width=1280,height=720", command)
+        self.assertNotIn("video/x-raw,width=1920,height=1080 !", command)
+
     def test_direct_sources_work_for_single_quad_and_multiple_outputs(self):
         assignment = {"layout": "2x2", "cameras": '["a", "b"]',
                       "camera_sources": {"a": "192.168.10.21", "b": "192.168.10.22"}}
@@ -367,7 +374,8 @@ class RuntimeTests(unittest.TestCase):
             self.assertIn(option, command)
 
     def test_quad_assignment_builds_four_stream_layout(self):
-        command = command_for_assignment({"layout": "2x2", "cameras": '["a", "b", "c", "d"]'}, "media")
+        settings = {"auto_resolution": False, "width": 1920, "height": 1080}
+        command = command_for_assignment({"layout": "2x2", "cameras": '["a", "b", "c", "d"]'}, "media", settings)
         self.assertIn("rtsp://media:8554/a", command)
         self.assertIn("sink_3::xpos=960 sink_3::ypos=540", command)
 
