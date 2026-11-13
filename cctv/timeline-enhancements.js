@@ -155,23 +155,69 @@ const multiSeekAllBeforeMode=multiSeekAll;multiSeekAll=async function(value){con
 const multiTimelineBoundsStyle=document.createElement('style');
 multiTimelineBoundsStyle.textContent='#live-workspace.multi-workspace .multi-camera-layout{grid-template-rows:minmax(0,1fr)}#live-workspace.multi-workspace #workspace-multi-timeline{min-height:0;overflow:hidden}#live-workspace.multi-workspace .multi-vertical-timeline-shell{box-sizing:border-box;min-height:0}';
 document.head.appendChild(multiTimelineBoundsStyle);
-let multiChangingDay=false;
-document.addEventListener('wheel',async event=>{
-  const scroll=event.target.closest?.('.multi-vertical-timeline-scroll');
-  if(!scroll||multiChangingDay||!event.deltaY)return;
-  const backwards=event.deltaY>0&&scroll.scrollTop>=scroll.scrollHeight-scroll.clientHeight-1;
-  const forwards=event.deltaY<0&&scroll.scrollTop<=0;
-  if(!backwards&&!forwards)return;
-  const date=multiDayStart();date.setDate(date.getDate()+(backwards?-1:1));
-  if(localDateKey(date)>localDateKey(new Date()))return;
-  event.preventDefault();event.stopImmediatePropagation();multiChangingDay=true;
+let multiTimelineDays=[],multiTimelineLoading=false,multiTimelineGeneration=0;
+const multiContinuousHeight=3600;
+function multiAppendDay(date,records){
+  const content=document.querySelector('.multi-vertical-timeline-content');if(!content)return;
+  const index=multiTimelineDays.length,day={date,records};multiTimelineDays.push(day);
+  const start=new Date(date+'T00:00:00'),end=new Date(start);end.setDate(end.getDate()+1);
+  const duration=(end-start)/1000,layer=document.createElement('div');
+  layer.style.cssText='position:absolute;left:0;right:0;top:'+index*multiContinuousHeight+'px;height:'+multiContinuousHeight+'px';
+  const marker=document.createElement('span');marker.style.cssText='position:absolute;top:5px;left:44px;color:var(--muted);font-size:10px';marker.textContent=date;layer.appendChild(marker);
+  for(let seconds=0;seconds<duration;seconds+=1800){
+    const label=document.createElement('span');label.className='multi-vertical-timeline-label';
+    label.style.top=(1-seconds/duration)*multiContinuousHeight+'px';
+    const time=new Date(start.getTime()+seconds*1000);label.textContent=String(time.getHours()).padStart(2,'0')+':'+String(time.getMinutes()).padStart(2,'0');layer.appendChild(label);
+  }
+  for(const [id,items] of records)items.forEach((record,i)=>{
+    const seconds=(new Date(record.start)-start)/1000,span=document.createElement('span');
+    const length=Number(record.duration)||Math.max(1,Number(workspaceTimelineSegmentSeconds)||30);
+    span.className='multi-vertical-timeline-range';span.style.top=Math.max(0,(1-(seconds+length)/duration)*multiContinuousHeight)+'px';span.style.height=Math.max(3,length/duration*multiContinuousHeight)+'px';span.title=state.devices.find(device=>device.id===id)?.name||id;layer.appendChild(span);
+  });
+  content.appendChild(layer);content.style.height=content.style.minHeight=(multiTimelineDays.length*multiContinuousHeight)+'px';
+}
+async function multiAppendPreviousDays(){
+  if(multiTimelineLoading||!multiTimelineDays.length)return;
+  multiTimelineLoading=true;const generation=multiTimelineGeneration,pending=[];
+  for(let i=0;i<2;i++){const date=new Date(multiTimelineDays[multiTimelineDays.length-1].date+'T12:00:00');date.setDate(date.getDate()-1);const key=localDateKey(date),records=new Map(multiWorkspaceCameras.map(id=>[id,[]]));multiAppendDay(key,records);pending.push(multiTimelineDays[multiTimelineDays.length-1])}
   try{
-    multiWorkspaceDate=localDateKey(date);
-    const input=document.querySelector('#multi-workspace-date');if(input)input.value=multiWorkspaceDate;
-    multiWorkspaceValue=backwards?multiDaySeconds()-1:0;
-    await multiLoadTimelines();await multiSeekAll(multiWorkspaceValue);
-  }finally{multiChangingDay=false}
-},{capture:true,passive:false});
+    const results=await Promise.all(multiWorkspaceCameras.map(async id=>{try{const response=await api('/api/recordings?camera_id='+encodeURIComponent(id));return [id,response.ok?(await response.json()).recordings||[]:[]]}catch{return [id,[]]}}));
+    if(generation!==multiTimelineGeneration)return;
+    for(const day of pending)for(const [id,records] of results)day.records.set(id,records.filter(record=>record.start&&localDateKey(record.start)===day.date).sort((a,b)=>new Date(a.start)-new Date(b.start)));
+    // Paint recording ranges in their existing layers without moving the scroll position.
+    const content=document.querySelector('.multi-vertical-timeline-content');
+    for(const day of pending){const index=multiTimelineDays.indexOf(day),layer=content?.children[index];if(!layer)continue;const start=new Date(day.date+'T00:00:00'),end=new Date(start);end.setDate(end.getDate()+1);const duration=(end-start)/1000;for(const [id,items] of day.records)for(const record of items){const seconds=(new Date(record.start)-start)/1000,length=Number(record.duration)||Number(workspaceTimelineSegmentSeconds)||30,range=document.createElement('span');range.className='multi-vertical-timeline-range';range.style.top=Math.max(0,(1-(seconds+length)/duration)*multiContinuousHeight)+'px';range.style.height=Math.max(3,length/duration*multiContinuousHeight)+'px';range.title=state.devices.find(device=>device.id===id)?.name||id;layer.appendChild(range)}}
+    const selected=multiTimelineDays.find(day=>day.date===multiWorkspaceDate);if(selected&&pending.includes(selected)){multiWorkspaceRecords=selected.records;await multiSeekAll(multiWorkspaceValue)}
+  }finally{if(generation===multiTimelineGeneration)multiTimelineLoading=false}
+}
+const multiRenderBeforeContinuous=renderMultiTimeline;
+renderMultiTimeline=function(){
+  multiRenderBeforeContinuous();multiTimelineGeneration++;multiTimelineLoading=false;multiTimelineDays=[];
+  const scroll=document.querySelector('.multi-vertical-timeline-scroll'),content=scroll?.querySelector('.multi-vertical-timeline-content');if(!scroll||!content)return;
+  content.innerHTML='';multiAppendDay(multiWorkspaceDate,new Map(multiWorkspaceRecords));
+  scroll.addEventListener('scroll',event=>{
+    if(multiTimelineProgrammatic)return;
+    event.stopImmediatePropagation();multiTimelineUserScrolling=true;
+    const position=Math.max(0,scroll.scrollTop+26),index=Math.min(multiTimelineDays.length-1,Math.floor(position/multiContinuousHeight)),day=multiTimelineDays[index];
+    if(!day)return;
+    multiWorkspaceDate=day.date;multiWorkspaceRecords=day.records;
+    const dateInput=document.querySelector('#multi-workspace-date');if(dateInput)dateInput.value=day.date;
+    const length=multiDaySeconds();multiWorkspaceValue=Math.max(0,Math.min(length-1,length*(1-(position-index*multiContinuousHeight)/multiContinuousHeight)));
+    multiUpdatePlayhead(multiWorkspaceValue);
+    if(scroll.scrollHeight-scroll.scrollTop-scroll.clientHeight<1800)void multiAppendPreviousDays();
+    clearTimeout(scroll._continuousSeek);scroll._continuousSeek=setTimeout(()=>{multiTimelineUserScrolling=false;void multiSeekAll(multiWorkspaceValue)},180);
+  },{capture:true,passive:true});
+  void multiAppendPreviousDays();
+};
+const multiPositionBeforeContinuous=multiUpdatePlayhead;
+multiUpdatePlayhead=function(value){
+  if(multiTimelineUserScrolling){multiPositionBeforeContinuous(value);return}
+  const scroll=document.querySelector('.multi-vertical-timeline-scroll'),index=multiTimelineDays.findIndex(day=>day.date===multiWorkspaceDate);
+  if(!scroll||index<0){multiPositionBeforeContinuous(value);return}
+  multiTimelineUserScrolling=true;multiPositionBeforeContinuous(value);multiTimelineUserScrolling=false;
+  multiTimelineProgrammatic=true;scroll.scrollTop=Math.max(0,index*multiContinuousHeight+(1-(Number(value)||0)/multiDaySeconds())*multiContinuousHeight-26);
+  requestAnimationFrame(()=>{multiTimelineProgrammatic=false});
+};
 
 /* Commit a scrub without handing control back to the autoplay playback loader. */
 const previewWorkspaceTimelineBeforeContinuousScrub=previewWorkspaceTimeline;let workspaceContinuousPreviewValue=null,workspaceContinuousPreviewAt=0;previewWorkspaceTimeline=function(value){const numeric=Number(value)||0,now=performance.now(),elapsed=workspaceContinuousPreviewAt?Math.max(16,now-workspaceContinuousPreviewAt):0,velocity=elapsed&&workspaceContinuousPreviewValue!==null?(numeric-workspaceContinuousPreviewValue)/(elapsed/1000):0;workspaceContinuousPreviewValue=numeric;workspaceContinuousPreviewAt=now;workspaceTimelineLastValue=numeric;cancelAnimationFrame(workspaceTimelineSeekFrame);workspaceTimelineSeekFrame=requestAnimationFrame(()=>updateTimelinePlayhead(numeric));previewWorkspaceTimelineScrub(numeric,velocity)};
