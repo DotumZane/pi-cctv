@@ -9,10 +9,13 @@ import signal
 import subprocess
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 
 
 OVERLAY_SECONDS = 60
+OFFLINE_AFTER_SECONDS = 3.0
+RECONNECT_AFTER_SECONDS = 8.0
 
 
 def _format_rate(bits_per_second: float) -> str:
@@ -25,6 +28,11 @@ def _format_rate(bits_per_second: float) -> str:
 
 def _fallback_to_gst_launch(pipeline: str) -> int:
     """Keep the monitor video working when optional Python GI bindings are absent."""
+    if "cctv_selector_" in pipeline:
+        # The source selection and recovery loop require GI. Running this as a
+        # plain gst-launch pipeline would leave the offline pad selected forever.
+        print("Monitor requires python3-gi to switch camera video and offline slates.", flush=True)
+        return 1
     print("Python GStreamer bindings are missing; running video without the stats overlay.", flush=True)
     child = subprocess.Popen(["gst-launch-1.0", "-e", *shlex.split(pipeline)])
 
@@ -38,7 +46,7 @@ def _fallback_to_gst_launch(pipeline: str) -> int:
 
 
 class MonitorPlayer:
-    def __init__(self, pipeline_description: str, control_file: str) -> None:
+    def __init__(self, pipeline_description: str, control_file: str, reconnect_seconds: int = 5) -> None:
         import gi
 
         gi.require_version("Gst", "1.0")
@@ -67,6 +75,31 @@ class MonitorPlayer:
         self.age_seconds: float | None = None
         self.last_video_buffer_at: float | None = None
         self.started_at = time.monotonic()
+        self.reconnect_seconds = max(1, reconnect_seconds)
+        self.cameras = {}
+        index = 0
+        while True:
+            selector = self.pipeline.get_by_name(f"cctv_selector_{index}")
+            if selector is None:
+                break
+            live = self.pipeline.get_by_name(f"cctv_live_{index}")
+            offline = self.pipeline.get_by_name(f"cctv_offline_{index}")
+            source = self.pipeline.get_by_name(f"cctv_source_{index}")
+            if live is None or offline is None or source is None:
+                raise RuntimeError(f"monitor camera branch {index} is incomplete")
+            heading = offline.get_property("text").split(" — Camera offline", 1)[0]
+            self.cameras[index] = {
+                "selector": selector, "offline": offline, "source": source,
+                "heading": heading, "last_frame": None, "last_received": None,
+                "showing_live": False, "restarting": False, "last_retry_at": self.started_at,
+                "last_slate_text": None,
+            }
+            pad = live.get_static_pad("src")
+            pad.add_probe(Gst.PadProbeType.BUFFER, self._on_camera_buffer, index)
+            # The standby pad is linked first. It is the only source allowed on
+            # screen until a decoded frame from this camera actually arrives.
+            selector.set_property("active-pad", selector.get_static_pad("sink_0"))
+            index += 1
         self.rtspsrcs = self._find_elements("rtspsrc")
         for source in self.rtspsrcs:
             source.connect("pad-added", self._on_rtp_pad)
@@ -80,6 +113,70 @@ class MonitorPlayer:
         bus.connect("message", self._on_bus_message)
         GLib.timeout_add(200, self._read_control)
         GLib.timeout_add(1000, self._update_overlay)
+        GLib.timeout_add(500, self._check_cameras)
+
+    def _on_camera_buffer(self, _pad, info, index):
+        if info.get_buffer():
+            with self.lock:
+                camera = self.cameras[index]
+                camera["last_frame"] = time.monotonic()
+                camera["last_received"] = datetime.now().astimezone()
+                should_switch = not camera["showing_live"]
+            if should_switch:
+                self.GLib.idle_add(self._show_live, index)
+        return self.Gst.PadProbeReturn.OK
+
+    def _show_live(self, index: int) -> bool:
+        camera = self.cameras[index]
+        if not camera["showing_live"] and not camera["restarting"]:
+            camera["selector"].set_property("active-pad", camera["selector"].get_static_pad("sink_1"))
+            camera["showing_live"] = True
+            print(f"Camera {camera['heading']} delivering video", flush=True)
+        return False
+
+    def _show_offline(self, index: int) -> None:
+        camera = self.cameras[index]
+        with self.lock:
+            received = camera["last_received"]
+        last_text = received.strftime("%Y-%m-%d %H:%M:%S %Z") if received else "never"
+        slate_text = f"{camera['heading']}\nCamera offline — reconnecting\nLast received: {last_text}"
+        if camera["last_slate_text"] != slate_text:
+            camera["offline"].set_property("text", slate_text)
+            camera["last_slate_text"] = slate_text
+        if camera["showing_live"]:
+            camera["selector"].set_property("active-pad", camera["selector"].get_static_pad("sink_0"))
+            camera["showing_live"] = False
+            print(f"Camera {camera['heading']} offline; showing local slate", flush=True)
+
+    def _check_cameras(self) -> bool:
+        now = time.monotonic()
+        for index, camera in self.cameras.items():
+            with self.lock:
+                last_frame = camera["last_frame"]
+            if last_frame is None or now - last_frame > OFFLINE_AFTER_SECONDS:
+                self._show_offline(index)
+            retry_anchor = max(last_frame or 0, camera["last_retry_at"])
+            if not camera["restarting"] and now - retry_anchor > RECONNECT_AFTER_SECONDS:
+                self._restart_source(index)
+        return True
+
+    def _restart_source(self, index: int) -> None:
+        camera = self.cameras[index]
+        camera["restarting"] = True
+        camera["last_retry_at"] = time.monotonic()
+        self._show_offline(index)
+        camera["source"].set_state(self.Gst.State.NULL)
+        print(f"Reconnecting camera {camera['heading']}", flush=True)
+        self.GLib.timeout_add(self.reconnect_seconds * 1000, self._resume_source, index)
+
+    def _resume_source(self, index: int) -> bool:
+        camera = self.cameras[index]
+        with self.lock:
+            camera["last_frame"] = None
+        camera["source"].set_state(self.Gst.State.PLAYING)
+        camera["last_retry_at"] = time.monotonic()
+        camera["restarting"] = False
+        return False
 
     def _find_elements(self, factory: str) -> list:
         elements = []
@@ -145,6 +242,14 @@ class MonitorPlayer:
         if message.type == self.Gst.MessageType.ERROR:
             error, debug = message.parse_error()
             print(f"Monitor media error: {error}; {debug or ''}", flush=True)
+            element = message.src
+            while element is not None:
+                for index, camera in self.cameras.items():
+                    if element == camera["source"]:
+                        if not camera["restarting"]:
+                            self._restart_source(index)
+                        return
+                element = element.get_parent()
             self.loop.quit()
         elif message.type == self.Gst.MessageType.EOS:
             self.loop.quit()
@@ -203,9 +308,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--pipeline", required=True, help="GStreamer launch description without gst-launch-1.0")
     parser.add_argument("--control-file", required=True, help="Agent-written file used to request the timed overlay")
+    parser.add_argument("--reconnect-seconds", type=int, default=5)
     args = parser.parse_args()
     try:
-        player = MonitorPlayer(args.pipeline, args.control_file)
+        player = MonitorPlayer(args.pipeline, args.control_file, args.reconnect_seconds)
     except (ImportError, ValueError):
         return _fallback_to_gst_launch(args.pipeline)
     return player.run()

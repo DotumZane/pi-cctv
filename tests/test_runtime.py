@@ -106,7 +106,7 @@ class RuntimeTests(unittest.TestCase):
             self.assertFalse(state_path.exists())
 
     def test_empty_assignment_stops_monitor_pipeline(self):
-        self.assertIsNone(command_for_assignment({"layout": "single", "cameras": "[]"}, "media"))
+        self.assertIn("No camera assigned", command_for_assignment({"layout": "single", "cameras": "[]"}, "media"))
 
     def test_single_assignment_targets_camera_path(self):
         command = command_for_assignment({"layout": "single", "cameras": '["cam-7"]'}, "media")

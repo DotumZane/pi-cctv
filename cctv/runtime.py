@@ -26,7 +26,7 @@ from pathlib import Path
 from dataclasses import dataclass
 from typing import Callable
 
-from .media import CameraMedia, MonitorMedia, quad_pipeline
+from .media import CameraMedia, MonitorMedia, idle_monitor_pipeline, quad_pipeline
 
 
 def _command_output(result: subprocess.CompletedProcess, limit: int = 700) -> str:
@@ -184,7 +184,7 @@ def command_for_assignment(assignment: dict, media_server: str, settings: dict |
     settings = settings or {}
     cameras = json.loads(assignment.get("cameras", "[]")) if isinstance(assignment.get("cameras"), str) else assignment.get("cameras", [])
     if not cameras:
-        return None
+        return idle_monitor_pipeline(preview_id=settings.get("preview_id", "default"))
     urls = [_camera_url(camera, assignment, media_server) for camera in cameras]
     width, height = _monitor_output_size(settings)
     if assignment.get("layout", "single") == "2x2":
@@ -210,8 +210,8 @@ def commands_for_assignment(assignment: dict, media_server: str, settings: dict 
     commands = []
     for output_index, output in enumerate(outputs):
         cameras = output.get("cameras", []) if isinstance(output, dict) else []
+        connector_id = output.get("connector_id") if isinstance(output, dict) else None
         if cameras:
-            connector_id = output.get("connector_id")
             settings = settings or {}
             width, height = _monitor_output_size(settings, connector_id)
             commands.append(MonitorMedia(
@@ -222,10 +222,15 @@ def commands_for_assignment(assignment: dict, media_server: str, settings: dict 
                 show_timestamp=settings.get("show_timestamp", False), camera_name=settings.get("camera_name", ""),
                 preview_id=f"{settings.get('preview_id', 'monitor')}-{connector_id or output_index}",
             ).pipeline())
+        else:
+            commands.append(idle_monitor_pipeline(
+                preview_id=f"{(settings or {}).get('preview_id', 'monitor')}-{connector_id or output_index}",
+                connector_id=connector_id,
+            ))
     return commands
 
 
-def managed_monitor_commands(commands: list[str], device_id: str) -> list[str]:
+def managed_monitor_commands(commands: list[str], device_id: str, reconnect_seconds: int = 5) -> list[str]:
     """Run monitor pipelines in the controllable GStreamer player process."""
     safe_id = re.sub(r"[^A-Za-z0-9_.-]", "_", device_id)[:80] or "monitor"
     control_file = f"/run/pi-cctv/monitor-stats-{safe_id}.json"
@@ -237,7 +242,7 @@ def managed_monitor_commands(commands: list[str], device_id: str) -> list[str]:
         pipeline = command[len(prefix):]
         wrapped.append(
             "python3 -m cctv.monitor_player --control-file "
-            f"{quote(control_file)} --pipeline {quote(pipeline)}"
+            f"{quote(control_file)} --reconnect-seconds {reconnect_seconds} --pipeline {quote(pipeline)}"
         )
     return wrapped
 
@@ -766,6 +771,7 @@ class DeviceRuntime:
         settings["display_mode"] = next(iter(settings["display_modes"].values()), None)
         return managed_monitor_commands(
             commands_for_assignment(assignment, self.media_server, settings), self.device_id,
+            self.media_retry_seconds,
         )
 
     def reconcile_media(self) -> None:

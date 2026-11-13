@@ -1,6 +1,6 @@
 import unittest
 
-from cctv.media import CameraMedia, MonitorMedia, quad_pipeline
+from cctv.media import CameraMedia, MonitorMedia, idle_monitor_pipeline, quad_pipeline
 
 
 class MediaTests(unittest.TestCase):
@@ -36,6 +36,18 @@ class MediaTests(unittest.TestCase):
         self.assertIn("v4l2h264dec", command)
         self.assertIn("drop-on-latency=true", command)
         self.assertIn('textoverlay name=cctv_stats text="" silent=true', command)
+        self.assertIn("input-selector name=cctv_selector_0", command)
+        self.assertIn("cctv_selector_0.sink_0", command)
+        self.assertIn("cctv_selector_0.sink_1", command)
+        self.assertIn("identity name=cctv_live_0", command)
+        self.assertIn("Camera offline", command)
+        self.assertIn("cam-1", command)
+
+    def test_idle_monitor_has_neutral_slate_and_preview(self):
+        command = idle_monitor_pipeline(preview_id="monitor-1", connector_id="42")
+        self.assertIn("No camera assigned", command)
+        self.assertIn("connector-id=42", command)
+        self.assertIn("pi-cctv-monitor-preview-monitor-1", command)
 
     def test_monitor_fits_video_to_detected_display_aspect(self):
         command = MonitorMedia("rtsp://media:8554/cam-1", width=800, height=480).pipeline()
@@ -50,6 +62,11 @@ class MediaTests(unittest.TestCase):
         command = quad_pipeline(["rtsp://media:8554/cam-1", "rtsp://media:8554/cam-2"])
         self.assertIn("sink_0::xpos=0 sink_0::ypos=0", command)
         self.assertIn("sink_1::xpos=960 sink_1::ypos=0", command)
+        for index in range(2):
+            self.assertIn(f"input-selector name=cctv_selector_{index}", command)
+            self.assertIn(f"textoverlay name=cctv_offline_{index}", command)
+            self.assertIn(f"identity name=cctv_live_{index}", command)
+            self.assertIn(f"rtspsrc name=cctv_source_{index}", command)
         with self.assertRaises(ValueError):
             quad_pipeline([])
         with self.assertRaises(ValueError):

@@ -11,6 +11,23 @@ import argparse
 import re
 from dataclasses import dataclass
 from shlex import quote
+from urllib.parse import unquote, urlsplit
+
+
+def _camera_label(stream_url: str) -> str:
+    return unquote(urlsplit(stream_url).path.rsplit("/", 1)[-1]) or "Camera"
+
+
+def _offline_branch(index: int, label: str, width: int, height: int) -> str:
+    # The standby source keeps the display and its dashboard preview alive even
+    # when the RTSP source has not connected or has stopped delivering frames.
+    heading = quote(f"{label} — Camera offline")
+    return (
+        f"videotestsrc is-live=true pattern=black ! video/x-raw,width={width},height={height},framerate=5/1 ! "
+        f"textoverlay name=cctv_offline_{index} text={heading} font-desc=\"Sans 20\" "
+        "halignment=center valignment=center ! queue max-size-buffers=2 leaky=downstream ! "
+        f"cctv_selector_{index}.sink_0"
+    )
 
 
 @dataclass(frozen=True)
@@ -107,13 +124,17 @@ class MonitorMedia:
         filter_chain = (" ! " + " ! ".join(filters)) if filters else ""
         preview_width, preview_height = _preview_size(self.width or 1920, self.height or 1080)
         preview = _preview_branch(self.preview_id, preview_width, preview_height)
+        offline = _offline_branch(0, _camera_label(self.stream_url), self.width or 1920, self.height or 1080)
         return (
             "gst-launch-1.0 -e "
-            f"rtspsrc location={quote(self.stream_url)} protocols=tcp latency=0 drop-on-latency=true ! "
-            "rtph264depay ! h264parse ! v4l2h264dec ! queue max-size-buffers=2 leaky=downstream ! "
+            "input-selector name=cctv_selector_0 sync-streams=false ! "
             f"videoconvert{filter_chain} ! tee name=monitor_out "
             f"monitor_out. ! queue max-size-buffers=2 leaky=downstream ! {sink} "
-            f"monitor_out. ! {preview}"
+            f"monitor_out. ! {preview} "
+            f"{offline} "
+            f"rtspsrc name=cctv_source_0 location={quote(self.stream_url)} protocols=tcp latency=0 drop-on-latency=true ! "
+            "rtph264depay ! h264parse ! v4l2h264dec ! identity name=cctv_live_0 ! "
+            "queue max-size-buffers=2 leaky=downstream ! cctv_selector_0.sink_1"
         )
 
 
@@ -135,6 +156,22 @@ def _preview_branch(preview_id: str, width: int, height: int) -> str:
     )
 
 
+def idle_monitor_pipeline(preview_id: str = "default", connector_id: str | None = None) -> str:
+    """Show a neutral local display when a monitor has no assigned camera."""
+    sink = "kmssink sync=false" + (f" connector-id={connector_id}" if connector_id else "")
+    return (
+        "gst-launch-1.0 -e videotestsrc is-live=true pattern=black ! "
+        "video/x-raw,width=1280,height=720,framerate=10/1 ! "
+        'textoverlay text="No camera assigned" font-desc="Sans 20" '
+        'halignment=center valignment=center ! '
+        'textoverlay name=cctv_stats text="" silent=true font-desc="Sans 12" '
+        'halignment=left valignment=top xpad=18 ypad=18 shaded-background=true ! '
+        "tee name=monitor_out "
+        f"monitor_out. ! queue max-size-buffers=2 leaky=downstream ! {sink} "
+        f"monitor_out. ! {_preview_branch(preview_id, 640, 360)}"
+    )
+
+
 def quad_pipeline(stream_urls: list[str], width: int = 1920, height: int = 1080, preview_id: str = "default") -> str:
     """Build a 2×2 decoder pipeline for one to four RTSP streams."""
     if not 1 <= len(stream_urls) <= 4:
@@ -143,9 +180,12 @@ def quad_pipeline(stream_urls: list[str], width: int = 1920, height: int = 1080,
     branches = []
     for index, url in enumerate(stream_urls):
         branches.append(
-            f"rtspsrc location={quote(url)} protocols=tcp latency=0 drop-on-latency=true ! "
+            f"input-selector name=cctv_selector_{index} sync-streams=false ! compositor.sink_{index} "
+            f"{_offline_branch(index, _camera_label(url), cell_width, cell_height)} "
+            f"rtspsrc name=cctv_source_{index} location={quote(url)} protocols=tcp latency=0 drop-on-latency=true ! "
             f"rtph264depay ! h264parse ! v4l2h264dec ! videoconvert ! videoscale add-borders=true ! "
-            f"video/x-raw,width={cell_width},height={cell_height} ! compositor.sink_{index}"
+            f"video/x-raw,width={cell_width},height={cell_height} ! identity name=cctv_live_{index} ! "
+            f"queue max-size-buffers=2 leaky=downstream ! cctv_selector_{index}.sink_1"
         )
     positions = " ".join(
         f"sink_{i}::xpos={(i % 2) * cell_width} sink_{i}::ypos={(i // 2) * cell_height}"
@@ -154,7 +194,7 @@ def quad_pipeline(stream_urls: list[str], width: int = 1920, height: int = 1080,
     preview_width, preview_height = _preview_size(width, height)
     return (
         "gst-launch-1.0 -e " + " ".join(branches)
-        + f" compositor name=compositor {positions} ! video/x-raw,width={width},height={height} ! "
+        + f" compositor name=compositor ignore-inactive-pads=true background=black {positions} ! video/x-raw,width={width},height={height} ! "
         + 'textoverlay name=cctv_stats text="" silent=true font-desc="Sans 12" '
         + "halignment=left valignment=top xpad=18 ypad=18 shaded-background=true ! tee name=monitor_out "
         + "monitor_out. ! queue max-size-buffers=2 leaky=downstream ! kmssink sync=false "
