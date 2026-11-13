@@ -151,6 +151,28 @@ async function openMultiCameraWorkspace(){const cameras=state.devices.filter(dev
 const closeLiveWorkspaceBeforeMulti=closeLiveWorkspace;closeLiveWorkspace=function(){if(multiWorkspaceActive){multiCloseWorkspace();return}closeLiveWorkspaceBeforeMulti()};window.addEventListener('popstate',()=>{if(multiWorkspaceActive){multiWorkspaceActive=false;clearInterval(multiWorkspaceTimer);document.querySelectorAll('.multi-camera-video').forEach(video=>{video.pause();video.removeAttribute('src');video.load()});liveWorkspace.classList.remove('multi-workspace')}});
 const multiSeekAllBeforeMode=multiSeekAll;multiSeekAll=async function(value){const mode=document.querySelector('#multi-workspace-mode');if(mode){mode.textContent='PLAYBACK';mode.dataset.mode='recording'}return multiSeekAllBeforeMode(value)};
 
+// Keep the timeline inside its grid row and allow scrolling across midnight.
+const multiTimelineBoundsStyle=document.createElement('style');
+multiTimelineBoundsStyle.textContent='#live-workspace.multi-workspace .multi-camera-layout{grid-template-rows:minmax(0,1fr)}#live-workspace.multi-workspace #workspace-multi-timeline{min-height:0;overflow:hidden}#live-workspace.multi-workspace .multi-vertical-timeline-shell{box-sizing:border-box;min-height:0}';
+document.head.appendChild(multiTimelineBoundsStyle);
+let multiChangingDay=false;
+document.addEventListener('wheel',async event=>{
+  const scroll=event.target.closest?.('.multi-vertical-timeline-scroll');
+  if(!scroll||multiChangingDay||!event.deltaY)return;
+  const backwards=event.deltaY>0&&scroll.scrollTop>=scroll.scrollHeight-scroll.clientHeight-1;
+  const forwards=event.deltaY<0&&scroll.scrollTop<=0;
+  if(!backwards&&!forwards)return;
+  const date=multiDayStart();date.setDate(date.getDate()+(backwards?-1:1));
+  if(localDateKey(date)>localDateKey(new Date()))return;
+  event.preventDefault();event.stopImmediatePropagation();multiChangingDay=true;
+  try{
+    multiWorkspaceDate=localDateKey(date);
+    const input=document.querySelector('#multi-workspace-date');if(input)input.value=multiWorkspaceDate;
+    multiWorkspaceValue=backwards?multiDaySeconds()-1:0;
+    await multiLoadTimelines();await multiSeekAll(multiWorkspaceValue);
+  }finally{multiChangingDay=false}
+},{capture:true,passive:false});
+
 /* Commit a scrub without handing control back to the autoplay playback loader. */
 const previewWorkspaceTimelineBeforeContinuousScrub=previewWorkspaceTimeline;let workspaceContinuousPreviewValue=null,workspaceContinuousPreviewAt=0;previewWorkspaceTimeline=function(value){const numeric=Number(value)||0,now=performance.now(),elapsed=workspaceContinuousPreviewAt?Math.max(16,now-workspaceContinuousPreviewAt):0,velocity=elapsed&&workspaceContinuousPreviewValue!==null?(numeric-workspaceContinuousPreviewValue)/(elapsed/1000):0;workspaceContinuousPreviewValue=numeric;workspaceContinuousPreviewAt=now;workspaceTimelineLastValue=numeric;cancelAnimationFrame(workspaceTimelineSeekFrame);workspaceTimelineSeekFrame=requestAnimationFrame(()=>updateTimelinePlayhead(numeric));previewWorkspaceTimelineScrub(numeric,velocity)};
 scrubWorkspaceTimeline=function(value){const selected=Math.max(0,Math.min(timelineDayLength(workspaceTimelineDate)-1,Number(value)||0)),record=timelineRecordAt(selected),status=document.querySelector('#workspace-player'),video=document.querySelector('#workspace-live');workspaceTimelineLastValue=selected;updateTimelinePlayhead(selected);workspaceSeekToken++;if(!record){stopWorkspaceScrubPreview();if(status)status.innerHTML='<span class="notice">No recording is available at the selected time.</span>';return}const offset=Math.max(0,selected-timelineSeconds(record)),token=workspaceSeekToken;workspaceScrubTimelineValue=selected;workspaceScrubTarget=offset;workspaceScrubLastInputAt=performance.now();workspaceScrubVideo=video;if(video?.dataset.playback==='recording'&&workspacePlaybackUrl===record.url&&video.readyState>=1){video.pause();try{video.currentTime=offset}catch{}updateTimelinePlayhead(selected);return}if(status)status.dataset.seeking='true';loadWorkspaceScrubRecording(record,offset).then(ready=>{if(token!==workspaceSeekToken||!ready)return;video.pause();try{video.currentTime=Math.max(0,workspaceScrubTimelineValue-timelineSeconds(record))}catch{}updateTimelinePlayhead(workspaceScrubTimelineValue);if(status)status.dataset.seeking='false'});}
