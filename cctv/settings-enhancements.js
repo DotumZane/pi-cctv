@@ -152,7 +152,8 @@
     window.loadAll = async function loadAllWithDeviceRestore() {
       await originalLoadAll();
       const match = location.hash.match(/^#device\/(.+)$/);
-      const savedId = match ? decodeURIComponent(match[1]) : localStorage.getItem('cctvDeviceId');
+      const restoringDetail = Boolean(match) || localStorage.getItem('cctvView') === 'device-detail';
+      const savedId = restoringDetail ? (match ? decodeURIComponent(match[1]) : localStorage.getItem('cctvDeviceId')) : null;
       const device = savedId && state.devices.find(item => item.id === savedId);
       if (device) {
         const detail = document.querySelector('#device-detail-page');
