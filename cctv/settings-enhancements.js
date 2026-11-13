@@ -73,6 +73,16 @@
     return deviceMetadata(device).hostname || device.id || '';
   }
 
+  window.normalizeDeviceNameInput = function normalizeDeviceNameInput(input) {
+    if (!input) return;
+    input.value = input.value.toLowerCase()
+      .replace(/[\s_]+/g, '-')
+      .replace(/[^a-z0-9-]/g, '')
+      .replace(/-+/g, '-')
+      .replace(/^-+/, '')
+      .slice(0, 63);
+  };
+
   function ensureDeviceHostnameEditor(id) {
     const device = state.devices.find(item => item.id === id);
     const page = document.querySelector('#device-detail-page');
@@ -82,12 +92,12 @@
     if (!profile) {
       const grid = page.querySelector('.device-grid');
       if (!grid) return;
-      grid.insertAdjacentHTML('afterbegin', `<section class="device-card device-identity-card"><div class="panel-head"><div><h2>Device identity</h2><span class="notice">Use one name for this Pi in the dashboard and on your network.</span></div></div><div class="device-identity-columns"><form id="device-profile-form" class="device-identity-group" onsubmit="saveDeviceIdentity(event, '${esc(id)}')"><h3>Device name</h3><p>This becomes the dashboard name and Pi hostname.</p><label>Name<input id="device-profile-name" maxlength="63" pattern="[a-zA-Z0-9][a-zA-Z0-9-]{0,61}[a-zA-Z0-9]" required value="${esc(hostnameFor(device))}"></label><label>Location<input id="device-profile-location" maxlength="120" placeholder="Optional" value="${esc(device.location || '')}"></label><div class="device-identity-actions"><button class="primary" type="submit">Save device identity</button><span id="device-profile-status" class="notice" role="status" aria-live="polite"></span></div></form></div></section>`);
+      grid.insertAdjacentHTML('afterbegin', `<section class="device-card device-identity-card"><div class="panel-head"><div><h2>Device identity</h2><span class="notice">Use one name for this Pi in the dashboard and on your network.</span></div></div><div class="device-identity-columns"><form id="device-profile-form" class="device-identity-group" onsubmit="saveDeviceIdentity(event, '${esc(id)}')"><h3>Device name</h3><p>This becomes the dashboard name and Pi hostname.</p><label>Name<input id="device-profile-name" maxlength="63" pattern="[a-zA-Z0-9][a-zA-Z0-9-]{0,61}[a-zA-Z0-9]" inputmode="text" autocapitalize="none" autocomplete="off" placeholder="e.g. trimmer-outfeed" oninput="normalizeDeviceNameInput(this)" required value="${esc(hostnameFor(device))}"></label><label>Location<input id="device-profile-location" maxlength="120" placeholder="Optional" value="${esc(device.location || '')}"></label><div class="device-identity-actions"><button class="primary" type="submit">Save device identity</button><span id="device-profile-status" class="notice" role="status" aria-live="polite">Use lowercase letters, numbers, or hyphens.</span></div></form></div></section>`);
       return;
     }
     if (!profile) return;
     const name = profile.querySelector('#device-profile-name');
-    if (name) { name.value = hostnameFor(device); name.maxLength = 63; name.pattern = '[a-zA-Z0-9][a-zA-Z0-9-]{0,61}[a-zA-Z0-9]'; }
+    if (name) { name.value = hostnameFor(device); name.maxLength = 63; name.pattern = '[a-zA-Z0-9][a-zA-Z0-9-]{0,61}[a-zA-Z0-9]'; name.oninput = () => normalizeDeviceNameInput(name); }
     profile.onsubmit = event => saveDeviceIdentity(event, id);
   }
 
@@ -115,7 +125,7 @@
       const index = state.devices.findIndex(device => device.id === id);
       if (index >= 0) state.devices[index] = profileResult;
       renderDevices();
-      const title = document.querySelector('#device-detail-page .device-detail > .panel .panel-head h2');
+      const title = document.querySelector('#device-detail-page .device-hero h1');
       if (title) title.textContent = profileResult.name;
       const locationLabel = [...document.querySelectorAll('#device-detail-page dl dt')].find(term => term.textContent === 'Location');
       if (locationLabel) locationLabel.nextElementSibling.textContent = profileResult.location || '—';
