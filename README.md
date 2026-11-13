@@ -71,7 +71,7 @@ python3 -m cctv.reset_password --username Admin
 
 Use `--db /path/to/cctv.db` when the server uses a non-default database path. Resetting a password signs out all existing sessions for that user.
 
-Administrators can rename an adopted Pi and update its location from **Devices → Open → Device identity**. This changes only the dashboard name and location; the stable device ID, role, and agent settings remain intact.
+Administrators can rename an adopted Pi and update its location from **Devices → Open → Device identity**. The device name is also used as the Pi hostname, so one name identifies the Pi in the dashboard and on the network. The stable device ID, role, and agent settings remain intact.
 
 To replace an offline camera, adopt a new pending Pi and select the offline camera in **Replace offline camera**. Disconnect the old Pi first so it cannot continue publishing to the same camera stream. The replacement keeps the camera's device ID, dashboard name/location, camera settings, and monitor assignments; the new Pi receives its own credential and changes its hostname to the retained device ID. Queued commands for the retired Pi are discarded.
 
