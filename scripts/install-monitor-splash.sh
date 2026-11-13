@@ -5,6 +5,9 @@ set -euo pipefail
 
 INSTALL_DIR="${CCTV_INSTALL_DIR:-/opt/pi-cctv}"
 IMAGE="$INSTALL_DIR/assets/rsg-monitor-splash.tga"
+# Raspberry Pi's fullscreen_logo loader requires an uncompressed 24-bit TGA
+# with no more than 224 colours; keep this validation in the packaged asset
+# and let configure-splash perform the platform-side checks.
 STATE_DIR=/var/lib/pi-cctv
 STAMP="$STATE_DIR/monitor-splash.sha256"
 
