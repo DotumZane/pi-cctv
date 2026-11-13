@@ -10,10 +10,32 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from cctv.agent import run_pending
-from cctv.runtime import DeviceRuntime, _monitor_output_size, apply_monitor_schedule, camera_stream_published, command_for_assignment, commands_for_assignment, managed_monitor_commands
+from cctv.runtime import DeviceRuntime, _monitor_output_size, apply_monitor_schedule, camera_stream_published, command_for_assignment, commands_for_assignment, managed_monitor_commands, start_monitor_splash_setup
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_boot_splash_setup_runs_only_on_monitor_pi(self):
+        with TemporaryDirectory(prefix="pi-cctv-splash-test-") as directory:
+            root = Path(directory)
+            script = root / "scripts/install-monitor-splash.sh"
+            script.parent.mkdir()
+            script.write_text("#!/bin/bash\n")
+            cmdline = root / "cmdline.txt"
+            cmdline.write_text("console=tty1\n")
+            with patch("cctv.runtime.os.geteuid", return_value=0), \
+                    patch("cctv.runtime.subprocess.run", return_value=Mock(returncode=0)) as run:
+                start_monitor_splash_setup("camera", root, cmdline)
+                run.assert_not_called()
+                start_monitor_splash_setup("monitor", root, cmdline)
+                self.assertEqual(run.call_count, 1)
+                args = run.call_args.args[0]
+                self.assertIn("--no-block", args)
+                self.assertIn(f"--setenv=CCTV_INSTALL_DIR={root}", args)
+                self.assertEqual(args[-2:], ["/bin/bash", str(script)])
+                cmdline.unlink()
+                start_monitor_splash_setup("monitor", root, cmdline)
+                self.assertEqual(run.call_count, 1)
+
     def test_monitor_preview_uses_current_pipeline_and_retries_failed_upload(self):
         runtime = DeviceRuntime("monitor", "mon-1", "Monitor", "", "http://server", "media", token="token")
         with TemporaryDirectory(prefix="pi-cctv-test-") as directory:

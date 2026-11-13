@@ -35,6 +35,22 @@ def _command_output(result: subprocess.CompletedProcess, limit: int = 700) -> st
     return output[-limit:]
 
 
+def start_monitor_splash_setup(role: str, install_dir: Path = Path("/opt/pi-cctv"),
+                               boot_cmdline: Path = Path("/boot/firmware/cmdline.txt")) -> None:
+    """Configure the boot image independently of the live monitor pipeline."""
+    script = install_dir / "scripts/install-monitor-splash.sh"
+    if role != "monitor" or not boot_cmdline.is_file() or not script.is_file() or os.geteuid() != 0:
+        return
+    result = subprocess.run([
+        "systemd-run", "--quiet", "--no-block", "--collect",
+        f"--unit=pi-cctv-monitor-splash-{os.getpid()}",
+        f"--setenv=CCTV_INSTALL_DIR={install_dir}",
+        "/bin/bash", str(script),
+    ], capture_output=True, text=True, timeout=10, check=False)
+    if result.returncode:
+        print(f"Unable to start monitor splash setup: {_command_output(result)}", flush=True)
+
+
 def system_metrics() -> dict[str, float | int]:
     metrics: dict[str, float | int] = {}
     try:
@@ -930,6 +946,10 @@ class DeviceRuntime:
                     print(f"Enrollment failed: {exc}; retrying", flush=True)
                     time.sleep(5)
         self.activate_monitor_display()
+        try:
+            start_monitor_splash_setup(self.role)
+        except (OSError, subprocess.SubprocessError) as exc:
+            print(f"Unable to start monitor splash setup: {exc}", flush=True)
         if self.role == "camera":
             relay = subprocess.run(["systemctl", "enable", "--now", "pi-cctv-relay.service"],
                                    capture_output=True, text=True, timeout=20, check=False)

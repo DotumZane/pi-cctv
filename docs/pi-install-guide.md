@@ -33,6 +33,8 @@ To replace an offline camera, choose that camera in **Replace offline camera** b
 
 Check the Devices page to confirm it becomes online. For a camera, confirm a live view appears. For a monitor, assign a camera in Monitor routing and confirm its display.
 
+On a monitor Pi, the agent installs the RSG Forest Products boot splash in the background. It appears on the next Pi reboot. Camera Pis keep their normal boot screen. If the splash does not appear, check `sudo journalctl -u 'pi-cctv-monitor-splash-*' --no-pager` on the monitor for package or boot configuration errors.
+
 ## If the Pi does not appear
 
 - Confirm the dashboard server and Pi are on the same LAN/VLAN and that the network allows local UDP discovery on port `42900` and HTTPS on port `8443`.
