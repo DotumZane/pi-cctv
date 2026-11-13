@@ -155,6 +155,9 @@ const multiSeekAllBeforeMode=multiSeekAll;multiSeekAll=async function(value){con
 const multiTimelineBoundsStyle=document.createElement('style');
 multiTimelineBoundsStyle.textContent='#live-workspace.multi-workspace .multi-camera-layout{grid-template-rows:minmax(0,1fr)}#live-workspace.multi-workspace #workspace-multi-timeline{min-height:0;overflow:hidden}#live-workspace.multi-workspace .multi-vertical-timeline-shell{box-sizing:border-box;min-height:0}';
 document.head.appendChild(multiTimelineBoundsStyle);
+const multiPlaybackVisibilityStyle=document.createElement('style');
+multiPlaybackVisibilityStyle.textContent='#live-workspace.multi-workspace .multi-camera-main{display:flex;flex-direction:column;min-height:0;overflow:auto}#live-workspace.multi-workspace .multi-camera-grid{height:auto;flex:1 1 0;min-height:180px}#live-workspace.multi-workspace .multi-date-controls,#live-workspace.multi-workspace .multi-playback-controls,#live-workspace.multi-workspace #workspace-multi-player{flex:none}#live-workspace.multi-workspace .multi-camera-tile .multi-camera-missing[hidden]{display:none}';
+document.head.appendChild(multiPlaybackVisibilityStyle);
 let multiTimelineDays=[],multiTimelineLoading=false,multiTimelineGeneration=0;
 const multiContinuousHeight=3600;
 function multiAppendDay(date,records){
