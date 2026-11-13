@@ -70,7 +70,7 @@
   document.head.appendChild(style);
 
   function hostnameFor(device) {
-    return deviceMetadata(device).hostname || device.id || '';
+    return device.name || deviceMetadata(device).hostname || device.id || '';
   }
 
   window.normalizeDeviceNameInput = function normalizeDeviceNameInput(input) {
