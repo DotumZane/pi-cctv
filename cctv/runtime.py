@@ -315,6 +315,7 @@ class DeviceRuntime:
         self.media_retry_seconds = 5
         self.next_media_retry = 0.0
         self.last_preview_seen_mtime_ns = 0
+        self.preview_started_ns = 0
         self.monitor_blanking_value: bool | None = None
         self.camera_requested_command: tuple[str, ...] | None = None
         self.camera_fallback_active = False
@@ -812,6 +813,7 @@ class DeviceRuntime:
             return
         self.stop_media()
         self.last_command = signature
+        self.preview_started_ns = time.time_ns()
         for command in commands:
             print(f"Starting media pipeline for {self.device_id}", flush=True)
             self.processes.append(self.process_factory(command, shell=True, start_new_session=True))
@@ -861,16 +863,24 @@ class DeviceRuntime:
         self.forwarder = None
 
     def upload_monitor_preview(self) -> None:
-        """Upload the newest completed, low-rate display pipeline JPEG."""
-        if self.role != "monitor" or not self.token:
+        """Upload a frame from this monitor's current display pipeline only."""
+        if self.role != "monitor" or not self.token or not self.last_command:
             return
         candidates = []
-        for filename in glob.glob("/tmp/pi-cctv-monitor-preview-*.jpg"):
+        patterns = {
+            path.replace("%05d", "*")
+            for command in self.last_command
+            for path in re.findall(r"/tmp/pi-cctv-monitor-preview-[A-Za-z0-9_-]+-%05d\.jpg", command)
+        }
+        for filename in {name for pattern in patterns for name in glob.glob(pattern)}:
             try:
                 stat = os.stat(filename)
             except OSError:
                 continue
-            if stat.st_mtime_ns > self.last_preview_seen_mtime_ns and 0 < time.time() - stat.st_mtime < 10 and stat.st_size <= 1_500_000:
+            if (stat.st_mtime_ns >= self.preview_started_ns
+                    and stat.st_mtime_ns > self.last_preview_seen_mtime_ns
+                    and 0 < time.time() - stat.st_mtime < 10
+                    and stat.st_size <= 1_500_000):
                 candidates.append((stat.st_mtime_ns, stat.st_mtime, filename))
         if not candidates:
             return
@@ -883,7 +893,6 @@ class DeviceRuntime:
                 image = preview_file.read(1_500_001)
             if len(image) > 1_500_000 or not image.startswith(b"\xff\xd8") or not image.endswith(b"\xff\xd9"):
                 return
-            self.last_preview_seen_mtime_ns = mtime_ns
             request = urllib.request.Request(
                 f"{self.server}/api/devices/{urllib.parse.quote(self.device_id, safe='')}/preview",
                 data=image, method="POST",
@@ -891,6 +900,7 @@ class DeviceRuntime:
             )
             with urllib.request.urlopen(request, timeout=10) as response:
                 response.read()
+            self.last_preview_seen_mtime_ns = mtime_ns
             self.last_preview_mtime_ns = mtime_ns
         except (OSError, urllib.error.URLError) as exc:
             print(f"Unable to upload monitor preview: {exc}", flush=True)

@@ -2,7 +2,10 @@ import unittest
 import datetime
 import json
 import shlex
-from unittest.mock import Mock, patch
+import time
+import os
+import fnmatch
+from unittest.mock import Mock, MagicMock, patch
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -11,6 +14,34 @@ from cctv.runtime import DeviceRuntime, _monitor_output_size, apply_monitor_sche
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_monitor_preview_uses_current_pipeline_and_retries_failed_upload(self):
+        runtime = DeviceRuntime("monitor", "mon-1", "Monitor", "", "http://server", "media", token="token")
+        with TemporaryDirectory(prefix="pi-cctv-test-") as directory:
+            current = Path(directory) / "pi-cctv-monitor-preview-mon-1-42-00001.jpg"
+            other = Path(directory) / "pi-cctv-monitor-preview-mon-2-42-00001.jpg"
+            old = Path(directory) / "pi-cctv-monitor-preview-mon-1-42-00000.jpg"
+            for path, contents in ((current, b"\xff\xd8current\xff\xd9"),
+                                   (other, b"\xff\xd8other\xff\xd9"),
+                                   (old, b"\xff\xd8old\xff\xd9")):
+                path.write_bytes(contents)
+            now = time.time_ns()
+            for path, stamp in ((current, now - 2_000_000_000),
+                                (other, now - 1_500_000_000),
+                                (old, now - 8_000_000_000)):
+                os.utime(path, ns=(stamp, stamp))
+            runtime.last_command = ("multifilesink location=/tmp/pi-cctv-monitor-preview-mon-1-42-%05d.jpg",)
+            runtime.preview_started_ns = now - 5_000_000_000
+            def matching_files(pattern):
+                return [str(path) for path in (current, other, old) if fnmatch.fnmatch(path.name, Path(pattern).name)]
+            with patch("cctv.runtime.glob.glob", side_effect=matching_files), \
+                    patch("cctv.runtime.urllib.request.urlopen", side_effect=[OSError("offline"), MagicMock()]) as upload:
+                runtime.upload_monitor_preview()
+                self.assertEqual(runtime.last_preview_seen_mtime_ns, 0)
+                runtime.upload_monitor_preview()
+            self.assertEqual(upload.call_count, 2)
+            self.assertEqual(upload.call_args.args[0].data, b"\xff\xd8current\xff\xd9")
+            self.assertEqual(runtime.last_preview_seen_mtime_ns, current.stat().st_mtime_ns)
+
     def test_camera_publisher_probe_checks_metadata_only(self):
         connection = Mock()
         connection.recv.return_value = b"RTSP/1.0 404 Not Found\r\n"
