@@ -130,13 +130,13 @@ class MonitorMedia:
             "input-selector name=cctv_splash_selector sync-streams=false ! tee name=monitor_out "
             f"monitor_out. ! queue max-size-buffers=2 leaky=downstream ! {sink} "
             f"monitor_out. ! {preview} "
-            f"{_splash_branch(self.width or 1920, self.height or 1080)} "
             "input-selector name=cctv_selector_0 sync-streams=false ! "
             f"videoconvert{filter_chain} ! cctv_splash_selector.sink_0 "
             f"{offline} "
             f"rtspsrc name=cctv_source_0 location={quote(self.stream_url)} protocols=tcp latency=0 drop-on-latency=true ! "
             "rtph264depay ! h264parse ! v4l2h264dec ! identity name=cctv_live_0 ! "
-            "queue max-size-buffers=2 leaky=downstream ! cctv_selector_0.sink_1"
+            "queue max-size-buffers=2 leaky=downstream ! cctv_selector_0.sink_1 "
+            f"{_splash_branch(self.width or 1920, self.height or 1080)}"
         )
 
 
@@ -176,14 +176,14 @@ def idle_monitor_pipeline(preview_id: str = "default", connector_id: str | None 
         "gst-launch-1.0 -e input-selector name=cctv_splash_selector sync-streams=false ! tee name=monitor_out "
         f"monitor_out. ! queue max-size-buffers=2 leaky=downstream ! {sink} "
         f"monitor_out. ! {_preview_branch(preview_id, *_preview_size(width, height))} "
-        f"{_splash_branch(width, height)} "
         "videotestsrc is-live=true pattern=black ! "
         f"video/x-raw,width={width},height={height},framerate=10/1 ! "
         'textoverlay text="No camera assigned" font-desc="Sans 20" '
         'halignment=center valignment=center ! '
         'textoverlay name=cctv_stats text="" silent=true font-desc="Sans 12" '
         'halignment=left valignment=top xpad=18 ypad=18 shaded-background=true ! '
-        "cctv_splash_selector.sink_0"
+        "cctv_splash_selector.sink_0 "
+        f"{_splash_branch(width, height)}"
     )
 
 
@@ -212,11 +212,11 @@ def quad_pipeline(stream_urls: list[str], width: int = 1920, height: int = 1080,
         + f"input-selector name=cctv_splash_selector sync-streams=false ! tee name=monitor_out "
         + "monitor_out. ! queue max-size-buffers=2 leaky=downstream ! kmssink sync=false "
         + f"monitor_out. ! {_preview_branch(preview_id, preview_width, preview_height)} "
-        + f"{_splash_branch(width, height)} "
         + " ".join(branches)
         + f" compositor name=compositor ignore-inactive-pads=true background=black {positions} ! video/x-raw,width={width},height={height} ! "
         + 'textoverlay name=cctv_stats text="" silent=true font-desc="Sans 12" '
-        + "halignment=left valignment=top xpad=18 ypad=18 shaded-background=true ! cctv_splash_selector.sink_0"
+        + "halignment=left valignment=top xpad=18 ypad=18 shaded-background=true ! cctv_splash_selector.sink_0 "
+        + f"{_splash_branch(width, height)}"
     )
 
 
