@@ -64,6 +64,27 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(assignment["layout"], "single")
         self.assertEqual(json.loads(assignment["cameras"]), ["cam-1"])
 
+    def test_monitor_preview_expires_when_frames_stop_arriving(self):
+        self.httpd.store.register({"id": "mon-1", "kind": "monitor", "name": "Monitor"})
+        self.httpd.previews_dir = self.recordings.name
+        preview = Path(self.recordings.name) / "mon-1.jpg"
+        preview.write_bytes(b"\xff\xd8frame\xff\xd9")
+
+        def fetch():
+            connection = HTTPConnection(*self.base)
+            connection.request("GET", "/api/devices/mon-1/preview")
+            response = connection.getresponse()
+            result = response.status, response.read()
+            connection.close()
+            return result
+
+        self.assertEqual(fetch(), (200, b"\xff\xd8frame\xff\xd9"))
+        old = time.time() - 30
+        os.utime(preview, (old, old))
+        status, body = fetch()
+        self.assertEqual(status, 404)
+        self.assertIn(b"stale", body)
+
     def test_monitor_assignment_includes_offline_routes_and_online_fallback(self):
         self.httpd.store.register({"id": "cam-primary", "kind": "camera", "name": "Primary"})
         self.httpd.store.register({"id": "cam-backup", "kind": "camera", "name": "Backup"})

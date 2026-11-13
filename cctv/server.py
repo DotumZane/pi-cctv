@@ -599,6 +599,10 @@ class Handler(BaseHTTPRequestHandler):
             filename = re.sub(r"[^A-Za-z0-9_.-]", "_", device_id) + ".jpg"
             image_path = Path(getattr(self.server, "previews_dir", "monitor-previews")) / filename  # type: ignore[attr-defined]
             try:
+                # A cached JPEG is only a preview while the monitor is still sending frames.
+                if time.time() - image_path.stat().st_mtime > 25:
+                    self.send_json({"error": "monitor preview is stale"}, HTTPStatus.NOT_FOUND)
+                    return
                 image = image_path.read_bytes()
             except OSError:
                 self.send_json({"error": "monitor preview is not available yet"}, HTTPStatus.NOT_FOUND)
