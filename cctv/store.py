@@ -29,6 +29,7 @@ def serialized(method):
 class Store:
     stale_after = timedelta(seconds=45)
     session_lifetime = timedelta(hours=12)
+    log_history_retention = timedelta(days=7)
     def __init__(self, path: str | Path = "data/cctv.db") -> None:
         self.path = str(path)
         if self.path != ":memory:":
@@ -455,15 +456,38 @@ class Store:
     @serialized
     def heartbeat(self, device_id: str, ip_address: str = "", metadata: str = "{}") -> dict[str, Any] | None:
         existing = self.device(device_id)
+        received_at = now()
         try:
             merged_metadata = json.loads(existing["metadata"] or "{}") if existing else {}
-            merged_metadata.update(json.loads(metadata or "{}"))
+            heartbeat_metadata = json.loads(metadata or "{}")
+            if isinstance(heartbeat_metadata, dict) and isinstance(heartbeat_metadata.get("recent_logs"), list):
+                history = merged_metadata.get("server_log_history", [])
+                if not isinstance(history, list):
+                    history = []
+                cutoff = datetime.fromisoformat(received_at) - self.log_history_retention
+                retained = []
+                for entry in history:
+                    if not isinstance(entry, dict) or not isinstance(entry.get("line"), str):
+                        continue
+                    try:
+                        if datetime.fromisoformat(str(entry.get("received_at"))) >= cutoff:
+                            retained.append(entry)
+                    except (TypeError, ValueError):
+                        continue
+                known_lines = {entry["line"] for entry in retained[-5000:]}
+                for line in heartbeat_metadata["recent_logs"]:
+                    if isinstance(line, str) and line not in known_lines:
+                        retained.append({"received_at": received_at, "line": line})
+                        known_lines.add(line)
+                heartbeat_metadata.pop("recent_logs", None)
+                merged_metadata["server_log_history"] = retained
+            merged_metadata.update(heartbeat_metadata)
             metadata = json.dumps(merged_metadata)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, TypeError):
             pass
         self.db.execute(
             "UPDATE devices SET status='online', last_seen=?, ip_address=COALESCE(NULLIF(?, ''), ip_address), metadata=? WHERE id=?",
-            (now(), ip_address, metadata, device_id),
+            (received_at, ip_address, metadata, device_id),
         )
         self.db.execute(
             "UPDATE pending_devices SET enrollment_secret_hash=NULL, issued_token=NULL WHERE adopted_device_id=?",

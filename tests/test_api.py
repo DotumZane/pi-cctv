@@ -214,6 +214,15 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(metadata["settings"]["width"], 1280)
         self.assertEqual(metadata["metrics"]["cpu_temperature_c"], 55.2)
 
+    def test_server_keeps_a_seven_day_log_history_per_device(self):
+        self.call("POST", "/api/devices", {"id": "cam-1", "kind": "camera", "name": "Saw 1"})
+        self.call("POST", "/api/devices/cam-1/heartbeat", {"recent_logs": ["2026-11-13T20:00:00+00:00 first", "same"]})
+        self.call("POST", "/api/devices/cam-1/heartbeat", {"recent_logs": ["same", "2026-11-13T20:01:00+00:00 second"]})
+        status, result = self.call("GET", "/api/devices/cam-1/logs?history=7d")
+        self.assertEqual(status, 200)
+        self.assertEqual(result["retention"], "7d")
+        self.assertEqual(result["logs"], ["2026-11-13T20:00:00+00:00 first", "same", "2026-11-13T20:01:00+00:00 second"])
+
     def test_mutations_create_audit_entries(self):
         self.call("POST", "/api/devices", {"id": "cam-1", "kind": "camera", "name": "Saw 1"})
         status, entries = self.call("GET", "/api/audit")

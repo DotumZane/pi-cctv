@@ -549,6 +549,10 @@ class Handler(BaseHTTPRequestHandler):
                                     "since_hours": export.get("since_hours", 48), "collected_at": export.get("collected_at")})
                     return
                 logs = metadata.get("recent_logs", []) if isinstance(metadata, dict) else []
+                if query.get("history") == ["7d"]:
+                    history = metadata.get("server_log_history", []) if isinstance(metadata, dict) else []
+                    self.send_json({"logs": [entry.get("line", "") for entry in history if isinstance(entry, dict)], "retention": "7d"})
+                    return
             except (ValueError, TypeError):
                 logs = []
             self.send_json({"logs": logs[-200:]})
