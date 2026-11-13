@@ -76,6 +76,10 @@ class MonitorPlayer:
         self.last_video_buffer_at: float | None = None
         self.started_at = time.monotonic()
         self.reconnect_seconds = max(1, reconnect_seconds)
+        self.splash_selector = self.pipeline.get_by_name("cctv_splash_selector")
+        self.splash_until = self.started_at + 4.0
+        if self.splash_selector is not None:
+            self.splash_selector.set_property("active-pad", self.splash_selector.get_static_pad("sink_1"))
         self.cameras = {}
         index = 0
         while True:
@@ -114,6 +118,15 @@ class MonitorPlayer:
         GLib.timeout_add(200, self._read_control)
         GLib.timeout_add(1000, self._update_overlay)
         GLib.timeout_add(500, self._check_cameras)
+        if self.splash_selector is not None:
+            GLib.timeout_add(250, self._hide_splash)
+
+    def _hide_splash(self) -> bool:
+        if self.splash_selector is None or time.monotonic() < self.splash_until:
+            return True
+        self.splash_selector.set_property("active-pad", self.splash_selector.get_static_pad("sink_0"))
+        print("Monitor splash finished; showing normal display output", flush=True)
+        return False
 
     def _on_camera_buffer(self, _pad, info, index):
         if info.get_buffer():

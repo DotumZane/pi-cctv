@@ -39,15 +39,19 @@ class MediaTests(unittest.TestCase):
         self.assertIn("input-selector name=cctv_selector_0", command)
         self.assertIn("cctv_selector_0.sink_0", command)
         self.assertIn("cctv_selector_0.sink_1", command)
+        self.assertIn("cctv_splash_selector", command)
+        self.assertIn("rsg-monitor-splash.tga", command)
+        self.assertIn("video/x-raw,width=1920,height=1080,framerate=10/1", command)
         self.assertIn("identity name=cctv_live_0", command)
         self.assertIn("Camera offline", command)
         self.assertIn("cam-1", command)
 
     def test_idle_monitor_has_neutral_slate_and_preview(self):
-        command = idle_monitor_pipeline(preview_id="monitor-1", connector_id="42")
+        command = idle_monitor_pipeline(preview_id="monitor-1", connector_id="42", width=1024, height=768)
         self.assertIn("No camera assigned", command)
         self.assertIn("connector-id=42", command)
         self.assertIn("pi-cctv-monitor-preview-monitor-1", command)
+        self.assertIn("video/x-raw,width=1024,height=768,framerate=10/1", command)
 
     def test_monitor_fits_video_to_detected_display_aspect(self):
         command = MonitorMedia("rtsp://media:8554/cam-1", width=800, height=480).pipeline()

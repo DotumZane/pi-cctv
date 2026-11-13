@@ -201,7 +201,9 @@ def command_for_assignment(assignment: dict, media_server: str, settings: dict |
     settings = settings or {}
     cameras = json.loads(assignment.get("cameras", "[]")) if isinstance(assignment.get("cameras"), str) else assignment.get("cameras", [])
     if not cameras:
-        return idle_monitor_pipeline(preview_id=settings.get("preview_id", "default"))
+        width, height = _monitor_output_size(settings)
+        return idle_monitor_pipeline(preview_id=settings.get("preview_id", "default"),
+                                     width=width or 1280, height=height or 720)
     urls = [_camera_url(camera, assignment, media_server) for camera in cameras]
     width, height = _monitor_output_size(settings)
     if assignment.get("layout", "single") == "2x2":
@@ -240,9 +242,11 @@ def commands_for_assignment(assignment: dict, media_server: str, settings: dict 
                 preview_id=f"{settings.get('preview_id', 'monitor')}-{connector_id or output_index}",
             ).pipeline())
         else:
+            width, height = _monitor_output_size(settings or {}, connector_id)
             commands.append(idle_monitor_pipeline(
                 preview_id=f"{(settings or {}).get('preview_id', 'monitor')}-{connector_id or output_index}",
                 connector_id=connector_id,
+                width=width or 1280, height=height or 720,
             ))
     return commands
 
