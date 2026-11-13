@@ -122,6 +122,8 @@ document.querySelector('#assignments')?.addEventListener('change',event=>{if(eve
 
 function selectView(view){const button=document.querySelector(`.nav button[data-view="${CSS.escape(view)}"]`),target=document.querySelector('#view-'+CSS.escape(view));if(!target)return;document.querySelectorAll('.nav button').forEach(x=>x.classList.remove('active'));document.querySelectorAll('.view').forEach(x=>x.classList.remove('active'));if(button)button.classList.add('active');target.classList.add('active');document.querySelector('#title').textContent=button?button.textContent.replace(/^[^ ]+ /,''):'Device details';localStorage.cctvView=view==='device-detail'?'devices':view}
 document.querySelectorAll('.nav button').forEach(b=>b.addEventListener('click',()=>selectView(b.dataset.view)));applyTheme();document.querySelector('#token').value=localStorage.cctvToken||'';selectView(localStorage.cctvView||'overview');setInterval(loadAll,5000);
+function refreshLiveHealthCard(){if(!liveLogDevice)return;const device=state.devices.find(item=>item.id===liveLogDevice),cards=document.querySelectorAll('#view-device-detail .metric-grid .metric-card strong');if(!device||!cards.length)return;if(device.status!=='online'){cards.forEach(card=>{card.textContent='OFFLINE';card.style.color='var(--bad)'})}else{cards.forEach(card=>{card.style.color=''}) ;if(cards[3])cards[3].textContent=diagnosticUptime(deviceMetadata(device).metrics?.uptime_seconds)}}
+setInterval(refreshLiveHealthCard,1000);
 </script><script>
 const authUi={authenticated:false,setup_required:false,user:null};
 document.querySelector('.sidebar-foot').innerHTML='<div id="auth-user" class="muted"></div><button class="ghost" id="logout-button">Log out</button>';
