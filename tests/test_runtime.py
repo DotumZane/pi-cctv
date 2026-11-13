@@ -64,6 +64,15 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(upload.call_args.args[0].data, b"\xff\xd8current\xff\xd9")
             self.assertEqual(runtime.last_preview_seen_mtime_ns, current.stat().st_mtime_ns)
 
+    def test_monitor_preview_upload_repeats_independently_of_heartbeat(self):
+        runtime = DeviceRuntime("monitor", "mon-1", "Monitor", "", "http://server", "media", heartbeat_interval=15)
+        stop = Mock()
+        stop.is_set.side_effect = [False, False, False, True]
+        with patch.object(runtime, "upload_monitor_preview", side_effect=[OSError("temporary"), None, None]) as upload:
+            runtime._monitor_preview_loop(stop)
+        self.assertEqual(upload.call_count, 3)
+        self.assertEqual(stop.wait.call_args_list, [unittest.mock.call(2)] * 3)
+
     def test_camera_publisher_probe_checks_metadata_only(self):
         connection = Mock()
         connection.recv.return_value = b"RTSP/1.0 404 Not Found\r\n"

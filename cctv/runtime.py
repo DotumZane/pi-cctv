@@ -21,6 +21,7 @@ import sys
 import tempfile
 import secrets
 import ipaddress
+import threading
 from shlex import quote
 from pathlib import Path
 from dataclasses import dataclass
@@ -936,6 +937,15 @@ class DeviceRuntime:
             if terminal is not None:
                 os.close(terminal)
 
+    def _monitor_preview_loop(self, stop: threading.Event) -> None:
+        """Publish the display frame without waiting for the maintenance loop."""
+        while not stop.is_set():
+            try:
+                self.upload_monitor_preview()
+            except Exception as exc:
+                print(f"Monitor preview upload failed: {exc}; retrying", flush=True)
+            stop.wait(2)
+
     def run(self, enroll: bool = True) -> None:
         if enroll:
             while True:
@@ -946,16 +956,21 @@ class DeviceRuntime:
                     print(f"Enrollment failed: {exc}; retrying", flush=True)
                     time.sleep(5)
         self.activate_monitor_display()
+        preview_stop = threading.Event()
+        preview_thread = None
         try:
-            start_monitor_splash_setup(self.role)
-        except (OSError, subprocess.SubprocessError) as exc:
-            print(f"Unable to start monitor splash setup: {exc}", flush=True)
-        if self.role == "camera":
-            relay = subprocess.run(["systemctl", "enable", "--now", "pi-cctv-relay.service"],
-                                   capture_output=True, text=True, timeout=20, check=False)
-            if relay.returncode:
-                print(f"Local camera relay could not start: {_command_output(relay)}", flush=True)
-        try:
+            if self.role == "monitor":
+                preview_thread = threading.Thread(target=self._monitor_preview_loop, args=(preview_stop,), daemon=True)
+                preview_thread.start()
+            try:
+                start_monitor_splash_setup(self.role)
+            except (OSError, subprocess.SubprocessError) as exc:
+                print(f"Unable to start monitor splash setup: {exc}", flush=True)
+            if self.role == "camera":
+                relay = subprocess.run(["systemctl", "enable", "--now", "pi-cctv-relay.service"],
+                                       capture_output=True, text=True, timeout=20, check=False)
+                if relay.returncode:
+                    print(f"Local camera relay could not start: {_command_output(relay)}", flush=True)
             try:
                 self.sync_setup_ap_once_per_boot()
             except Exception as exc:
@@ -963,11 +978,14 @@ class DeviceRuntime:
             self.confirm_reboot_after_boot()
             while True:
                 for task in (self.heartbeat, self.poll_commands, self.reconcile_media,
-                             self.reconcile_forwarder, self.upload_monitor_preview):
+                             self.reconcile_forwarder):
                     try:
                         task()
                     except Exception as exc:
                         print(f"{task.__name__} failed: {exc}; retrying", flush=True)
                 time.sleep(self.heartbeat_interval)
         finally:
+            preview_stop.set()
+            if preview_thread is not None:
+                preview_thread.join(timeout=2)
             self.stop_media()
