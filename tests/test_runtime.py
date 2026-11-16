@@ -20,6 +20,17 @@ class RuntimeTests(unittest.TestCase):
         command = command_for_assignment(assignment, "media", settings)
         self.assertIn("aspectratiocrop aspect-ratio=512/384", command)
 
+    def test_camera_name_overlay_uses_assigned_camera_name(self):
+        assignment = {"layout": "single", "cameras": '["cam-1"]', "camera_names": {"cam-1": "trimmer-outfeed-camera"}}
+        command = command_for_assignment(assignment, "media", {"show_camera_name": True, "camera_name": "trimmer-outfeed"})
+        self.assertIn('textoverlay text="trimmer-outfeed-camera"', command)
+        self.assertNotIn('textoverlay text="trimmer-outfeed"', command)
+
+    def test_quad_camera_name_overlay_uses_assigned_camera_name(self):
+        assignment = {"layout": "2x2", "cameras": '["cam-1"]', "camera_names": {"cam-1": "trimmer-outfeed-camera"}}
+        command = command_for_assignment(assignment, "media", {"show_camera_name": True})
+        self.assertIn('textoverlay text="trimmer-outfeed-camera"', command)
+
     def test_boot_splash_setup_runs_only_on_monitor_pi(self):
         with TemporaryDirectory(prefix="pi-cctv-splash-test-") as directory:
             root = Path(directory)

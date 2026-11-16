@@ -215,6 +215,16 @@ def _camera_url(camera_id: str, assignment: dict, media_server: str) -> str:
     return f"rtsp://{address}:8554/{urllib.parse.quote(camera_id, safe='')}"
 
 
+def _assignment_camera_name(assignment: dict) -> str:
+    """Return the saved display name for the assigned camera(s)."""
+    try:
+        cameras = json.loads(assignment.get("cameras", "[]")) if isinstance(assignment.get("cameras"), str) else assignment.get("cameras", [])
+    except (TypeError, json.JSONDecodeError):
+        cameras = []
+    names = assignment.get("camera_names") or {}
+    return " · ".join(str(names.get(camera_id, camera_id)) for camera_id in cameras if camera_id)
+
+
 def command_for_assignment(assignment: dict, media_server: str, settings: dict | None = None) -> str | None:
     settings = settings or {}
     cameras = json.loads(assignment.get("cameras", "[]")) if isinstance(assignment.get("cameras"), str) else assignment.get("cameras", [])
@@ -223,16 +233,18 @@ def command_for_assignment(assignment: dict, media_server: str, settings: dict |
         return idle_monitor_pipeline(preview_id=settings.get("preview_id", "default"),
                                      width=width or 1280, height=height or 720)
     urls = [_camera_url(camera, assignment, media_server) for camera in cameras]
+    camera_name = _assignment_camera_name(assignment) or settings.get("camera_name", "")
     width, height = _monitor_output_size(settings)
     if assignment.get("layout", "single") == "2x2":
         width, height = _quad_output_size(settings)
         return quad_pipeline(urls, width, height, preview_id=settings.get("preview_id", "default"),
-                             scale_mode=settings.get("scale_mode", "fit"))
+                             scale_mode=settings.get("scale_mode", "fit"),
+                             show_camera_name=settings.get("show_camera_name", False), camera_name=camera_name)
     return MonitorMedia(
         urls[0], fullscreen=settings.get("kiosk", True), width=width, height=height,
         scale_mode=settings.get("scale_mode", "fit"),
         orientation=settings.get("orientation", 0), show_camera_name=settings.get("show_camera_name", False),
-        show_timestamp=settings.get("show_timestamp", False), camera_name=settings.get("camera_name", ""),
+        show_timestamp=settings.get("show_timestamp", False), camera_name=camera_name,
         preview_id=settings.get("preview_id", "default"),
     ).pipeline()
 
@@ -253,12 +265,14 @@ def commands_for_assignment(assignment: dict, media_server: str, settings: dict 
         if cameras:
             settings = settings or {}
             width, height = _monitor_output_size(settings, connector_id)
+            output_assignment = {**assignment, "cameras": json.dumps(cameras)}
+            camera_name = _assignment_camera_name(output_assignment) or settings.get("camera_name", "")
             commands.append(MonitorMedia(
                 _camera_url(cameras[0], assignment, media_server), connector_id=connector_id,
                 fullscreen=settings.get("kiosk", True), width=width, height=height,
                 scale_mode=settings.get("scale_mode", "fit"),
                 orientation=settings.get("orientation", 0), show_camera_name=settings.get("show_camera_name", False),
-                show_timestamp=settings.get("show_timestamp", False), camera_name=settings.get("camera_name", ""),
+                show_timestamp=settings.get("show_timestamp", False), camera_name=camera_name,
                 preview_id=f"{settings.get('preview_id', 'monitor')}-{connector_id or output_index}",
             ).pipeline())
         else:

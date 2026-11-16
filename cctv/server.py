@@ -902,6 +902,10 @@ class Handler(BaseHTTPRequestHandler):
             # Monitors read the camera Pi directly. Keep this map with the
             # assignment so a monitor can cache the route for server outages.
             assignment["camera_sources"] = {}
+            assignment["camera_names"] = {
+                camera_id: camera.get("name", camera_id)
+                for camera_id, camera in cameras.items()
+            }
             for camera_id, camera in cameras.items():
                 try:
                     metadata = json.loads(camera.get("metadata") or "{}")

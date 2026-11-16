@@ -188,7 +188,7 @@ def idle_monitor_pipeline(preview_id: str = "default", connector_id: str | None 
 
 
 def quad_pipeline(stream_urls: list[str], width: int = 1920, height: int = 1080, preview_id: str = "default",
-                  scale_mode: str = "fit") -> str:
+                  scale_mode: str = "fit", show_camera_name: bool = False, camera_name: str = "") -> str:
     """Build a 2×2 decoder pipeline for one to four RTSP streams."""
     if not 1 <= len(stream_urls) <= 4:
         raise ValueError("a 2x2 layout requires between one and four streams")
@@ -217,6 +217,10 @@ def quad_pipeline(stream_urls: list[str], width: int = 1920, height: int = 1080,
         for i in range(4)
     )
     preview_width, preview_height = _preview_size(width, height)
+    camera_overlay = (
+        f'textoverlay text="{camera_name}" halignment=right valignment=top ! '
+        if show_camera_name and camera_name else ""
+    )
     return (
         "gst-launch-1.0 -e "
         + f"input-selector name=cctv_splash_selector sync-streams=false ! tee name=monitor_out "
@@ -224,6 +228,7 @@ def quad_pipeline(stream_urls: list[str], width: int = 1920, height: int = 1080,
         + f"monitor_out. ! {_preview_branch(preview_id, preview_width, preview_height)} "
         + " ".join(branches)
         + f" compositor name=compositor ignore-inactive-pads=true background=black {positions} ! video/x-raw,width={width},height={height},pixel-aspect-ratio=1/1 ! "
+        + camera_overlay
         + 'textoverlay name=cctv_stats text="" silent=true font-desc="Sans 12" '
         + "halignment=left valignment=top xpad=18 ypad=18 shaded-background=true ! cctv_splash_selector.sink_0 "
         + f"{_splash_branch(width, height)}"
