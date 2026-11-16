@@ -76,6 +76,7 @@ class MonitorPlayer:
         self.last_video_buffer_at: float | None = None
         self.started_at = time.monotonic()
         self.reconnect_seconds = max(1, reconnect_seconds)
+        self.rebuild_scheduled = False
         self.splash_selector = self.pipeline.get_by_name("cctv_splash_selector")
         self.splash_until = self.started_at + 4.0
         self.splash_fallback_file = self.control_file.with_name(self.control_file.name + ".splash-fallback")
@@ -107,6 +108,8 @@ class MonitorPlayer:
             }
             pad = live.get_static_pad("src")
             pad.add_probe(Gst.PadProbeType.BUFFER, self._on_camera_buffer, index)
+            for name in ("sink_0", "sink_1"):
+                selector.get_static_pad(name).set_property("always-ok", True)
             # The standby pad is linked first. It is the only source allowed on
             # screen until a decoded frame from this camera actually arrives.
             selector.set_property("active-pad", selector.get_static_pad("sink_0"))
@@ -286,6 +289,12 @@ class MonitorPlayer:
             while element is not None:
                 for index, camera in self.cameras.items():
                     if element == camera["source"]:
+                        if "not-linked" in (debug or ""):
+                            if not self.rebuild_scheduled:
+                                self.rebuild_scheduled = True
+                                print("Camera stream link failed; rebuilding monitor player", flush=True)
+                                self.GLib.timeout_add(self.reconnect_seconds * 1000, self._rebuild_player)
+                            return
                         if not camera["restarting"]:
                             self._restart_source(index)
                         return
@@ -293,6 +302,10 @@ class MonitorPlayer:
             self.loop.quit()
         elif message.type == self.Gst.MessageType.EOS:
             self.loop.quit()
+
+    def _rebuild_player(self) -> bool:
+        self.loop.quit()
+        return False
 
     def _read_control(self) -> bool:
         request_id = self._read_request_id()
