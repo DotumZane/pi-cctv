@@ -30,6 +30,82 @@ from typing import Callable
 from .media import CameraMedia, MonitorMedia, idle_monitor_pipeline, quad_pipeline
 
 
+LOCAL_DISCOVERY_PORT = 37981
+LOCAL_DISCOVERY_REQUEST = "PI-CCTV-DISCOVER-1"
+
+
+def discover_camera_source(camera_id: str, timeout: float = 0.6) -> str | None:
+    """Find an assigned camera on the local broadcast domain without the server."""
+    request = f"{LOCAL_DISCOVERY_REQUEST} {camera_id}".encode("utf-8")
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind(("", 0))
+            sock.settimeout(timeout)
+            sock.sendto(request, ("255.255.255.255", LOCAL_DISCOVERY_PORT))
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                try:
+                    response, address = sock.recvfrom(512)
+                except socket.timeout:
+                    break
+                fields = response.decode("utf-8", "replace").split()
+                if len(fields) == 3 and fields[:2] == ["PI-CCTV-CAMERA-1", camera_id]:
+                    try:
+                        return str(ipaddress.ip_address(address[0]))
+                    except ValueError:
+                        return None
+    except OSError as exc:
+        print(f"Local camera discovery unavailable: {exc}", flush=True)
+    return None
+
+
+def camera_relay_reachable(address: str, timeout: float = 0.25) -> bool:
+    """Check only the local relay port; this does not depend on the dashboard."""
+    try:
+        with socket.create_connection((address, 8554), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+class LocalCameraDiscoveryResponder:
+    """Answer monitor discovery broadcasts using the camera Pi's local address."""
+
+    def __init__(self, device_id: str) -> None:
+        self.device_id = device_id
+        self.stop = threading.Event()
+        self.thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        self.thread = threading.Thread(target=self._run, name="cctv-local-discovery", daemon=True)
+        self.thread.start()
+
+    def _run(self) -> None:
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+                sock.bind(("", LOCAL_DISCOVERY_PORT))
+                sock.settimeout(0.5)
+                while not self.stop.is_set():
+                    try:
+                        request, address = sock.recvfrom(512)
+                    except socket.timeout:
+                        continue
+                    if request.decode("utf-8", "replace") != f"{LOCAL_DISCOVERY_REQUEST} {self.device_id}":
+                        continue
+                    sock.sendto(f"PI-CCTV-CAMERA-1 {self.device_id} 8554".encode("utf-8"), address)
+        except OSError as exc:
+            print(f"Local camera discovery responder unavailable: {exc}", flush=True)
+
+    def close(self) -> None:
+        self.stop.set()
+        if self.thread is not None:
+            self.thread.join(timeout=1)
+
+
 def _command_output(result: subprocess.CompletedProcess, limit: int = 700) -> str:
     """Return a short diagnostic tail from a fixed local helper command."""
     output = "\n".join(part.strip() for part in (result.stdout, result.stderr) if part and part.strip())
@@ -408,6 +484,7 @@ class DeviceRuntime:
         self.next_forward_retry = 0.0
         self.enrollment_pending = False
         self.next_enrollment_retry = 0.0
+        self.discovery_responder: LocalCameraDiscoveryResponder | None = None
         self.runtime_cache_path = Path(os.environ.get("CCTV_RUNTIME_CACHE_FILE", "/var/lib/pi-cctv/runtime-cache.json"))
         self.pending_log_export: dict | None = None
 
@@ -861,6 +938,26 @@ class DeviceRuntime:
             assignment_online = False
             print(f"Dashboard assignment unavailable; using saved route: {exc}", flush=True)
         assignment = apply_monitor_schedule(assignment, settings)
+        if self.role == "monitor":
+            try:
+                camera_ids = json.loads(assignment.get("cameras", "[]"))
+            except (TypeError, json.JSONDecodeError):
+                camera_ids = []
+            changed = False
+            sources = assignment.setdefault("camera_sources", {})
+            for camera_id in camera_ids if isinstance(camera_ids, list) else []:
+                if not isinstance(camera_id, str):
+                    continue
+                current_source = sources.get(camera_id, "")
+                if current_source and (assignment_online or camera_relay_reachable(current_source)):
+                    continue
+                discovered = discover_camera_source(camera_id)
+                if discovered:
+                    sources[camera_id] = discovered
+                    changed = True
+                    print(f"Discovered assigned camera {camera_id} at {discovered}", flush=True)
+            if changed:
+                self._cached_config(assignment=assignment)
         offline_cameras = set(assignment.get("offline_cameras", [])) if assignment_online else set()
         fallback_camera = assignment.get("fallback_camera")
         if fallback_camera and offline_cameras:
@@ -1048,6 +1145,9 @@ class DeviceRuntime:
             stop.wait(2)
 
     def run(self, enroll: bool = True) -> None:
+        if self.role == "camera":
+            self.discovery_responder = LocalCameraDiscoveryResponder(self.device_id)
+            self.discovery_responder.start()
         if enroll:
             self.enrollment_pending = True
             self.retry_enrollment()
@@ -1085,3 +1185,5 @@ class DeviceRuntime:
             if preview_thread is not None:
                 preview_thread.join(timeout=2)
             self.stop_media()
+            if self.discovery_responder is not None:
+                self.discovery_responder.close()
