@@ -1832,6 +1832,25 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
 
 
+class TLSThreadingHTTPServer(ThreadingHTTPServer):
+    """Threaded HTTP server that wraps each accepted connection with TLS."""
+
+    def __init__(self, server_address, handler_class, ssl_context):
+        self.ssl_context = ssl_context
+        super().__init__(server_address, handler_class)
+
+    def get_request(self):
+        request, client_address = super().get_request()
+        try:
+            request = self.ssl_context.wrap_socket(
+                request, server_side=True, do_handshake_on_connect=False
+            )
+        except Exception:
+            request.close()
+            raise
+        return request, client_address
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Pi CCTV V1 management server")
     parser.add_argument("--host", default=os.getenv("CCTV_HOST", "127.0.0.1"))
@@ -1900,7 +1919,7 @@ def main() -> None:
         context.minimum_version = ssl.TLSVersion.TLSv1_2
         context.load_cert_chain(tls_cert, tls_key)
         tls_port = int(os.getenv("CCTV_TLS_PORT", "8443"))
-        tls_httpd = ThreadingHTTPServer((args.host, tls_port), Handler)
+        tls_httpd = TLSThreadingHTTPServer((args.host, tls_port), Handler, context)
         for key in (
             "store", "admin_token", "read_token", "recordings_dir", "previews_dir",
             "bootstrap_token", "public_media_url", "public_webrtc_url", "recorder_supervisor",
@@ -1910,7 +1929,6 @@ def main() -> None:
             "fleet_agent_updater",
         ):
             setattr(tls_httpd, key, getattr(httpd, key))
-        tls_httpd.socket = context.wrap_socket(tls_httpd.socket, server_side=True)
         tls_thread = threading.Thread(target=tls_httpd.serve_forever, name="https-api", daemon=True)
         tls_thread.start()
         print(f"Pi CCTV device API listening on https://{args.host}:{tls_port}", flush=True)
