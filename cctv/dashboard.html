@@ -126,6 +126,7 @@ async function loadAll(){
     const serverHealth=admin&&serverHealthResponse.ok?await serverHealthResponse.json():null;
     state.health=health.devices;state.latestAgentVersion=health.latest_agent_version||health.version||'';
     state.devices=devices.devices||[];state.assignments=assignments.assignments||[];state.pending=pending.devices||[];
+    if(typeof loadNvr==='function'&&document.querySelector('#view-nvr.active,#system-panel-nvr:not([hidden])'))loadNvr();
     document.querySelector('#online').textContent=state.health.online;
     document.querySelector('#offline').textContent=state.health.offline;
     document.querySelector('#camera-count').textContent=state.health.cameras;
