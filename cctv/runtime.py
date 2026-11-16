@@ -487,6 +487,110 @@ class DeviceRuntime:
         self.discovery_responder: LocalCameraDiscoveryResponder | None = None
         self.runtime_cache_path = Path(os.environ.get("CCTV_RUNTIME_CACHE_FILE", "/var/lib/pi-cctv/runtime-cache.json"))
         self.pending_log_export: dict | None = None
+        self.network_rollback_path = Path("/var/lib/pi-cctv/network-rollback.json")
+        self.network_rollback_timer: threading.Timer | None = None
+
+    def _run_nmcli(self, args: list[str], timeout: int = 15) -> subprocess.CompletedProcess:
+        return subprocess.run(["nmcli", *args], capture_output=True, text=True, timeout=timeout, check=False)
+
+    def _restore_network_config(self, config: dict) -> tuple[bool, str]:
+        profile = config.get("profile", "pi-cctv-setup-bridge")
+        previous = config.get("previous", {})
+        if not isinstance(previous, dict):
+            return False, "saved network settings are invalid"
+        args = ["connection", "modify", profile,
+                "ipv4.method", str(previous.get("method", "auto")),
+                "ipv4.addresses", str(previous.get("addresses", "")),
+                "ipv4.gateway", str(previous.get("gateway", "")),
+                "ipv4.dns", str(previous.get("dns", "")),
+                "ipv4.ignore-auto-dns", str(previous.get("ignore-auto-dns", "no"))]
+        result = self._run_nmcli(args)
+        if result.returncode:
+            return False, _command_output(result) or "NetworkManager rejected the rollback."
+        result = self._run_nmcli(["connection", "up", profile], timeout=30)
+        if result.returncode:
+            return False, _command_output(result) or "NetworkManager could not reactivate the rollback profile."
+        try:
+            self.network_rollback_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return True, "previous network settings restored"
+
+    def _network_rollback_expired(self) -> None:
+        try:
+            config = json.loads(self.network_rollback_path.read_text())
+        except (OSError, ValueError):
+            return
+        if time.time() < float(config.get("expires_at", 0)):
+            return
+        ok, message = self._restore_network_config(config)
+        print(f"Network configuration rollback {'completed' if ok else 'failed'}: {message}", flush=True)
+
+    def _confirm_network_reconnect(self) -> None:
+        if not self.network_rollback_path.exists():
+            return
+        try:
+            config = json.loads(self.network_rollback_path.read_text())
+            self.network_rollback_path.unlink(missing_ok=True)
+            if self.network_rollback_timer:
+                self.network_rollback_timer.cancel()
+                self.network_rollback_timer = None
+            print("Network configuration confirmed by a successful dashboard heartbeat", flush=True)
+        except (OSError, ValueError):
+            pass
+
+    def apply_network_config(self, config: dict) -> tuple[bool, str]:
+        """Safely configure the setup bridge, with an automatic rollback."""
+        if not isinstance(config, dict) or config.get("mode") not in {"static", "dhcp"}:
+            return False, "unsupported network configuration"
+        profile = "pi-cctv-setup-bridge"
+        check = self._run_nmcli(["-t", "-f", "NAME", "connection", "show"])
+        if check.returncode or profile not in check.stdout.splitlines():
+            return False, "the pi-cctv-setup-bridge NetworkManager profile was not found; no changes made"
+        previous = {}
+        for key in ("ipv4.method", "ipv4.addresses", "ipv4.gateway", "ipv4.dns", "ipv4.ignore-auto-dns"):
+            result = self._run_nmcli(["-g", key, "connection", "show", profile])
+            if result.returncode:
+                return False, f"could not read the existing {key} setting; no changes made"
+            previous[key.replace("ipv4.", "")] = result.stdout.strip()
+        if config["mode"] == "dhcp":
+            args = ["connection", "modify", profile, "ipv4.method", "auto", "ipv4.addresses", "", "ipv4.gateway", "", "ipv4.dns", "", "ipv4.ignore-auto-dns", "no"]
+        else:
+            address = config.get("address")
+            prefix = config.get("prefix")
+            gateway = config.get("gateway", "")
+            dns = config.get("dns", [])
+            try:
+                interface = ipaddress.ip_interface(f"{address}/{int(prefix)}")
+                if interface.version != 4 or not 8 <= int(prefix) <= 30 or (gateway and ipaddress.ip_address(gateway) not in interface.network):
+                    raise ValueError
+                if not isinstance(dns, list) or len(dns) > 3:
+                    raise ValueError
+                dns = [str(ipaddress.ip_address(item)) for item in dns]
+            except (TypeError, ValueError):
+                return False, "invalid static IPv4 settings; no changes made"
+            args = ["connection", "modify", profile, "ipv4.method", "manual", "ipv4.addresses", f"{interface.ip}/{interface.network.prefixlen}", "ipv4.gateway", str(gateway), "ipv4.dns", " ".join(dns), "ipv4.ignore-auto-dns", "yes"]
+        rollback = {"profile": profile, "previous": previous, "expires_at": time.time() + 90}
+        try:
+            self.network_rollback_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            self.network_rollback_path.write_text(json.dumps(rollback) + "\n")
+            self.network_rollback_path.chmod(0o600)
+        except OSError as exc:
+            return False, f"could not create the rollback guard: {exc}"
+        result = self._run_nmcli(args)
+        if result.returncode:
+            self._restore_network_config(rollback)
+            return False, _command_output(result) or "NetworkManager rejected the requested settings"
+        result = self._run_nmcli(["connection", "up", profile], timeout=30)
+        if result.returncode:
+            self._restore_network_config(rollback)
+            return False, _command_output(result) or "NetworkManager could not activate the requested settings"
+        if self.network_rollback_timer:
+            self.network_rollback_timer.cancel()
+        self.network_rollback_timer = threading.Timer(90, self._network_rollback_expired)
+        self.network_rollback_timer.daemon = True
+        self.network_rollback_timer.start()
+        return True, "network settings applied; rollback will occur in 90 seconds unless the dashboard heartbeat succeeds"
 
     def _cached_config(self, settings: dict | None = None, assignment: dict | None = None) -> tuple[dict, dict]:
         """Persist the last authorized routing and settings for offline boots."""
@@ -581,6 +685,7 @@ class DeviceRuntime:
         if self.pending_log_export:
             payload["log_export"] = self.pending_log_export
         http_json(f"{self.server}/api/devices/{self.device_id}/heartbeat", "POST", payload, self.token)
+        self._confirm_network_reconnect()
         if self.pending_log_export:
             self.pending_log_export = None
 
@@ -841,6 +946,9 @@ class DeviceRuntime:
                     print(f"Unable to change hostname: {detail}", flush=True)
                 else:
                     print(f"Hostname changed to {new_hostname}; the device ID remains {self.device_id}", flush=True)
+            elif command_name == "configure_network":
+                ok, message = self.apply_network_config(command.get("payload", {}))
+                print(f"Network configuration {'applied' if ok else 'not applied'}: {message}", flush=True)
             elif command_name == "diagnostics":
                 report = collect_diagnostics(self.role, self.device_id, self.media_server, self.processes)
                 try:
@@ -1149,6 +1257,18 @@ class DeviceRuntime:
             stop.wait(2)
 
     def run(self, enroll: bool = True) -> None:
+        if self.network_rollback_path.exists():
+            try:
+                rollback = json.loads(self.network_rollback_path.read_text())
+                delay = float(rollback.get("expires_at", 0)) - time.time()
+                if delay <= 0:
+                    self._network_rollback_expired()
+                else:
+                    self.network_rollback_timer = threading.Timer(delay, self._network_rollback_expired)
+                    self.network_rollback_timer.daemon = True
+                    self.network_rollback_timer.start()
+            except (OSError, ValueError, TypeError):
+                print("Ignoring an invalid network rollback record", flush=True)
         if self.role == "camera":
             self.discovery_responder = LocalCameraDiscoveryResponder(self.device_id)
             self.discovery_responder.start()

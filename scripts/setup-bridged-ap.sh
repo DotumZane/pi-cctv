@@ -3,6 +3,7 @@
 set -euo pipefail
 
 STATE_DIR=/var/lib/pi-cctv/setup-ap
+BRIDGE_NETWORK_STATE="$STATE_DIR/bridge-network"
 BRIDGE=pi-cctv-setup-bridge
 BRIDGE_PORT=pi-cctv-setup-ethernet-port
 NM_CONF=/etc/NetworkManager/conf.d/99-pi-cctv-setup-ap.conf
@@ -107,6 +108,14 @@ remove_ap() {
     fi
   fi
   if nmcli -t -f NAME connection show | grep -Fxq "$BRIDGE"; then
+    {
+      printf 'BRIDGE_IPV4_METHOD=%q\n' "$(nmcli -g ipv4.method connection show "$BRIDGE")"
+      printf 'BRIDGE_IPV4_ADDRESSES=%q\n' "$(nmcli -g ipv4.addresses connection show "$BRIDGE")"
+      printf 'BRIDGE_IPV4_GATEWAY=%q\n' "$(nmcli -g ipv4.gateway connection show "$BRIDGE")"
+      printf 'BRIDGE_IPV4_DNS=%q\n' "$(nmcli -g ipv4.dns connection show "$BRIDGE")"
+      printf 'BRIDGE_IPV4_IGNORE_AUTO_DNS=%q\n' "$(nmcli -g ipv4.ignore-auto-dns connection show "$BRIDGE")"
+    } > "$BRIDGE_NETWORK_STATE"
+    chmod 0600 "$BRIDGE_NETWORK_STATE"
     nmcli connection down "$BRIDGE" >/dev/null 2>&1 || true
     nmcli connection delete "$BRIDGE" >/dev/null
   fi
@@ -199,6 +208,23 @@ OLD_IPV4=$(nmcli -g ipv4.method connection show uuid "$ETH_UUID")
 OLD_IPV6=$(nmcli -g ipv6.method connection show uuid "$ETH_UUID")
 OLD_AUTOCONNECT=$(nmcli -g connection.autoconnect connection show uuid "$ETH_UUID")
 OLD_HOSTAPD_ENABLED=$(systemctl is-enabled hostapd.service 2>/dev/null || true)
+BRIDGE_IPV4_METHOD=auto
+BRIDGE_IPV4_ADDRESSES=
+BRIDGE_IPV4_GATEWAY=
+BRIDGE_IPV4_DNS=
+BRIDGE_IPV4_IGNORE_AUTO_DNS=no
+if nmcli -t -f NAME connection show | grep -Fxq "$BRIDGE"; then
+  BRIDGE_IPV4_METHOD=$(nmcli -g ipv4.method connection show "$BRIDGE" || echo auto)
+  BRIDGE_IPV4_ADDRESSES=$(nmcli -g ipv4.addresses connection show "$BRIDGE" || true)
+  BRIDGE_IPV4_GATEWAY=$(nmcli -g ipv4.gateway connection show "$BRIDGE" || true)
+  BRIDGE_IPV4_DNS=$(nmcli -g ipv4.dns connection show "$BRIDGE" || true)
+  BRIDGE_IPV4_IGNORE_AUTO_DNS=$(nmcli -g ipv4.ignore-auto-dns connection show "$BRIDGE" || echo no)
+fi
+if [[ -f "$BRIDGE_NETWORK_STATE" ]]; then
+  # Preserve the bridge address across a setup-AP remove/recreate cycle.
+  # shellcheck disable=SC1090
+  source "$BRIDGE_NETWORK_STATE"
+fi
 [[ "$OLD_MASTER" == "--" ]] && OLD_MASTER=""
 [[ "$OLD_PORT_TYPE" == "--" ]] && OLD_PORT_TYPE=""
 
@@ -278,6 +304,15 @@ nmcli connection add type bridge con-name "$BRIDGE" ifname br0 \
   connection.autoconnect-ports 1 bridge.stp no bridge.mac-address "$ETH_MAC" \
   ipv4.method auto ipv6.method auto >/dev/null
 BRIDGE_UUID=$(nmcli -g connection.uuid connection show "$BRIDGE")
+if [[ "$BRIDGE_IPV4_METHOD" == manual ]]; then
+  nmcli connection modify uuid "$BRIDGE_UUID" \
+    ipv4.method manual ipv4.addresses "$BRIDGE_IPV4_ADDRESSES" \
+    ipv4.gateway "$BRIDGE_IPV4_GATEWAY" ipv4.dns "$BRIDGE_IPV4_DNS" \
+    ipv4.ignore-auto-dns "$BRIDGE_IPV4_IGNORE_AUTO_DNS"
+elif [[ "$BRIDGE_IPV4_METHOD" == disabled || "$BRIDGE_IPV4_METHOD" == link-local ]]; then
+  nmcli connection modify uuid "$BRIDGE_UUID" ipv4.method "$BRIDGE_IPV4_METHOD"
+fi
+rm -f "$BRIDGE_NETWORK_STATE"
 nmcli connection modify uuid "$ETH_UUID" connection.autoconnect no
 # NetworkManager bridge-port profiles do not support IPv4/IPv6 settings; the
 # bridge master owns the LAN address and DHCP configuration.

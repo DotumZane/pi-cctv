@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from collections import OrderedDict
+import ipaddress
 import json
 import math
 import os
@@ -1369,7 +1370,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json({"error": "device not found"}, HTTPStatus.NOT_FOUND)
                     return
                 payload = self.body()
-                allowed_commands = {"restart_media", "diagnostics", "restart_agent", "reboot", "update", "update_os", "sync_setup_ap", "change_server_address", "set_hostname", "show_stats", "collect_logs"}
+                allowed_commands = {"restart_media", "diagnostics", "restart_agent", "reboot", "update", "update_os", "sync_setup_ap", "change_server_address", "set_hostname", "show_stats", "collect_logs", "configure_network"}
                 command_name = str(payload.get("command", ""))
                 if command_name not in allowed_commands:
                     self.send_json({"error": "unsupported diagnostic command"}, HTTPStatus.BAD_REQUEST)
@@ -1462,6 +1463,17 @@ class Handler(BaseHTTPRequestHandler):
                         self.send_json({"error": "hostname must be 1–63 characters using lowercase letters, numbers, and hyphens"}, HTTPStatus.BAD_REQUEST)
                         return
                     command_payload = {"hostname": hostname}
+                if command_name == "configure_network":
+                    if not self.authorized(admin_only=True):
+                        self.send_json({"error": "administrator access is required to change Pi network settings"}, HTTPStatus.FORBIDDEN)
+                        return
+                    if not self.secure_connection():
+                        self.send_json({"error": "Pi network changes require HTTPS"}, HTTPStatus.UPGRADE_REQUIRED)
+                        return
+                    command_payload = payload.get("network")
+                    if not isinstance(command_payload, dict) or command_payload.get("mode") not in {"static", "dhcp"}:
+                        self.send_json({"error": "a valid network configuration is required"}, HTTPStatus.BAD_REQUEST)
+                        return
                 command = self.store.queue_command(device_id, command_name, command_payload)
                 self.store.audit("device.command", device_id, self.client_address[0], {"command": command_name})
                 self.send_json(command, HTTPStatus.ACCEPTED)
@@ -1659,6 +1671,42 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self.store.audit("device.profile.update", device_id, self.client_address[0], {"name": name, "location": location})
             self.send_json(updated)
+            return
+        if parsed.path.startswith("/api/devices/") and parsed.path.endswith("/network"):
+            if not self.authorized(admin_only=True):
+                return
+            if not self.secure_connection():
+                self.send_json({"error": "Pi network changes require HTTPS"}, HTTPStatus.UPGRADE_REQUIRED)
+                return
+            device_id = unquote(parsed.path[len("/api/devices/"):-len("/network")].strip("/"))
+            device = self.store.device(device_id)
+            if not device:
+                self.send_json({"error": "device not found"}, HTTPStatus.NOT_FOUND)
+                return
+            payload = self.body()
+            mode = payload.get("mode", "static")
+            if mode == "dhcp":
+                network = {"mode": "dhcp"}
+            else:
+                address, prefix, gateway, dns = payload.get("address"), payload.get("prefix", 24), payload.get("gateway", ""), payload.get("dns", [])
+                try:
+                    interface = ipaddress.ip_interface(f"{address}/{int(prefix)}")
+                    if interface.version != 4 or not 8 <= int(prefix) <= 30:
+                        raise ValueError
+                    gateway = str(ipaddress.ip_address(gateway)) if gateway else ""
+                    if gateway and ipaddress.ip_address(gateway) not in interface.network:
+                        raise ValueError
+                    if not isinstance(dns, list) or len(dns) > 3:
+                        raise ValueError
+                    dns = [str(ipaddress.ip_address(item)) for item in dns]
+                except (TypeError, ValueError):
+                    self.send_json({"error": "enter a valid IPv4 address, prefix, gateway, and DNS list"}, HTTPStatus.BAD_REQUEST)
+                    return
+                network = {"mode": "static", "address": str(interface.ip), "prefix": int(prefix), "gateway": gateway, "dns": dns}
+            saved = self.store.update_network_config(device_id, network)
+            self.store.queue_command(device_id, "configure_network", network)
+            self.store.audit("device.network.update", device_id, self.client_address[0], network)
+            self.send_json(saved)
             return
         if parsed.path.startswith("/api/cameras/") and parsed.path.endswith("/settings"):
             if not self.require_auth():

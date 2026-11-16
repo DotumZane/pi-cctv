@@ -324,6 +324,7 @@ class Store:
                 return None
             device_id = replace_device_id
         existing = self.device(device_id)
+        replacement_network: dict[str, Any] | None = None
         if existing:
             try:
                 metadata = json.loads(existing.get("metadata") or "{}")
@@ -337,6 +338,7 @@ class Store:
                 old_settings = metadata.get("settings", {})
                 metadata.update(pending_metadata)
                 metadata["settings"] = old_settings
+                replacement_network = metadata.get("network_config")
                 name = existing["name"]
                 location = existing["location"]
                 # Never execute commands queued for the retired hardware on its replacement.
@@ -354,6 +356,11 @@ class Store:
                 """INSERT INTO devices(id, kind, name, location, ip_address, status, last_seen, metadata, token_hash)
                    VALUES(?, ?, ?, ?, ?, 'online', ?, ?, ?)""",
                 (device_id, kind, name, location, pending["ip_address"], now(), pending["metadata"], self.hash_token(token)),
+            )
+        if replacement and isinstance(replacement_network, dict) and replacement_network.get("mode") == "static":
+            self.db.execute(
+                "INSERT INTO device_commands(device_id, command, payload, created_at) VALUES(?, ?, ?, ?)",
+                (device_id, "configure_network", json.dumps(replacement_network), now()),
             )
         self.db.execute("UPDATE pending_devices SET adopted_device_id=?, issued_token=? WHERE id=?", (device_id, token, pending_id))
         self.db.commit()
@@ -415,6 +422,12 @@ class Store:
                     device["status"] = "offline"
             else:
                 device["status"] = "offline"
+            try:
+                metadata = json.loads(device.get("metadata") or "{}")
+                network = metadata.get("network_config") if isinstance(metadata, dict) else None
+                device["network_config"] = network if isinstance(network, dict) else {}
+            except (TypeError, ValueError):
+                device["network_config"] = {}
             devices.append(device)
         return devices
 
@@ -452,6 +465,23 @@ class Store:
         )
         self.db.commit()
         return self.device(device_id) if cursor.rowcount else None
+
+    @serialized
+    def update_network_config(self, device_id: str, network: dict[str, Any]) -> dict[str, Any] | None:
+        device = self.device(device_id)
+        if not device:
+            return None
+        try:
+            metadata = json.loads(device.get("metadata") or "{}")
+        except (TypeError, ValueError):
+            metadata = {}
+        metadata["network_config"] = network
+        self.db.execute("UPDATE devices SET metadata=? WHERE id=?", (json.dumps(metadata), device_id))
+        self.db.commit()
+        updated = self.device(device_id)
+        if updated:
+            updated["network_config"] = network
+        return updated
 
     @serialized
     def heartbeat(self, device_id: str, ip_address: str = "", metadata: str = "{}") -> dict[str, Any] | None:
