@@ -662,4 +662,35 @@ window.reloadCameraPreview=function(id){
 };
 window.addEventListener('click',event=>{const button=event.target.closest?.('#settings [data-save-camera-settings]');if(!button)return;event.preventDefault();event.stopImmediatePropagation();const card=button.closest('[data-camera-card]');if(card)void saveSettings(card.dataset.cameraCard)},true);
 </script><script src="/playback-engine.js"></script>
+<script>
+// Keep dense operational data readable on narrow screens and during async loads.
+const dashboardDatePattern=/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})$/;
+function formatDashboardDates(root){
+  if(!root)return;
+  const walker=document.createTreeWalker(root,NodeFilter.SHOW_TEXT);
+  const nodes=[];
+  while(walker.nextNode())nodes.push(walker.currentNode);
+  nodes.forEach(node=>{
+    if(node.parentElement?.closest('pre,script,style'))return;
+    const value=node.nodeValue.trim();
+    if(!dashboardDatePattern.test(value))return;
+    const date=new Date(value);
+    if(Number.isNaN(date.getTime()))return;
+    node.nodeValue=node.nodeValue.replace(value,date.toLocaleString(undefined,{dateStyle:'medium',timeStyle:'short'}));
+  });
+}
+const dashboardDateRoots=['#devices','#users-list','#device-detail-page'];
+const dashboardDateObserver=new MutationObserver(()=>dashboardDateRoots.forEach(selector=>formatDashboardDates(document.querySelector(selector))));
+dashboardDateObserver.observe(document.body,{childList:true,subtree:true});
+dashboardDateRoots.forEach(selector=>{const root=document.querySelector(selector);if(root){formatDashboardDates(root);dashboardDateObserver.observe(root,{childList:true,subtree:true})}});
+const dashboardOpenDevice=window.openDevice;
+window.openDevice=async function(id){
+  const page=document.querySelector('#device-detail-page');
+  if(page)page.innerHTML='<div class="panel" role="status" aria-live="polite"><strong>Loading device details…</strong><p class="notice">Fetching health, diagnostics, and recent activity.</p></div>';
+  return dashboardOpenDevice(id);
+};
+const dashboardMobileStyle=document.createElement('style');
+dashboardMobileStyle.textContent='@media(max-width:600px){#users-list{max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}.users-table{min-width:560px}.users-table th,.users-table td{padding:11px 10px;white-space:nowrap}}';
+document.head.appendChild(dashboardMobileStyle);
+</script>
 </body></html>
