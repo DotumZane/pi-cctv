@@ -406,6 +406,8 @@ class DeviceRuntime:
         self.media_started_at = 0.0
         self.forwarder: subprocess.Popen | None = None
         self.next_forward_retry = 0.0
+        self.enrollment_pending = False
+        self.next_enrollment_retry = 0.0
         self.runtime_cache_path = Path(os.environ.get("CCTV_RUNTIME_CACHE_FILE", "/var/lib/pi-cctv/runtime-cache.json"))
         self.pending_log_export: dict | None = None
 
@@ -477,6 +479,19 @@ class DeviceRuntime:
             "name": self.name,
             "location": self.location,
         }, token=self.token)
+
+    def retry_enrollment(self) -> None:
+        """Retry dashboard enrollment without blocking local video startup."""
+        if not self.enrollment_pending or time.monotonic() < self.next_enrollment_retry:
+            return
+        try:
+            self.enroll()
+        except Exception as exc:
+            self.next_enrollment_retry = time.monotonic() + 10
+            print(f"Enrollment unavailable; local media continues: {exc}", flush=True)
+        else:
+            self.enrollment_pending = False
+            print("Dashboard enrollment restored", flush=True)
 
     def heartbeat(self) -> None:
         payload = {"runtime": "v1", "agent_version": __agent_version__, "metrics": system_metrics(), "recent_logs": recent_logs()}
@@ -1034,13 +1049,8 @@ class DeviceRuntime:
 
     def run(self, enroll: bool = True) -> None:
         if enroll:
-            while True:
-                try:
-                    self.enroll()
-                    break
-                except Exception as exc:
-                    print(f"Enrollment failed: {exc}; retrying", flush=True)
-                    time.sleep(5)
+            self.enrollment_pending = True
+            self.retry_enrollment()
         self.activate_monitor_display()
         preview_stop = threading.Event()
         preview_thread = None
@@ -1063,7 +1073,7 @@ class DeviceRuntime:
                 print(f"Unable to apply setup Wi-Fi profile at startup: {exc}", flush=True)
             self.confirm_reboot_after_boot()
             while True:
-                for task in (self.heartbeat, self.poll_commands, self.reconcile_media,
+                for task in (self.retry_enrollment, self.heartbeat, self.poll_commands, self.reconcile_media,
                              self.reconcile_forwarder):
                     try:
                         task()
