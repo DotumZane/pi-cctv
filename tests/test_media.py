@@ -84,6 +84,13 @@ class MediaTests(unittest.TestCase):
         self.assertIn("video/x-raw,width=640,height=360,pixel-aspect-ratio=1/1 ! identity name=cctv_live_0", command)
         self.assertIn("sink_3::xpos=640 sink_3::ypos=360", command)
         self.assertEqual(command.count('text="No camera assigned"'), 2)
+
+    def test_quad_fill_crops_each_camera_to_its_tile(self):
+        command = quad_pipeline(["rtsp://media:8554/cam-1", "rtsp://media:8554/cam-2"],
+                                width=1024, height=768, scale_mode="fill")
+        self.assertEqual(command.count("aspectratiocrop aspect-ratio=512/384 ! videoscale add-borders=false"), 2)
+        fit = quad_pipeline(["rtsp://media:8554/cam-1"], width=1024, height=768)
+        self.assertNotIn("aspectratiocrop", fit)
         self.assertIn("tee name=monitor_out", command)
         self.assertIn('textoverlay name=cctv_stats text="" silent=true', command)
         self.assertIn("monitor_out. ! queue max-size-buffers=2 leaky=downstream ! kmssink", command)

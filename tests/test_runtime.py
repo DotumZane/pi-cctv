@@ -14,6 +14,12 @@ from cctv.runtime import DeviceRuntime, _monitor_output_size, apply_monitor_sche
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_quad_uses_monitor_fill_setting(self):
+        assignment = {"layout": "2x2", "cameras": '["cam-1"]'}
+        settings = {"scale_mode": "fill", "auto_resolution": False, "width": 1024, "height": 768}
+        command = command_for_assignment(assignment, "media", settings)
+        self.assertIn("aspectratiocrop aspect-ratio=512/384", command)
+
     def test_boot_splash_setup_runs_only_on_monitor_pi(self):
         with TemporaryDirectory(prefix="pi-cctv-splash-test-") as directory:
             root = Path(directory)

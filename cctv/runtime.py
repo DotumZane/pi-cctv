@@ -226,7 +226,8 @@ def command_for_assignment(assignment: dict, media_server: str, settings: dict |
     width, height = _monitor_output_size(settings)
     if assignment.get("layout", "single") == "2x2":
         width, height = _quad_output_size(settings)
-        return quad_pipeline(urls, width, height, preview_id=settings.get("preview_id", "default"))
+        return quad_pipeline(urls, width, height, preview_id=settings.get("preview_id", "default"),
+                             scale_mode=settings.get("scale_mode", "fit"))
     return MonitorMedia(
         urls[0], fullscreen=settings.get("kiosk", True), width=width, height=height,
         scale_mode=settings.get("scale_mode", "fit"),

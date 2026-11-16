@@ -187,18 +187,21 @@ def idle_monitor_pipeline(preview_id: str = "default", connector_id: str | None 
     )
 
 
-def quad_pipeline(stream_urls: list[str], width: int = 1920, height: int = 1080, preview_id: str = "default") -> str:
+def quad_pipeline(stream_urls: list[str], width: int = 1920, height: int = 1080, preview_id: str = "default",
+                  scale_mode: str = "fit") -> str:
     """Build a 2×2 decoder pipeline for one to four RTSP streams."""
     if not 1 <= len(stream_urls) <= 4:
         raise ValueError("a 2x2 layout requires between one and four streams")
     cell_width, cell_height = max(1, width // 2), max(1, height // 2)
+    scaling = (f"aspectratiocrop aspect-ratio={cell_width}/{cell_height} ! videoscale add-borders=false"
+               if scale_mode == "fill" else "videoscale add-borders=true")
     branches = []
     for index, url in enumerate(stream_urls):
         branches.append(
             f"input-selector name=cctv_selector_{index} sync-streams=false ! compositor.sink_{index} "
             f"{_offline_branch(index, _camera_label(url), cell_width, cell_height)} "
             f"rtspsrc name=cctv_source_{index} location={quote(url)} protocols=tcp latency=0 drop-on-latency=true ! "
-            f"rtph264depay ! h264parse ! v4l2h264dec ! videoconvert ! videoscale add-borders=true ! "
+            f"rtph264depay ! h264parse ! v4l2h264dec ! videoconvert ! {scaling} ! "
             f"video/x-raw,width={cell_width},height={cell_height},pixel-aspect-ratio=1/1 ! identity name=cctv_live_{index} ! "
             f"queue max-size-buffers=2 leaky=downstream ! cctv_selector_{index}.sink_1"
         )
