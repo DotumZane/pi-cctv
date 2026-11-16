@@ -568,6 +568,14 @@ class Store:
         return commands
 
     @serialized
+    def pending_command(self, device_id: str, command: str) -> bool:
+        row = self.db.execute(
+            "SELECT 1 FROM device_commands WHERE device_id=? AND command=? AND consumed_at IS NULL LIMIT 1",
+            (device_id, command),
+        ).fetchone()
+        return row is not None
+
+    @serialized
     def command_history(self, device_id: str, limit: int = 30) -> list[dict[str, Any]]:
         limit = max(1, min(limit, 100))
         return [dict(row) for row in self.db.execute(

@@ -1392,7 +1392,10 @@ class Handler(BaseHTTPRequestHandler):
                     self.store.set_maintenance_run(device_id, "os_update", "queued", {})
                 if command_name == "reboot":
                     maintenance = self.store.maintenance_run(device_id, "reboot")
-                    if maintenance and maintenance["state"] in {"queued", "running"}:
+                    if maintenance and maintenance["state"] == "running":
+                        self.send_json({"error": "a Pi reboot is already queued or awaiting device reconnection"}, HTTPStatus.CONFLICT)
+                        return
+                    if maintenance and maintenance["state"] == "queued" and self.store.pending_command(device_id, "reboot"):
                         self.send_json({"error": "a Pi reboot is already queued or awaiting device reconnection"}, HTTPStatus.CONFLICT)
                         return
                     self.store.set_maintenance_run(device_id, "reboot", "queued", {"message": "Reboot queued; waiting for the Pi to acknowledge it."})

@@ -466,6 +466,10 @@ class ApiTests(unittest.TestCase):
         admin_token = self.httpd.store.create_session("admin")
         self.assertEqual(self.call("POST", "/api/devices/cam-1/commands", {"command": "reboot"}, admin_token)[0], 202)
         self.assertEqual(self.call("POST", "/api/devices/cam-1/commands", {"command": "reboot"}, admin_token)[0], 409)
+        # If an agent update consumes the command before rebooting, the queued
+        # maintenance state must not permanently block a retry.
+        self.httpd.store.consume_commands("cam-1")
+        self.assertEqual(self.call("POST", "/api/devices/cam-1/commands", {"command": "reboot"}, admin_token)[0], 202)
         self.assertEqual(self.call("GET", "/api/devices/cam-1/maintenance/reboot", token=device_token)[1]["maintenance"]["state"], "queued")
         self.assertEqual(self.call("POST", "/api/devices/cam-1/maintenance/reboot", {
             "state": "running", "details": {"boot_id": "old-boot", "message": "Reboot requested"},
