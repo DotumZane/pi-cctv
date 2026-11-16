@@ -317,10 +317,10 @@ class Store:
         device_id = pending_id
         replacement = None
         if replace_device_id:
-            if kind != "camera" or replace_device_id == pending_id:
+            if replace_device_id == pending_id:
                 return None
             replacement = next((item for item in self.devices() if item["id"] == replace_device_id), None)
-            if not replacement or replacement["kind"] != "camera" or replacement["status"] != "offline":
+            if not replacement or replacement["kind"] != kind or replacement["status"] != "offline":
                 return None
             device_id = replace_device_id
         existing = self.device(device_id)

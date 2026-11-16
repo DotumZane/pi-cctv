@@ -1353,7 +1353,7 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 if not result:
                     self.send_json({
-                        "error": "Device could not be adopted. A replacement must be an offline camera, and the pending device must be unclaimed."
+                        "error": "Device could not be adopted. A replacement must be an offline device of the same type, and the pending device must be unclaimed."
                     }, HTTPStatus.CONFLICT)
                     return
                 device, _token = result
