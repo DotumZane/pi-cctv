@@ -374,7 +374,7 @@ class DeviceRuntime:
     location: str
     server: str
     media_server: str
-    heartbeat_interval: int = 15
+    heartbeat_interval: int = 5
     token: str = ""
     process_factory: Callable[..., subprocess.Popen] = subprocess.Popen
 

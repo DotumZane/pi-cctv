@@ -1693,6 +1693,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json({"error": "invalid camera settings or value outside supported range"}, HTTPStatus.BAD_REQUEST)
                 else:
                     device = self.store.update_settings(camera_id, settings)
+                    self.store.queue_command(camera_id, "restart_media")
                     self.store.audit("camera.settings", camera_id, self.client_address[0], settings)
                     self.send_json(device)
             return
@@ -1753,6 +1754,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"error": "invalid monitor settings"}, HTTPStatus.BAD_REQUEST)
             else:
                 device = self.store.update_settings(monitor_id, settings)
+                self.store.queue_command(monitor_id, "restart_media")
                 self.store.audit("monitor.settings", monitor_id, self.client_address[0], settings)
                 self.send_json(device)
             return
@@ -1789,6 +1791,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"error": "invalid camera assignment"}, HTTPStatus.BAD_REQUEST)
             else:
                 assignment = self.store.set_assignment(monitor_id, payload["layout"], cameras, outputs)
+                self.store.queue_command(monitor_id, "restart_media")
                 self.store.audit("monitor.assignment", monitor_id, self.client_address[0], {"layout": payload["layout"], "cameras": cameras, "outputs": outputs})
                 self.send_json(assignment)
             return
