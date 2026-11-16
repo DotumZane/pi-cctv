@@ -150,7 +150,7 @@
   const originalLoadAll = window.loadAll;
   if (typeof originalLoadAll === 'function') {
     window.loadAll = async function loadAllWithDeviceRestore() {
-      await originalLoadAll();
+      const refreshed = await originalLoadAll();
       const match = location.hash.match(/^#device\/(.+)$/);
       const restoringDetail = Boolean(match) || localStorage.getItem('cctvView') === 'device-detail';
       const savedId = restoringDetail ? (match ? decodeURIComponent(match[1]) : localStorage.getItem('cctvDeviceId')) : null;
@@ -163,6 +163,7 @@
         history.replaceState(null, '', `${location.pathname}#devices`);
         window.selectView?.('devices');
       }
+      return refreshed;
     };
   }
 })();
