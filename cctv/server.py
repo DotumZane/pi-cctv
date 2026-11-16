@@ -1845,7 +1845,12 @@ class TLSThreadingHTTPServer(ThreadingHTTPServer):
     def get_request(self):
         request, client_address = super().get_request()
         try:
+            # A client can connect and never send a TLS ClientHello (or send
+            # plain HTTP to the HTTPS port).  Bound the handshake so one bad
+            # connection cannot stall accept() for every other dashboard user.
+            request.settimeout(5.0)
             request = self.ssl_context.wrap_socket(request, server_side=True)
+            request.settimeout(30.0)
         except Exception:
             request.close()
             raise
