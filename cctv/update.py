@@ -158,6 +158,31 @@ def install_monitor_stats_dependencies() -> None:
         detail = (installed.stderr or installed.stdout).strip()[-1000:]
         print(f"Stats overlay bindings unavailable; monitor video will continue without the overlay: {detail}", flush=True)
 
+def ensure_camera_dependencies(refresh_relay: bool = False) -> bool:
+    """Install or repair camera stream dependencies, even on an unchanged checkout."""
+    try:
+        if json.loads(DEVICE_STATE.read_text()).get("kind") != "camera":
+            return False
+    except (OSError, ValueError):
+        return False
+    changed = False
+    if run(["bash", "-lc", "command -v ffmpeg"], timeout=15).returncode:
+        refreshed = run(["apt-get", "update"], timeout=180)
+        installed = run(["apt-get", "install", "-y", "--no-install-recommends", "ffmpeg"], timeout=180) if not refreshed.returncode else refreshed
+        if installed.returncode:
+            raise RuntimeError(f"NVR forwarder dependency installation failed: {(installed.stderr or installed.stdout).strip()[-1000:]}")
+        changed = True
+    relay_present = run(["systemctl", "is-active", "--quiet", "pi-cctv-relay.service"], timeout=10).returncode == 0
+    if refresh_relay or not relay_present:
+        relay = run(["bash", str(INSTALL_DIR / "scripts" / "install-camera-relay.sh")], timeout=180)
+        if relay.returncode:
+            raise RuntimeError(f"Local camera relay installation failed: {(relay.stderr or relay.stdout).strip()[-1000:]}")
+        enabled = run(["systemctl", "enable", "--now", "pi-cctv-relay.service"], timeout=30)
+        if enabled.returncode:
+            raise RuntimeError(f"Local camera relay could not start: {(enabled.stderr or enabled.stdout).strip()[-1000:]}")
+        changed = True
+    return changed
+
 
 def main() -> int:
     report_status("running", "Downloading the approved CCTV software update.")
@@ -173,25 +198,11 @@ def main() -> int:
         if pull.returncode:
             raise RuntimeError(f"Software download failed: {(pull.stderr or pull.stdout).strip()[-1000:]}")
         updated_commit = current_commit()
-        if updated_commit == previous_commit:
+        install_monitor_stats_dependencies()
+        dependencies_changed = ensure_camera_dependencies(updated_commit != previous_commit)
+        if updated_commit == previous_commit and not dependencies_changed:
             report_status("succeeded", "Pi CCTV software is already current; no restart was needed.")
             return 0
-
-        install_monitor_stats_dependencies()
-        try:
-            camera_role = json.loads(DEVICE_STATE.read_text()).get("kind") == "camera"
-        except (OSError, ValueError):
-            camera_role = False
-        if camera_role:
-            ffmpeg_probe = run(["bash", "-lc", "command -v ffmpeg"], timeout=15)
-            if ffmpeg_probe.returncode:
-                refreshed = run(["apt-get", "update"], timeout=180)
-                installed = run(["apt-get", "install", "-y", "--no-install-recommends", "ffmpeg"], timeout=180) if not refreshed.returncode else refreshed
-                if installed.returncode:
-                    raise RuntimeError(f"NVR forwarder dependency installation failed: {(installed.stderr or installed.stdout).strip()[-1000:]}")
-            relay = run(["bash", str(INSTALL_DIR / "scripts" / "install-camera-relay.sh")], timeout=180)
-            if relay.returncode:
-                raise RuntimeError(f"Local camera relay installation failed: {(relay.stderr or relay.stdout).strip()[-1000:]}")
 
         print("Running: systemctl daemon-reload", flush=True)
         daemon_reload = run(["systemctl", "daemon-reload"], timeout=30)

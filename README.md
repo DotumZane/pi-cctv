@@ -109,6 +109,8 @@ sudo bash install.sh
 python3 -m cctv.agent --role camera --name "Saw 1" --location "Line 1" --server http://SERVER:8080
 ```
 
+The installer installs the Pi media packages, including FFmpeg, and sets up the local relay for camera, discovery, and enrollment installations. Internet access is required. To repair missing camera dependencies on an installed Pi, run `cd /opt/pi-cctv && sudo python3 -m cctv.update`. When upgrading from an older agent that does not yet include dependency repair, run the command a second time after the upgrade. The repair checks FFmpeg and the local relay even when the software is already current.
+
 On Raspberry Pi OS/Debian, the installer also installs the required GStreamer, libcamera, and plugin packages. Use `--skip-packages` only when those dependencies have already been installed.
 
 For a fresh Pi directly from the repository, the complete one-command form is:

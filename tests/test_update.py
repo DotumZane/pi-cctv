@@ -7,6 +7,23 @@ from cctv import update
 
 
 class UpdateTests(unittest.TestCase):
+    def test_current_camera_repairs_missing_dependencies_and_restarts(self):
+        old = "a" * 40
+        ok = Mock(returncode=0, stdout="", stderr="")
+        missing = Mock(returncode=1, stdout="", stderr="")
+        with patch.object(update, "DEVICE_STATE") as state, \
+                patch.object(update, "mark_setup_ap_checked_this_boot"), \
+                patch.object(update, "run", side_effect=[ok, ok, missing, ok, ok, missing, ok, ok, ok, ok]) as run, \
+                patch.object(update, "current_commit", return_value=old), \
+                patch.object(update, "wait_for_healthy_service", return_value=True), \
+                patch.object(update, "report_status"):
+            state.read_text.return_value = '{"kind":"camera"}'
+            self.assertEqual(update.main(), 0)
+        commands = [call.args[0] for call in run.call_args_list]
+        self.assertIn(["apt-get", "install", "-y", "--no-install-recommends", "ffmpeg"], commands)
+        self.assertIn(["systemctl", "enable", "--now", "pi-cctv-relay.service"], commands)
+        self.assertIn(["systemctl", "restart", update.SERVICE], commands)
+
     def test_monitor_stats_dependencies_are_installed_only_for_monitor_pi(self):
         with patch.object(update, "DEVICE_STATE", Path("/nonexistent")), patch.object(update, "run") as run:
             update.install_monitor_stats_dependencies()
