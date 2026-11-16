@@ -114,7 +114,7 @@ class ApiTests(unittest.TestCase):
 
         self.httpd.store.heartbeat("cam-backup", "192.0.2.20", json.dumps({"agent_version": __agent_version__, "direct_rtsp_ready": False}))
         status, assignment = self.call("GET", "/api/monitors/mon-1/assignment", token=device_token)
-        self.assertEqual(assignment["camera_sources"], {})
+        self.assertEqual(assignment["camera_sources"], {"cam-backup": "192.0.2.20"})
 
     def test_admin_can_update_device_name_and_location_without_overwriting_metadata(self):
         self.httpd.store.create_user("admin", "correct-horse-battery")
