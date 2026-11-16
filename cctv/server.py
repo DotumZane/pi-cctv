@@ -1842,9 +1842,7 @@ class TLSThreadingHTTPServer(ThreadingHTTPServer):
     def get_request(self):
         request, client_address = super().get_request()
         try:
-            request = self.ssl_context.wrap_socket(
-                request, server_side=True, do_handshake_on_connect=False
-            )
+            request = self.ssl_context.wrap_socket(request, server_side=True)
         except Exception:
             request.close()
             raise
