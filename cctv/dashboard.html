@@ -255,7 +255,10 @@ async function returnWorkspaceToLive(){const id=window.workspaceCamera;if(!id)re
 const nvrNav=document.querySelector('[data-view="nvr"]');if(nvrNav)nvrNav.textContent='⚙ NVR settings';
 const nvrView=document.querySelector('#view-nvr');if(nvrView){nvrView.querySelector('.panel-head h2').textContent='NVR settings';nvrView.querySelector('.panel-head .notice').textContent='Manage recording, storage, retention, and per-camera capture.';nvrView.querySelector('.nvr-filters').style.display='none';nvrView.querySelector('#nvr-player').style.display='none';nvrView.querySelector('#nvr-recordings').style.display='none'}
 const originalSelectView=selectView;selectView=function(view){localStorage.cctvView=view;history.replaceState(null,'',view==='overview'?location.pathname:location.pathname+'#'+encodeURIComponent(view));const result=originalSelectView(view);if(view==='nvr')loadNvr();return result};
-const savedView=decodeURIComponent(location.hash.slice(1))||localStorage.cctvView||'overview';if(document.querySelector('#view-'+CSS.escape(savedView)))selectView(savedView);
+function selectHashView(){const requested=decodeURIComponent(location.hash.slice(1))||localStorage.cctvView||'overview';if(document.querySelector('#view-'+CSS.escape(requested)))selectView(requested)}
+window.addEventListener('hashchange',selectHashView);
+window.addEventListener('popstate',selectHashView);
+selectHashView();
 </script>
 <script>
 async function requestMonitorStats(id){const status=document.querySelector('#monitor-stats-status'),button=[...document.querySelectorAll('.monitor-preview-card button')].find(item=>item.textContent.includes('stats for 1 minute'));if(button)button.disabled=true;if(status)status.textContent='Requesting the one-minute stats overlay…';try{const response=await api(`/api/devices/${encodeURIComponent(id)}/commands`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command:'show_stats'})}),result=await response.json().catch(()=>({}));if(!response.ok)throw new Error(result.error||'Could not request the stats overlay.');if(status)status.textContent='Requested. It will appear on the monitor when the Pi checks in, then disappear after 1 minute.'}catch(error){if(status)status.textContent=error.message||'Could not request the stats overlay.'}finally{if(button)button.disabled=false}}
@@ -664,7 +667,8 @@ window.addEventListener('click',event=>{const button=event.target.closest?.('#se
 </script><script src="/playback-engine.js"></script>
 <script>
 // Keep dense operational data readable on narrow screens and during async loads.
-const dashboardDatePattern=/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})$/;
+const dashboardDatePattern=/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})/;
+const dashboardDateTokenPattern=new RegExp(dashboardDatePattern.source,'g');
 function formatDashboardDates(root){
   if(!root)return;
   const walker=document.createTreeWalker(root,NodeFilter.SHOW_TEXT);
@@ -672,11 +676,11 @@ function formatDashboardDates(root){
   while(walker.nextNode())nodes.push(walker.currentNode);
   nodes.forEach(node=>{
     if(node.parentElement?.closest('pre,script,style'))return;
-    const value=node.nodeValue.trim();
-    if(!dashboardDatePattern.test(value))return;
-    const date=new Date(value);
-    if(Number.isNaN(date.getTime()))return;
-    node.nodeValue=node.nodeValue.replace(value,date.toLocaleString(undefined,{dateStyle:'medium',timeStyle:'short'}));
+    if(!dashboardDatePattern.test(node.nodeValue))return;
+    node.nodeValue=node.nodeValue.replace(dashboardDateTokenPattern,value=>{
+      const date=new Date(value);
+      return Number.isNaN(date.getTime())?value:date.toLocaleString(undefined,{dateStyle:'medium',timeStyle:'short'});
+    });
   });
 }
 const dashboardDateRoots=['#devices','#users-list','#device-detail-page'];
