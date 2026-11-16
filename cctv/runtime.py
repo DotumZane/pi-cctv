@@ -254,14 +254,14 @@ def collect_log_export(hours: int, limit: int = 500_000) -> list[str]:
         return [f"Unable to collect journal logs: {exc}"]
 
 
-def http_json(url: str, method: str = "GET", payload: dict | None = None, token: str = "") -> dict:
+def http_json(url: str, method: str = "GET", payload: dict | None = None, token: str = "", timeout: float = 10) -> dict:
     data = json.dumps(payload).encode() if payload is not None else None
     request = urllib.request.Request(url, data=data, method=method)
     if data:
         request.add_header("Content-Type", "application/json")
     if token:
         request.add_header("Authorization", f"Bearer {token}")
-    with urllib.request.urlopen(request, timeout=10) as response:
+    with urllib.request.urlopen(request, timeout=timeout) as response:
         return json.load(response)
 
 
@@ -525,7 +525,9 @@ class DeviceRuntime:
 
     def _device_settings(self) -> dict:
         try:
-            device = http_json(f"{self.server}/api/devices/{self.device_id}", token=self.token)
+            # Do not hold the monitor's local video startup behind a router
+            # timeout when the dashboard is unavailable during boot.
+            device = http_json(f"{self.server}/api/devices/{self.device_id}", token=self.token, timeout=2)
             settings = json.loads(device.get("metadata", "{}")).get("settings", {})
             self._cached_config(settings=settings)
             return settings
@@ -930,7 +932,9 @@ class DeviceRuntime:
         settings["camera_name"] = self.name
         settings["preview_id"] = self.device_id
         try:
-            assignment = http_json(f"{self.server}/api/monitors/{self.device_id}/assignment", token=self.token)
+            # Assignment refresh is best-effort; cached routing and local
+            # camera discovery must start promptly during an offline boot.
+            assignment = http_json(f"{self.server}/api/monitors/{self.device_id}/assignment", token=self.token, timeout=2)
             self._cached_config(assignment=assignment)
             assignment_online = True
         except Exception as exc:
@@ -1173,8 +1177,10 @@ class DeviceRuntime:
                 print(f"Unable to apply setup Wi-Fi profile at startup: {exc}", flush=True)
             self.confirm_reboot_after_boot()
             while True:
-                for task in (self.retry_enrollment, self.heartbeat, self.poll_commands, self.reconcile_media,
-                             self.reconcile_forwarder):
+                # Keep local media responsive during dashboard/router outages;
+                # network maintenance is retried after the display is running.
+                for task in (self.reconcile_media, self.reconcile_forwarder, self.retry_enrollment,
+                             self.heartbeat, self.poll_commands):
                     try:
                         task()
                     except Exception as exc:
