@@ -23,7 +23,7 @@ def _offline_branch(index: int, label: str, width: int, height: int) -> str:
     # when the RTSP source has not connected or has stopped delivering frames.
     heading = quote(f"{label} — Camera offline")
     return (
-        f"videotestsrc is-live=true pattern=black ! video/x-raw,width={width},height={height},framerate=5/1 ! "
+        f"videotestsrc is-live=true pattern=black ! video/x-raw,width={width},height={height},pixel-aspect-ratio=1/1,framerate=5/1 ! "
         f"textoverlay name=cctv_offline_{index} text={heading} font-desc=\"Sans 20\" "
         "halignment=center valignment=center ! queue max-size-buffers=2 leaky=downstream ! "
         f"cctv_selector_{index}.sink_0"
@@ -199,12 +199,19 @@ def quad_pipeline(stream_urls: list[str], width: int = 1920, height: int = 1080,
             f"{_offline_branch(index, _camera_label(url), cell_width, cell_height)} "
             f"rtspsrc name=cctv_source_{index} location={quote(url)} protocols=tcp latency=0 drop-on-latency=true ! "
             f"rtph264depay ! h264parse ! v4l2h264dec ! videoconvert ! videoscale add-borders=true ! "
-            f"video/x-raw,width={cell_width},height={cell_height} ! identity name=cctv_live_{index} ! "
+            f"video/x-raw,width={cell_width},height={cell_height},pixel-aspect-ratio=1/1 ! identity name=cctv_live_{index} ! "
             f"queue max-size-buffers=2 leaky=downstream ! cctv_selector_{index}.sink_1"
+        )
+    for index in range(len(stream_urls), 4):
+        branches.append(
+            "videotestsrc is-live=true pattern=black ! "
+            f"video/x-raw,width={cell_width},height={cell_height},pixel-aspect-ratio=1/1,framerate=5/1 ! "
+            'textoverlay text="No camera assigned" font-desc="Sans 16" halignment=center valignment=center ! '
+            f"queue max-size-buffers=2 leaky=downstream ! compositor.sink_{index}"
         )
     positions = " ".join(
         f"sink_{i}::xpos={(i % 2) * cell_width} sink_{i}::ypos={(i // 2) * cell_height}"
-        for i in range(len(stream_urls))
+        for i in range(4)
     )
     preview_width, preview_height = _preview_size(width, height)
     return (
@@ -213,7 +220,7 @@ def quad_pipeline(stream_urls: list[str], width: int = 1920, height: int = 1080,
         + "monitor_out. ! queue max-size-buffers=2 leaky=downstream ! kmssink sync=false "
         + f"monitor_out. ! {_preview_branch(preview_id, preview_width, preview_height)} "
         + " ".join(branches)
-        + f" compositor name=compositor ignore-inactive-pads=true background=black {positions} ! video/x-raw,width={width},height={height} ! "
+        + f" compositor name=compositor ignore-inactive-pads=true background=black {positions} ! video/x-raw,width={width},height={height},pixel-aspect-ratio=1/1 ! "
         + 'textoverlay name=cctv_stats text="" silent=true font-desc="Sans 12" '
         + "halignment=left valignment=top xpad=18 ypad=18 shaded-background=true ! cctv_splash_selector.sink_0 "
         + f"{_splash_branch(width, height)}"

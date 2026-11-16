@@ -80,7 +80,10 @@ class MediaTests(unittest.TestCase):
     def test_quad_layout_uses_detected_output_dimensions(self):
         command = quad_pipeline(["rtsp://media:8554/cam-1", "rtsp://media:8554/cam-2"], width=1280, height=720)
         self.assertIn("sink_1::xpos=640 sink_1::ypos=0", command)
-        self.assertIn("video/x-raw,width=1280,height=720 ! textoverlay name=cctv_stats", command)
+        self.assertIn("video/x-raw,width=1280,height=720,pixel-aspect-ratio=1/1 ! textoverlay name=cctv_stats", command)
+        self.assertIn("video/x-raw,width=640,height=360,pixel-aspect-ratio=1/1 ! identity name=cctv_live_0", command)
+        self.assertIn("sink_3::xpos=640 sink_3::ypos=360", command)
+        self.assertEqual(command.count('text="No camera assigned"'), 2)
         self.assertIn("tee name=monitor_out", command)
         self.assertIn('textoverlay name=cctv_stats text="" silent=true', command)
         self.assertIn("monitor_out. ! queue max-size-buffers=2 leaky=downstream ! kmssink", command)
