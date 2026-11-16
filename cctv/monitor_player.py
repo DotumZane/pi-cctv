@@ -78,8 +78,15 @@ class MonitorPlayer:
         self.reconnect_seconds = max(1, reconnect_seconds)
         self.splash_selector = self.pipeline.get_by_name("cctv_splash_selector")
         self.splash_until = self.started_at + 4.0
+        self.splash_fallback_file = self.control_file.with_name(self.control_file.name + ".splash-fallback")
+        self.splash_switched_at = None
         if self.splash_selector is not None:
-            self.splash_selector.set_property("active-pad", self.splash_selector.get_static_pad("sink_1"))
+            for name in ("sink_0", "sink_1"):
+                self.splash_selector.get_static_pad(name).set_property("always-ok", True)
+            fallback = self.splash_fallback_file.exists()
+            self.splash_selector.set_property("active-pad", self.splash_selector.get_static_pad("sink_0" if fallback else "sink_1"))
+            if fallback:
+                print("Monitor splash disabled after output stalled; using normal output", flush=True)
         self.cameras = {}
         index = 0
         while True:
@@ -118,14 +125,34 @@ class MonitorPlayer:
         GLib.timeout_add(200, self._read_control)
         GLib.timeout_add(1000, self._update_overlay)
         GLib.timeout_add(500, self._check_cameras)
-        if self.splash_selector is not None:
+        if self.splash_selector is not None and not self.splash_fallback_file.exists():
             GLib.timeout_add(250, self._hide_splash)
 
     def _hide_splash(self) -> bool:
         if self.splash_selector is None or time.monotonic() < self.splash_until:
             return True
         self.splash_selector.set_property("active-pad", self.splash_selector.get_static_pad("sink_0"))
+        self.splash_switched_at = time.monotonic()
+        self.GLib.timeout_add(1000, self._check_splash_output)
         print("Monitor splash finished; showing normal display output", flush=True)
+        return False
+
+    def _check_splash_output(self) -> bool:
+        now = time.monotonic()
+        if now - self.splash_switched_at < 10:
+            return True
+        with self.lock:
+            last = self.last_video_buffer_at
+        if last is not None and last >= self.splash_switched_at and now - last < 3:
+            return False
+        try:
+            self.splash_fallback_file.parent.mkdir(parents=True, exist_ok=True)
+            self.splash_fallback_file.touch()
+        except OSError as error:
+            print(f"Monitor output stalled; could not enable splash fallback: {error}", flush=True)
+            return False
+        print("Monitor output stalled after splash; restarting without splash", flush=True)
+        self.loop.quit()
         return False
 
     def _on_camera_buffer(self, _pad, info, index):
