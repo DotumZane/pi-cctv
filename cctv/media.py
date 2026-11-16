@@ -124,7 +124,7 @@ class MonitorMedia:
         filter_chain = (" ! " + " ! ".join(filters)) if filters else ""
         preview_width, preview_height = _preview_size(self.width or 1920, self.height or 1080)
         preview = _preview_branch(self.preview_id, preview_width, preview_height)
-        offline = _offline_branch(0, _camera_label(self.stream_url), self.width or 1920, self.height or 1080)
+        offline = _offline_branch(0, self.camera_name or _camera_label(self.stream_url), self.width or 1920, self.height or 1080)
         return (
             "gst-launch-1.0 -e "
             "input-selector name=cctv_splash_selector sync-streams=false ! tee name=monitor_out "
@@ -188,7 +188,8 @@ def idle_monitor_pipeline(preview_id: str = "default", connector_id: str | None 
 
 
 def quad_pipeline(stream_urls: list[str], width: int = 1920, height: int = 1080, preview_id: str = "default",
-                  scale_mode: str = "fit", show_camera_name: bool = False, camera_name: str = "") -> str:
+                  scale_mode: str = "fit", show_camera_name: bool = False, camera_name: str = "",
+                  camera_names: list[str] | None = None) -> str:
     """Build a 2×2 decoder pipeline for one to four RTSP streams."""
     if not 1 <= len(stream_urls) <= 4:
         raise ValueError("a 2x2 layout requires between one and four streams")
@@ -199,7 +200,7 @@ def quad_pipeline(stream_urls: list[str], width: int = 1920, height: int = 1080,
     for index, url in enumerate(stream_urls):
         branches.append(
             f"input-selector name=cctv_selector_{index} sync-streams=false ! compositor.sink_{index} "
-            f"{_offline_branch(index, _camera_label(url), cell_width, cell_height)} "
+            f"{_offline_branch(index, (camera_names or [])[index] if camera_names and index < len(camera_names) else _camera_label(url), cell_width, cell_height)} "
             f"rtspsrc name=cctv_source_{index} location={quote(url)} protocols=tcp latency=0 drop-on-latency=true ! "
             f"rtph264depay ! h264parse ! v4l2h264dec ! videoconvert ! {scaling} ! "
             f"video/x-raw,width={cell_width},height={cell_height},pixel-aspect-ratio=1/1 ! identity name=cctv_live_{index} ! "

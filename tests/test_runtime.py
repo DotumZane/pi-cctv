@@ -26,6 +26,12 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn('textoverlay text="trimmer-outfeed-camera"', command)
         self.assertNotIn('textoverlay text="trimmer-outfeed"', command)
 
+    def test_offline_slate_uses_assigned_camera_name(self):
+        assignment = {"layout": "single", "cameras": '["cam-1"]', "camera_names": {"cam-1": "trimmer-outfeed-camera"}}
+        command = command_for_assignment(assignment, "media")
+        self.assertIn("trimmer-outfeed-camera — Camera offline", command)
+        self.assertNotIn("cam-1 — Camera offline", command)
+
     def test_quad_camera_name_overlay_uses_assigned_camera_name(self):
         assignment = {"layout": "2x2", "cameras": '["cam-1"]', "camera_names": {"cam-1": "trimmer-outfeed-camera"}}
         command = command_for_assignment(assignment, "media", {"show_camera_name": True})

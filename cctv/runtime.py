@@ -225,6 +225,16 @@ def _assignment_camera_name(assignment: dict) -> str:
     return " · ".join(str(names.get(camera_id, camera_id)) for camera_id in cameras if camera_id)
 
 
+def _assignment_camera_names(assignment: dict) -> list[str]:
+    """Return saved display names in the same order as assigned cameras."""
+    try:
+        cameras = json.loads(assignment.get("cameras", "[]")) if isinstance(assignment.get("cameras"), str) else assignment.get("cameras", [])
+    except (TypeError, json.JSONDecodeError):
+        cameras = []
+    names = assignment.get("camera_names") or {}
+    return [str(names.get(camera_id, camera_id)) for camera_id in cameras if camera_id]
+
+
 def command_for_assignment(assignment: dict, media_server: str, settings: dict | None = None) -> str | None:
     settings = settings or {}
     cameras = json.loads(assignment.get("cameras", "[]")) if isinstance(assignment.get("cameras"), str) else assignment.get("cameras", [])
@@ -239,7 +249,8 @@ def command_for_assignment(assignment: dict, media_server: str, settings: dict |
         width, height = _quad_output_size(settings)
         return quad_pipeline(urls, width, height, preview_id=settings.get("preview_id", "default"),
                              scale_mode=settings.get("scale_mode", "fit"),
-                             show_camera_name=settings.get("show_camera_name", False), camera_name=camera_name)
+                             show_camera_name=settings.get("show_camera_name", False), camera_name=camera_name,
+                             camera_names=_assignment_camera_names(assignment))
     return MonitorMedia(
         urls[0], fullscreen=settings.get("kiosk", True), width=width, height=height,
         scale_mode=settings.get("scale_mode", "fit"),
