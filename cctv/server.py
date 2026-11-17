@@ -123,9 +123,6 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json({"error": "authentication required"}, HTTPStatus.UNAUTHORIZED)
         return False
 
-    def secure_connection(self) -> bool:
-        return isinstance(self.connection, ssl.SSLSocket)
-
     def require_read_auth(self) -> bool:
         if self.authorized():
             return True
@@ -1012,9 +1009,6 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 if not self.require_auth():
                     return
-                if not self.secure_connection():
-                    self.send_json({"error": "server updates can only be requested over HTTPS"}, HTTPStatus.UPGRADE_REQUIRED)
-                    return
                 host_update_dir = Path(getattr(self.server, "host_update_dir", "/host-update"))  # type: ignore[attr-defined]
                 if not (host_update_dir / "installed").is_file():
                     self.send_json({"error": "The host update helper is not installed"}, HTTPStatus.SERVICE_UNAVAILABLE)
@@ -1063,9 +1057,6 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 if not self.require_auth():
                     return
-                if not self.secure_connection():
-                    self.send_json({"error": "server OS updates can only be requested over HTTPS"}, HTTPStatus.UPGRADE_REQUIRED)
-                    return
                 host_update_dir = Path(getattr(self.server, "host_update_dir", "/host-update"))  # type: ignore[attr-defined]
                 if not (host_update_dir / "os-installed").is_file():
                     self.send_json({"error": "The host OS update helper is not installed"}, HTTPStatus.SERVICE_UNAVAILABLE)
@@ -1105,9 +1096,6 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json({"error": "create an administrator account before rebooting the server"}, HTTPStatus.UNAUTHORIZED)
                     return
                 if not self.require_auth():
-                    return
-                if not self.secure_connection():
-                    self.send_json({"error": "server reboots can only be requested over HTTPS"}, HTTPStatus.UPGRADE_REQUIRED)
                     return
                 host_update_dir = Path(getattr(self.server, "host_update_dir", "/host-update"))  # type: ignore[attr-defined]
                 if not (host_update_dir / "reboot-installed").is_file():
@@ -1470,9 +1458,6 @@ class Handler(BaseHTTPRequestHandler):
                     if not self.authorized(admin_only=True):
                         self.send_json({"error": "administrator access is required to change Pi server addresses"}, HTTPStatus.FORBIDDEN)
                         return
-                    if not self.secure_connection():
-                        self.send_json({"error": "Pi server address changes require HTTPS"}, HTTPStatus.UPGRADE_REQUIRED)
-                        return
                     server_url = payload.get("server")
                     if not isinstance(server_url, str):
                         self.send_json({"error": "an HTTPS management server address is required"}, HTTPStatus.BAD_REQUEST)
@@ -1520,9 +1505,6 @@ class Handler(BaseHTTPRequestHandler):
                     if not self.authorized(admin_only=True):
                         self.send_json({"error": "administrator access is required to change Pi network settings"}, HTTPStatus.FORBIDDEN)
                         return
-                    if not self.secure_connection():
-                        self.send_json({"error": "Pi network changes require HTTPS"}, HTTPStatus.UPGRADE_REQUIRED)
-                        return
                     command_payload = payload.get("network")
                     if not isinstance(command_payload, dict) or command_payload.get("mode") not in {"static", "dhcp"}:
                         self.send_json({"error": "a valid network configuration is required"}, HTTPStatus.BAD_REQUEST)
@@ -1542,9 +1524,6 @@ class Handler(BaseHTTPRequestHandler):
             current = self.session_user()
             if not current:
                 self.send_json({"error": "sign in with a dashboard account to change its password"}, HTTPStatus.UNAUTHORIZED)
-                return
-            if not self.secure_connection():
-                self.send_json({"error": "password changes require HTTPS"}, HTTPStatus.UPGRADE_REQUIRED)
                 return
             payload = self.body()
             current_password = payload.get("current_password", "")
@@ -1570,9 +1549,6 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path.startswith("/api/users/") and parsed.path.endswith("/password"):
             if not self.require_auth():
                 return
-            if not self.secure_connection():
-                self.send_json({"error": "password resets require HTTPS"}, HTTPStatus.UPGRADE_REQUIRED)
-                return
             username = unquote(parsed.path[len("/api/users/"):-len("/password")].strip("/"))
             current = self.session_user()
             if current and current["username"] == username:
@@ -1597,9 +1573,6 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"error": "create an administrator account before changing server settings"}, HTTPStatus.UNAUTHORIZED)
                 return
             if not self.require_auth():
-                return
-            if not self.secure_connection():
-                self.send_json({"error": "stream endpoints can only be changed over HTTPS"}, HTTPStatus.UPGRADE_REQUIRED)
                 return
             payload = self.body()
             normalized = {}
@@ -1630,9 +1603,6 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"error": "create an administrator account before changing server settings"}, HTTPStatus.UNAUTHORIZED)
                 return
             if not self.require_auth():
-                return
-            if not isinstance(self.connection, ssl.SSLSocket):
-                self.send_json({"error": "setup Wi-Fi settings can only be changed over HTTPS"}, HTTPStatus.UPGRADE_REQUIRED)
                 return
             payload = self.body()
             old_profile = self.store.system_setting("setup_ap_profile") or {}
@@ -1727,9 +1697,6 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path.startswith("/api/devices/") and parsed.path.endswith("/network"):
             if not self.authorized(admin_only=True):
-                return
-            if not self.secure_connection():
-                self.send_json({"error": "Pi network changes require HTTPS"}, HTTPStatus.UPGRADE_REQUIRED)
                 return
             device_id = unquote(parsed.path[len("/api/devices/"):-len("/network")].strip("/"))
             device = self.store.device(device_id)

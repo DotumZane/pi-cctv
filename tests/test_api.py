@@ -457,19 +457,18 @@ class ApiTests(unittest.TestCase):
         self.httpd.store.create_user("admin", "correct-horse", "admin")
         admin_token = self.httpd.store.create_session("admin")
         request = {"command": "change_server_address", "server": "https://cctv.example:8443", "media_server": "192.168.10.10"}
-        with patch.object(Handler, "secure_connection", return_value=True):
-            self.assertEqual(self.call("POST", "/api/devices/cam-1/commands", request)[0], 401)
-            status, queued = self.call("POST", "/api/devices/cam-1/commands", request, admin_token)
-            self.assertEqual(status, 202)
-            status, commands = self.call("GET", "/api/devices/cam-1/commands", token=device_token)
-            self.assertEqual(status, 200)
-            self.assertEqual(commands["commands"][0]["id"], queued["id"])
-            self.assertEqual(commands["commands"][0]["payload"], {
-                "server": "https://cctv.example:8443", "media_server": "192.168.10.10",
-            })
-            self.assertEqual(self.call("POST", "/api/devices/cam-1/commands", {
-                **request, "media_server": "bad host/other",
-            }, admin_token)[0], 400)
+        self.assertEqual(self.call("POST", "/api/devices/cam-1/commands", request)[0], 401)
+        status, queued = self.call("POST", "/api/devices/cam-1/commands", request, admin_token)
+        self.assertEqual(status, 202)
+        status, commands = self.call("GET", "/api/devices/cam-1/commands", token=device_token)
+        self.assertEqual(status, 200)
+        self.assertEqual(commands["commands"][0]["id"], queued["id"])
+        self.assertEqual(commands["commands"][0]["payload"], {
+            "server": "https://cctv.example:8443", "media_server": "192.168.10.10",
+        })
+        self.assertEqual(self.call("POST", "/api/devices/cam-1/commands", {
+            **request, "media_server": "bad host/other",
+        }, admin_token)[0], 400)
 
     def test_agent_update_status_is_visible_and_reported_by_device(self):
         self.httpd.store.register({"id": "cam-1", "kind": "camera", "name": "Saw 1"})
@@ -544,7 +543,7 @@ class ApiTests(unittest.TestCase):
         self.assertTrue(claim["issued_token"])
         self.assertEqual(self.call("POST", "/api/devices/pending-pi/heartbeat", {"test": True}, claim["issued_token"])[0], 200)
 
-    def test_server_wifi_settings_never_return_the_password_and_require_https_to_change(self):
+    def test_server_wifi_settings_work_over_http_without_returning_password(self):
         self.httpd.store.create_user("admin", "correct-horse", "admin")
         self.httpd.admin_token = "test-token"
         profile = {"enabled": True, "ssid": "PiCCTV-Setup", "password": "secret-pass", "country": "US", "channel": 6, "revision": "1"}
@@ -553,33 +552,29 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertTrue(settings["password_configured"])
         self.assertNotIn("password", settings)
-        status, result = self.call("PUT", "/api/server/setup-ap", {**profile, "password": "new-password"}, token="test-token")
-        self.assertEqual(status, 426)
-        self.assertIn("HTTPS", result["error"])
+        status, result = self.call("PUT", "/api/server/setup-ap", {**profile, "password": "new-password"})
+        self.assertEqual(status, 401)
         self.assertEqual(self.httpd.store.system_setting("setup_ap_profile")["password"], "secret-pass")
         self.httpd.tls_enabled = True
-        with patch("cctv.server.ssl.SSLSocket", socket.socket):
-            status, saved = self.call("PUT", "/api/server/setup-ap", {
-                "enabled": True, "ssid": "PiCCTV-Field", "password": "new-password",
-                "country": "US", "channel": 11,
-            }, token="test-token")
+        status, saved = self.call("PUT", "/api/server/setup-ap", {
+            "enabled": True, "ssid": "PiCCTV-Field", "password": "new-password",
+            "country": "US", "channel": 11,
+        }, token="test-token")
         self.assertEqual(status, 200)
         self.assertNotIn("password", saved)
         self.assertEqual(saved["revision"], "2")
         self.assertEqual(self.httpd.store.system_setting("setup_ap_profile")["password"], "new-password")
 
-    def test_server_update_requires_https_and_queues_only_when_helper_is_installed(self):
+    def test_server_update_over_http_queues_only_when_helper_is_installed(self):
         self.httpd.store.create_user("admin", "correct-horse-battery")
         token = self.httpd.store.create_session("admin")
         status, body = self.call("POST", "/api/server/update", {}, token)
-        self.assertEqual(status, 426)
-        self.assertIn("HTTPS", body["error"])
+        self.assertEqual(status, 503)
 
         state_dir = Path(self.host_updates.name)
         (state_dir / "installed").touch()
         (state_dir / "status.json").write_text('{"state":"idle"}\n')
-        with patch.object(Handler, "secure_connection", return_value=True):
-            status, body = self.call("POST", "/api/server/update", {}, token)
+        status, body = self.call("POST", "/api/server/update", {}, token)
         self.assertEqual(status, 202)
         self.assertEqual(body["state"], "queued")
         request = json.loads((state_dir / "request.json").read_text())
@@ -587,27 +582,24 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.httpd.store.audit_entries(1)[0]["action"], "server.update.request")
 
         (state_dir / "status.json").write_text('{"state":"running"}\n')
-        with patch.object(Handler, "secure_connection", return_value=True):
-            status, body = self.call("POST", "/api/server/update", {}, token)
+        status, body = self.call("POST", "/api/server/update", {}, token)
         self.assertEqual(status, 409)
         self.assertEqual(body["state"], "running")
 
-    def test_user_can_change_own_password_over_https(self):
+    def test_user_can_change_own_password_over_http(self):
         self.httpd.store.create_user("admin", "old-password", "admin")
         token = self.httpd.store.create_session("admin")
         status, body = self.call("PUT", "/api/auth/password", {
             "current_password": "old-password", "new_password": "updated-password",
+        })
+        self.assertEqual(status, 401)
+        status, body = self.call("PUT", "/api/auth/password", {
+            "current_password": "wrong-password", "new_password": "updated-password",
         }, token)
-        self.assertEqual(status, 426)
-        self.assertIn("HTTPS", body["error"])
-        with patch.object(Handler, "secure_connection", return_value=True):
-            status, body = self.call("PUT", "/api/auth/password", {
-                "current_password": "wrong-password", "new_password": "updated-password",
-            }, token)
-            self.assertEqual(status, 401)
-            status, body = self.call("PUT", "/api/auth/password", {
-                "current_password": "old-password", "new_password": "updated-password",
-            }, token)
+        self.assertEqual(status, 401)
+        status, body = self.call("PUT", "/api/auth/password", {
+            "current_password": "old-password", "new_password": "updated-password",
+        }, token)
         self.assertEqual(status, 200)
         self.assertEqual(body["username"], "admin")
         self.assertTrue(self.httpd.store.authenticate_user("admin", "updated-password"))
@@ -620,12 +612,11 @@ class ApiTests(unittest.TestCase):
         admin_token = self.httpd.store.create_session("admin")
         operator_token = self.httpd.store.create_session("operator")
         path = "/api/users/operator/password"
+        status, body = self.call("PUT", path, {"new_password": "temporary-password"})
+        self.assertEqual(status, 401)
         status, body = self.call("PUT", path, {"new_password": "temporary-password"}, admin_token)
-        self.assertEqual(status, 426)
-        with patch.object(Handler, "secure_connection", return_value=True):
-            status, body = self.call("PUT", path, {"new_password": "temporary-password"}, admin_token)
-            self.assertEqual(status, 200)
-            status, body = self.call("PUT", "/api/users/admin/password", {"new_password": "bad-self-reset"}, admin_token)
+        self.assertEqual(status, 200)
+        status, body = self.call("PUT", "/api/users/admin/password", {"new_password": "bad-self-reset"}, admin_token)
         self.assertEqual(status, 400)
         self.assertIn("Change my password", body["error"])
         self.assertTrue(self.httpd.store.authenticate_user("operator", "temporary-password"))
@@ -664,10 +655,9 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(settings["media_url"], "http://media.example:8888")
 
         payload = {"media_url": "https://streams.example/hls", "webrtc_url": "https://streams.example/webrtc"}
+        status, body = self.call("PUT", "/api/server/network", payload)
+        self.assertEqual(status, 401)
         status, body = self.call("PUT", "/api/server/network", payload, token)
-        self.assertEqual(status, 426)
-        with patch.object(Handler, "secure_connection", return_value=True):
-            status, body = self.call("PUT", "/api/server/network", payload, token)
         self.assertEqual(status, 200)
         self.assertEqual(body, payload)
 
@@ -677,22 +667,19 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(live["hls_url"], "https://streams.example/hls/cam-1/index.m3u8")
         self.assertEqual(live["webrtc_url"], "https://streams.example/webrtc/cam-1/whep")
 
-        with patch.object(Handler, "secure_connection", return_value=True):
-            status, body = self.call("PUT", "/api/server/network", {"media_url": "javascript:alert(1)", "webrtc_url": payload["webrtc_url"]}, token)
+        status, body = self.call("PUT", "/api/server/network", {"media_url": "javascript:alert(1)", "webrtc_url": payload["webrtc_url"]}, token)
         self.assertEqual(status, 400)
 
-    def test_server_os_update_requires_https_and_queues_fixed_action(self):
+    def test_server_os_update_over_http_queues_fixed_action(self):
         self.httpd.store.create_user("admin", "correct-horse-battery")
         token = self.httpd.store.create_session("admin")
         state_dir = Path(self.host_updates.name)
         (state_dir / "os-installed").touch()
         (state_dir / "os-status.json").write_text('{"state":"idle"}\n')
-        status, body = self.call("POST", "/api/server/os-update", {}, token)
-        self.assertEqual(status, 426)
-        self.assertIn("HTTPS", body["error"])
+        status, body = self.call("POST", "/api/server/os-update", {})
+        self.assertEqual(status, 401)
 
-        with patch.object(Handler, "secure_connection", return_value=True):
-            status, body = self.call("POST", "/api/server/os-update", {}, token)
+        status, body = self.call("POST", "/api/server/os-update", {}, token)
         self.assertEqual(status, 202)
         self.assertEqual(body["state"], "queued")
         request = json.loads((state_dir / "os-request.json").read_text())
@@ -701,8 +688,7 @@ class ApiTests(unittest.TestCase):
 
         (state_dir / "installed").touch()
         (state_dir / "os-status.json").write_text('{"state":"running"}\n')
-        with patch.object(Handler, "secure_connection", return_value=True):
-            status, body = self.call("POST", "/api/server/update", {}, token)
+        status, body = self.call("POST", "/api/server/update", {}, token)
         self.assertEqual(status, 409)
         self.assertEqual(body["state"], "running")
 
@@ -714,18 +700,16 @@ class ApiTests(unittest.TestCase):
         self.assertFalse(body["installed"])
         self.assertEqual(body["state"], "not_installed")
 
-    def test_server_reboot_requires_https_and_queues_fixed_request(self):
+    def test_server_reboot_over_http_queues_fixed_request(self):
         self.httpd.store.create_user("admin", "correct-horse-battery")
         token = self.httpd.store.create_session("admin")
         state_dir = Path(self.host_updates.name)
         (state_dir / "reboot-installed").touch()
         (state_dir / "reboot-status.json").write_text('{"state":"idle"}\n')
-        status, body = self.call("POST", "/api/server/reboot", {}, token)
-        self.assertEqual(status, 426)
-        self.assertIn("HTTPS", body["error"])
+        status, body = self.call("POST", "/api/server/reboot", {})
+        self.assertEqual(status, 401)
 
-        with patch.object(Handler, "secure_connection", return_value=True):
-            status, body = self.call("POST", "/api/server/reboot", {}, token)
+        status, body = self.call("POST", "/api/server/reboot", {}, token)
         self.assertEqual(status, 202)
         self.assertEqual(body["state"], "queued")
         request = json.loads((state_dir / "reboot-request.json").read_text())
@@ -734,8 +718,7 @@ class ApiTests(unittest.TestCase):
 
         (state_dir / "reboot-status.json").write_text('{"state":"rebooting"}\n')
         (state_dir / "os-installed").touch()
-        with patch.object(Handler, "secure_connection", return_value=True):
-            status, body = self.call("POST", "/api/server/os-update", {}, token)
+        status, body = self.call("POST", "/api/server/os-update", {}, token)
         self.assertEqual(status, 409)
         self.assertEqual(body["state"], "rebooting")
 
