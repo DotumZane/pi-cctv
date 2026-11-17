@@ -65,6 +65,8 @@
     atlasLoads: new Map(),
     atlasManifests: new Map(),
     atlasChecks: new Map(),
+    atlasPrefetching: new Set(),
+    atlasPrefetchRetry: new Map(),
     atlasFrame: 0,
   };
 
@@ -210,6 +212,48 @@
   function atlasSheetName(index) { return `${String(index).padStart(3, '0')}.jpg`; }
 
   function atlasKey(path, index) { return `${path}:${index}`; }
+
+  function prefetchNearbyAtlas(record, direction) {
+    if (!direction || typeof workspaceTimelineRecords === 'undefined') return;
+    const index = workspaceTimelineRecords.findIndex(item => item.path === record.path);
+    const next = workspaceTimelineRecords[index + (direction < 0 ? -1 : 1)];
+    if (index < 0 || !next || state.atlasPrefetching.has(next.path) || state.atlasPrefetching.size >= 2 ||
+        (state.atlasPrefetchRetry.get(next.path) || 0) > performance.now()) return;
+    state.atlasPrefetching.add(next.path);
+    const loadManifest = state.atlasManifests.has(next.path) ? Promise.resolve(state.atlasManifests.get(next.path)) :
+      api(`/api/recordings/scrub-frames?prepare=0&path=${encodeURIComponent(next.path)}`)
+        .then(response => response.ok ? response.json() : null);
+    loadManifest.then(result => {
+      if (!result?.ready || !result.manifest?.frames || !result.urlBase) {
+        state.atlasPrefetchRetry.set(next.path, performance.now() + 30000);
+        if (state.atlasPrefetchRetry.size > 128) state.atlasPrefetchRetry.delete(state.atlasPrefetchRetry.keys().next().value);
+        return;
+      }
+      state.atlasManifests.set(next.path, result);
+      if (state.atlasManifests.size > 16) state.atlasManifests.delete(state.atlasManifests.keys().next().value);
+      if (state.atlasPath === next.path) {
+        state.atlasManifest = result.manifest;
+        state.atlasBase = result.urlBase;
+        scheduleAtlasFrame();
+      }
+      const sheet = direction < 0 ? result.manifest.sheets - 1 : 0;
+      const key = atlasKey(next.path, sheet);
+      if (state.atlasCache.has(key) || state.atlasLoads.has(key)) return;
+      const job = api(result.urlBase + atlasSheetName(sheet), { credentials: 'same-origin' })
+        .then(response => { if (!response.ok) throw new Error('preview unavailable'); return response.blob(); })
+        .then(blob => createImageBitmap(blob)).then(bitmap => {
+          state.atlasCache.set(key, bitmap);
+          if (state.atlasCache.size > 8) {
+            const oldest = state.atlasCache.keys().next().value;
+            state.atlasCache.get(oldest)?.close?.();
+            state.atlasCache.delete(oldest);
+          }
+          if (state.atlasPath === next.path) scheduleAtlasFrame();
+        }).catch(() => {}).finally(() => state.atlasLoads.delete(key));
+      state.atlasLoads.set(key, job);
+      return job;
+    }).catch(() => {}).finally(() => state.atlasPrefetching.delete(next.path));
+  }
 
   function loadAtlasSheet(index) {
     const manifest = state.atlasManifest, path = state.atlasPath, base = state.atlasBase;
@@ -593,6 +637,7 @@
     preparePlayback(record);
     if (wasGap) updateStatus('Loading recording preview…');
     const atlasReady = ensureAtlas(record);
+    prefetchNearbyAtlas(record, state.motionDirection);
     if (atlasReady) {
       scheduleAtlasFrame();
     }

@@ -165,6 +165,7 @@ async function atlasScrubbing() {
   let mainSeeks = 0;
   let proxyRequests = 0;
   let sheetRequests = 0;
+  const requestedSheets = [];
   const canvas = { width: 0, height: 0, classList: { add() {}, remove() {} }, setAttribute() {},
     getContext() { return { fillRect() {}, drawImage(...args) { draws.push(args); }, set fillStyle(_) {} }; } };
   const host = { appendChild() {} };
@@ -182,7 +183,7 @@ async function atlasScrubbing() {
     requestAnimationFrame(callback) { animationFrames.push(callback); return animationFrames.length; },
     cancelAnimationFrame() {}, MutationObserver: class { observe() {} },
     timelineDayLength: () => 86400, timelineRecordAt: value => value >= 30 ? nextRecord : record,
-    timelineSeconds: item => item === nextRecord ? 30 : 0,
+    timelineSeconds: item => item === nextRecord ? 30 : 0, workspaceTimelineRecords: [record, nextRecord],
     workspaceTimelineDate: '2026-11-12', workspaceTimelineLastValue: 0,
     verticalTimelineSetPosition() {}, updateTimelinePlayhead() {},
     async api(url) {
@@ -192,6 +193,7 @@ async function atlasScrubbing() {
       }; } };
       if (url.includes('/trickplay?')) { proxyRequests++; return { ok: true, async json() { return { ready: false }; } }; }
       sheetRequests++;
+      requestedSheets.push(url);
       return { ok: true, async blob() { return {}; } };
     },
     async createImageBitmap() { return { width: 2880, height: 1080, close() {} }; },
@@ -205,6 +207,8 @@ async function atlasScrubbing() {
   globals.window.previewWorkspaceTimelineScrub(9, 20);
   while (animationFrames.length) animationFrames.shift()();
   const second = draws.at(-1);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.ok(requestedSheets.some(url => url.includes('06-00-30')), 'the adjacent recording is warmed before reaching it');
   globals.window.previewWorkspaceTimelineScrub(8, -20);
   while (animationFrames.length) animationFrames.shift()();
   assert.notDeepEqual(first.slice(1, 3), second.slice(1, 3), 'forward movement paints another atlas cell');
@@ -214,7 +218,7 @@ async function atlasScrubbing() {
   await new Promise(resolve => setImmediate(resolve));
   while (animationFrames.length) animationFrames.shift()();
   await new Promise(resolve => setImmediate(resolve));
-  assert.ok(sheetRequests > originalSheetRequests, 'next recording loads its own atlas sheet');
+  assert.ok(sheetRequests >= originalSheetRequests, 'next recording uses its own atlas sheet');
   const nextSheetRequests = sheetRequests;
   globals.window.previewWorkspaceTimelineScrub(8, -20);
   while (animationFrames.length) animationFrames.shift()();

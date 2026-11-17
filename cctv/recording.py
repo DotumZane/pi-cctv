@@ -21,8 +21,12 @@ if TYPE_CHECKING:
 
 
 def recording_files(root: Path) -> list[Path]:
-    return [path for path in (*root.glob("**/*.mkv"), *root.glob("**/*.mp4"))
-            if not any(part.startswith(".") for part in path.relative_to(root).parts)]
+    files = []
+    for directory, dirs, names in os.walk(root):
+        dirs[:] = [name for name in dirs if not name.startswith(".")]
+        files.extend(Path(directory) / name for name in names
+                     if not name.startswith(".") and name.endswith((".mkv", ".mp4")))
+    return files
 
 
 def trickplay_path(root: Path, recording: Path) -> Path:
@@ -41,7 +45,7 @@ def scrub_frames_ready(source: Path, directory: Path) -> bool:
 
 
 def prepare_scrub_frames(source: Path, directory: Path) -> None:
-    """Build a dense sequence of real frames in seek-free JPEG atlases."""
+    """Build a compact sequence of real frames in seek-free JPEG atlases."""
     temporary = directory.with_name(f"{directory.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     failure = directory.with_suffix(".failed")
     success = False
@@ -59,8 +63,8 @@ def prepare_scrub_frames(source: Path, directory: Path) -> None:
         result = subprocess.run(
             ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
              "-i", str(source), "-map", "0:v:0", "-an",
-             "-vf", "fps=15,scale=480:270:force_original_aspect_ratio=decrease,"
-                    "pad=480:270:(ow-iw)/2:(oh-ih)/2,tile=6x4",
+             "-vf", "fps=8,scale=384:216:force_original_aspect_ratio=decrease,"
+                    "pad=384:216:(ow-iw)/2:(oh-ih)/2,tile=6x4",
              "-fps_mode", "vfr", "-q:v", "7", "-start_number", "0",
              str(temporary / "%03d.jpg")],
             capture_output=True, timeout=180,
@@ -68,9 +72,9 @@ def prepare_scrub_frames(source: Path, directory: Path) -> None:
         sheets = sorted(temporary.glob("*.jpg"))
         if result.returncode != 0 or not sheets:
             return
-        frame_count = min(math.ceil(duration * 15), len(sheets) * 24)
+        frame_count = min(math.ceil(duration * 8), len(sheets) * 24)
         (temporary / "manifest.json").write_text(json.dumps({
-            "fps": 15, "width": 480, "height": 270, "columns": 6, "rows": 4,
+            "fps": 8, "width": 384, "height": 216, "columns": 6, "rows": 4,
             "frames": frame_count, "sheets": len(sheets),
         }))
         if directory.exists():
