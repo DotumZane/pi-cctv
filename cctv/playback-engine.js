@@ -68,6 +68,8 @@
     atlasManifests: new Map(),
     atlasChecks: new Map(),
     atlasPrefetching: new Set(),
+    atlasRecordList: null,
+    atlasRecordIndices: new Map(),
     atlasPrefetchRetry: new Map(),
     atlasWarmTimer: 0,
     atlasWarmPath: null,
@@ -148,8 +150,13 @@
   function fitCanvas() {
     const video = mainVideo(), canvas = state.canvas;
     if (!video || !canvas) return;
-    const width = Math.max(1, Math.round(video.clientWidth * devicePixelRatio));
-    const height = Math.max(1, Math.round(video.clientHeight * devicePixelRatio));
+    const rawWidth = Math.max(1, video.clientWidth * devicePixelRatio);
+    const rawHeight = Math.max(1, video.clientHeight * devicePixelRatio);
+    // Preview sources are small; a full Retina-sized canvas needlessly paints
+    // millions of extra pixels on every scroll. CSS still fills the player.
+    const scale = Math.min(1, 1280 / rawWidth, 720 / rawHeight);
+    const width = Math.max(1, Math.round(rawWidth * scale));
+    const height = Math.max(1, Math.round(rawHeight * scale));
     if (canvas.width !== width || canvas.height !== height) {
       canvas.width = width;
       canvas.height = height;
@@ -222,7 +229,11 @@
 
   function prefetchNearbyAtlas(record, direction) {
     if (!direction || typeof workspaceTimelineRecords === 'undefined') return;
-    const index = workspaceTimelineRecords.findIndex(item => item.path === record.path);
+    if (state.atlasRecordList !== workspaceTimelineRecords || state.atlasRecordIndices.size !== workspaceTimelineRecords.length) {
+      state.atlasRecordList = workspaceTimelineRecords;
+      state.atlasRecordIndices = new Map(workspaceTimelineRecords.map((item, index) => [item.path, index]));
+    }
+    const index = state.atlasRecordIndices.get(record.path) ?? -1;
     const next = workspaceTimelineRecords[index + (direction < 0 ? -1 : 1)];
     if (index < 0 || !next || state.atlasPrefetching.has(next.path) || state.atlasPrefetching.size >= 2 ||
         (state.atlasPrefetchRetry.get(next.path) || 0) > performance.now()) return;

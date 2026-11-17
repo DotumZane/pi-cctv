@@ -6,13 +6,31 @@ const vm = require('node:vm');
 function checkRecordedDuration() {
   const source = fs.readFileSync(path.join(__dirname, '..', 'cctv', 'timeline-enhancements.js'), 'utf8');
   const duration = source.slice(source.indexOf('function workspaceRecordDuration('), source.indexOf('\nfunction mergeWorkspaceCoverage('));
-  const lookup = source.slice(source.indexOf('timelineRecordAt=function('), source.indexOf('\nupdateTimelinePlayhead='));
+  const lookup = source.slice(source.indexOf('let workspaceTimelineLookup='), source.indexOf('\nupdateTimelinePlayhead='));
   const record = { startSeconds: 0, duration: 45 };
-  const context = { timelineSeconds: item => item.startSeconds, workspaceTimelineRecords: [record], workspaceTimelineSegmentSeconds: 30 };
+  const context = { timelineSeconds: item => item.startSeconds, workspaceTimelineRecords: [record], workspaceTimelineDate: '2026-11-17', workspaceTimelineSegmentSeconds: 30 };
   vm.createContext(context);
   vm.runInContext(duration + '\n' + lookup, context);
   assert.equal(context.timelineRecordAt(40), record, 'a longer recording remains selectable past the configured segment length');
   assert.equal(context.timelineRecordAt(46), undefined, 'time beyond the actual recording remains a gap');
+  const overlap = [{ startSeconds: 0, duration: 50 }, { startSeconds: 10, duration: 5 }, { startSeconds: 60, duration: 5 }];
+  context.workspaceTimelineRecords = overlap;
+  assert.equal(context.timelineRecordAt(12), overlap[0], 'overlaps retain the earliest matching recording');
+  assert.equal(context.timelineRecordAt(55), undefined, 'gaps remain empty');
+  assert.equal(context.timelineRecordAt(61), overlap[2]);
+  const mixed = Array.from({length: 400}, (_, i) => ({startSeconds: i * 20, duration: i % 5 === 0 ? 70 : i % 3 === 0 ? 8 : 20}));
+  context.workspaceTimelineRecords = mixed;
+  for (let value = 0; value < 8000; value += 7) {
+    const expected = mixed.find(item => value >= item.startSeconds && value < item.startSeconds + item.duration);
+    assert.equal(context.timelineRecordAt(value), expected, `overlap and gap lookup at ${value}`);
+  }
+  let lookups = 0;
+  context.timelineSeconds = item => { lookups++; return item.startSeconds; };
+  context.workspaceTimelineRecords = Array.from({length: 2880}, (_, i) => ({startSeconds: i * 30, duration: 30}));
+  context.timelineRecordAt(0);
+  const initial = lookups;
+  for (let i = 0; i < 500; i++) context.timelineRecordAt((i * 137) % 86400);
+  assert.equal(lookups, initial, 'subsequent seeks reuse the recording index');
 }
 
 async function checkLiveEdge(initialDate) {

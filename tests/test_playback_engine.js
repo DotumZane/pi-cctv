@@ -22,7 +22,7 @@ async function main() {
   };
   const host = { appendChild() {} };
   const video = {
-    dataset: { playback: 'live' }, clientWidth: 640, clientHeight: 360,
+    dataset: { playback: 'live' }, clientWidth: 1920, clientHeight: 1080,
     readyState: 0, paused: true, controls: false,
     closest() { return host; }, setAttribute() {}, removeAttribute() {},
     addEventListener() {}, pause() { committed++; },
@@ -40,7 +40,7 @@ async function main() {
   const window = { workspaceCamera: 'cam-1', returnWorkspaceToLive: async () => {}, addEventListener() {} };
   const record = { path: 'cam-1/2026-11-12/06-00-00.mp4', url: '/recordings/cam-1/2026-11-12/06-00-00.mp4' };
   const globals = {
-    document, window, URLSearchParams, location: { search: '' }, devicePixelRatio: 1,
+    document, window, URLSearchParams, location: { search: '' }, devicePixelRatio: 2,
     performance: { now: () => clock },
     requestAnimationFrame(callback) { animationFrames.push(callback); return animationFrames.length; },
     cancelAnimationFrame() {}, MutationObserver: class { observe() {} },
@@ -67,6 +67,8 @@ async function main() {
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(fetched, 1);
   assert.equal(drawn, 1);
+  assert.equal(canvas.width, 1280, 'large displays use a bounded preview canvas');
+  assert.equal(canvas.height, 720);
   assert.equal(visible.has('visible'), true);
   assert.equal(committed, 0, 'normal playback must not seek during preview');
   clock += 200;

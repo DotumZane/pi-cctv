@@ -10,7 +10,20 @@ timelineSeconds=function(record){return Math.max(0,(new Date(record.start).getTi
 formatTimelineTime=function(value){const dayLength=timelineDayLength(workspaceTimelineDate),seconds=Math.max(0,Math.min(dayLength-1,Number(value)||0)),hours=Math.floor(seconds/3600),minutes=Math.floor((seconds%3600)/60),remaining=Math.floor(seconds%60);return `${String(hours).padStart(2,'0')}:${String(minutes).padStart(2,'0')}:${String(remaining).padStart(2,'0')}`};
 function workspaceRecordDuration(record,index,records=workspaceTimelineRecords){const explicit=Number(record.duration);if(Number.isFinite(explicit)&&explicit>0)return explicit;const start=timelineSeconds(record),next=records[index+1]?timelineSeconds(records[index+1]):0;const expected=Math.max(1,Number(workspaceTimelineSegmentSeconds)||30);return next>start?Math.min(expected,next-start):expected}
 function mergeWorkspaceCoverage(records,dayLength){const ranges=[];for(let index=0;index<records.length;index++){const start=timelineSeconds(records[index]),end=start+workspaceRecordDuration(records[index],index,records),previous=ranges[ranges.length-1];if(previous&&start<=previous.end+2)previous.end=Math.max(previous.end,end);else ranges.push({start,end})}return ranges.map(range=>`<span class="workspace-timeline-coverage" style="left:${range.start/dayLength*100}%;width:${Math.max(.05,(range.end-range.start)/dayLength*100)}%"></span>`).join('')}
-timelineRecordAt=function(value){const seconds=Number(value)||0;return workspaceTimelineRecords.find((record,index)=>{const start=timelineSeconds(record);return seconds>=start&&seconds<start+workspaceRecordDuration(record,index)})};
+let workspaceTimelineLookup=null;
+timelineRecordAt=function(value){
+  const records=workspaceTimelineRecords,seconds=Number(value)||0;
+  if(!workspaceTimelineLookup||workspaceTimelineLookup.records!==records||workspaceTimelineLookup.date!==workspaceTimelineDate||workspaceTimelineLookup.segment!==workspaceTimelineSegmentSeconds||workspaceTimelineLookup.length!==records.length){
+    const starts=records.map(timelineSeconds),ends=[];let maximum=-Infinity;
+    for(let i=0;i<records.length;i++){const explicit=Number(records[i].duration),expected=Math.max(1,Number(workspaceTimelineSegmentSeconds)||30),delta=i+1<records.length?starts[i+1]-starts[i]:0,duration=Number.isFinite(explicit)&&explicit>0?explicit:delta>0?Math.min(expected,delta):expected;maximum=Math.max(maximum,starts[i]+duration);ends.push(maximum)}
+    workspaceTimelineLookup={records,date:workspaceTimelineDate,segment:workspaceTimelineSegmentSeconds,length:records.length,starts,ends};
+  }
+  const {starts,ends}=workspaceTimelineLookup;let left=0,right=starts.length;
+  while(left<right){const middle=(left+right)>>>1;if(starts[middle]<=seconds)left=middle+1;else right=middle}
+  const limit=left;left=0;right=limit;
+  while(left<right){const middle=(left+right)>>>1;if(ends[middle]>seconds)right=middle;else left=middle+1}
+  return left<limit?records[left]:undefined;
+};
 updateTimelinePlayhead=function(value){const input=document.querySelector('#workspace-timeline-range'),playhead=document.querySelector('#workspace-timeline-playhead'),label=document.querySelector('#workspace-timeline-time'),dayLength=timelineDayLength(workspaceTimelineDate),seconds=Math.max(0,Math.min(dayLength-1,Number(value)||0));if(input)input.value=String(Math.round(seconds));if(playhead)playhead.style.left=`${seconds/dayLength*100}%`;if(label)label.textContent=formatTimelineTime(seconds);const controlTime=document.querySelector('#workspace-control-time');if(controlTime)controlTime.textContent=formatTimelineTime(seconds)};
 let workspaceScrubFrame=0,workspaceScrubTarget=null,workspaceScrubTimelineValue=null,workspaceScrubVideo=null,workspaceScrubVelocity=0,workspaceScrubLastInputAt=0,workspaceScrubLoadToken=0,workspaceScrubPendingUrl='';
 function stopWorkspaceScrubPreview(){if(workspaceScrubFrame){cancelAnimationFrame(workspaceScrubFrame);workspaceScrubFrame=0}workspaceScrubTarget=null;workspaceScrubTimelineValue=null;workspaceScrubVideo=null;workspaceScrubVelocity=0;workspaceScrubLastInputAt=0;workspaceScrubPendingUrl='';}
