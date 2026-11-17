@@ -159,7 +159,7 @@ def camera_module_detected(force: bool = False) -> bool | None:
     return None
 
 
-def system_metrics(include_camera: bool = False) -> dict[str, float | int | bool]:
+def system_metrics(include_camera: bool = False, include_display: bool = False) -> dict[str, float | int | bool]:
     metrics: dict[str, float | int | bool] = {}
     try:
         metrics["cpu_temperature_c"] = round(int(open("/sys/class/thermal/thermal_zone0/temp").read()) / 1000, 1)
@@ -183,10 +183,12 @@ def system_metrics(include_camera: bool = False) -> dict[str, float | int | bool
         detected = camera_module_detected()
         if detected is not None:
             metrics["camera_module_detected"] = detected
+    if include_display:
+        metrics["display_detected"] = display_detected()
     return metrics
 
 
-def connected_displays() -> list[dict[str, str]]:
+def connected_displays(fallback: bool = True) -> list[dict[str, str]]:
     """Return connected DRM display outputs, using stable connector names."""
     def add_mode(display: dict[str, str]) -> dict[str, str]:
         connector = display.get("id", "")
@@ -224,14 +226,19 @@ def connected_displays() -> list[dict[str, str]]:
             continue
         connector = status_path.rsplit("/", 2)[-2]
         displays.append(add_mode({"id": connector, "name": connector.replace("-", " ")}))
-    return displays or [{"id": "primary", "name": "Display 1"}]
+    return displays or ([{"id": "primary", "name": "Display 1"}] if fallback else [])
+
+
+def display_detected() -> bool:
+    """Return whether a physical display is currently reported by DRM."""
+    return bool(connected_displays(fallback=False))
 
 
 def collect_diagnostics(role: str, device_id: str, media_server: str, processes: list | None = None) -> dict:
     """Collect bounded, read-only health details suitable for a dashboard report."""
     result = {"collected_at": datetime.datetime.now(datetime.timezone.utc).isoformat(), "device_id": device_id,
               "hostname": socket.gethostname(), "role": role, "platform": platform.platform(), "agent_version": __agent_version__,
-              "metrics": system_metrics(include_camera=role == "camera"),
+              "metrics": system_metrics(include_camera=role == "camera", include_display=role == "monitor"),
               "displays": connected_displays() if role == "monitor" else []}
     disks=[]
     for path in ("/", "/data", "/var/lib/mediamtx"):
@@ -714,7 +721,7 @@ class DeviceRuntime:
 
     def heartbeat(self) -> None:
         payload = {"runtime": "v1", "agent_version": __agent_version__,
-                   "metrics": system_metrics(include_camera=self.role == "camera"),
+                   "metrics": system_metrics(include_camera=self.role == "camera", include_display=self.role == "monitor"),
                    "recent_logs": recent_logs()}
         if self.role == "camera":
             payload["direct_rtsp_ready"] = camera_stream_published("127.0.0.1", self.device_id)
@@ -756,7 +763,7 @@ class DeviceRuntime:
             target_media = new_media_server or self.media_server
             payload = {
                 "runtime": "v1", "agent_version": __agent_version__,
-                "metrics": system_metrics(include_camera=self.role == "camera"),
+                "metrics": system_metrics(include_camera=self.role == "camera", include_display=self.role == "monitor"),
                 "recent_logs": recent_logs(),
             }
             if self.role == "monitor":

@@ -10,7 +10,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from cctv.agent import run_pending
-from cctv.runtime import DeviceRuntime, _monitor_output_size, apply_monitor_schedule, camera_module_detected, camera_stream_published, command_for_assignment, commands_for_assignment, managed_monitor_commands, start_monitor_splash_setup
+from cctv.runtime import DeviceRuntime, _monitor_output_size, apply_monitor_schedule, camera_module_detected, camera_stream_published, command_for_assignment, commands_for_assignment, display_detected, managed_monitor_commands, start_monitor_splash_setup
 
 
 class RuntimeTests(unittest.TestCase):
@@ -38,6 +38,11 @@ class RuntimeTests(unittest.TestCase):
             self.assertTrue(camera_module_detected(force=True))
             self.assertTrue(camera_module_detected())
         run.assert_called_once()
+
+    def test_display_probe_reports_missing_display(self):
+        with patch("cctv.runtime.connected_displays", return_value=[]) as displays:
+            self.assertFalse(display_detected())
+        displays.assert_called_once_with(fallback=False)
 
     def test_quad_uses_monitor_fill_setting(self):
         assignment = {"layout": "2x2", "cameras": '["cam-1"]'}
