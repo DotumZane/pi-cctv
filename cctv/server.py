@@ -28,6 +28,7 @@ from .fleet import FleetAgentUpdateCoordinator, FleetOsUpdateCoordinator
 from .recording import (RecorderSupervisor, mp4_duration, prepare_scrub_frames, prepare_trickplay,
                         scrub_frames_dir, scrub_frames_ready, trickplay_path)
 from .store import Store
+from .server_logs import capture_server_output, read_server_logs
 
 
 ROOT = Path(__file__).parent
@@ -240,6 +241,23 @@ class Handler(BaseHTTPRequestHandler):
                 "password_configured": bool(profile.get("password")),
                 "revision": profile.get("revision", "disabled"),
             })
+            return
+        if parsed.path == "/api/server/logs":
+            if not self.store.user_count():
+                self.send_json({"error": "create an administrator account before downloading logs"}, HTTPStatus.UNAUTHORIZED)
+                return
+            if not self.require_auth():
+                return
+            log_path = Path(getattr(self.server, "server_log_path", "data/server.log"))
+            host_dir = Path(getattr(self.server, "host_update_dir", "/host-update"))
+            content = read_server_logs(log_path, host_dir).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Disposition", 'attachment; filename="pi-cctv-server-logs.txt"')
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(content)))
+            self.end_headers()
+            self.wfile.write(content)
             return
         if parsed.path == "/api/server/update":
             if not self.store.user_count():
@@ -1941,6 +1959,8 @@ def main() -> None:
     httpd = ThreadingHTTPServer((args.host, args.port), Handler)
     httpd.started_monotonic = time.monotonic()  # type: ignore[attr-defined]
     httpd.store = Store(args.db)  # type: ignore[attr-defined]
+    httpd.server_log_path = Path(args.db).parent / "server.log"  # type: ignore[attr-defined]
+    capture_server_output(httpd.server_log_path)  # type: ignore[attr-defined]
     fleet_update_lock = threading.Lock()
     httpd.fleet_agent_updater = FleetAgentUpdateCoordinator(httpd.store, __agent_version__, execution_lock=fleet_update_lock)  # type: ignore[attr-defined]
     httpd.fleet_os_updater = FleetOsUpdateCoordinator(httpd.store, __agent_version__, execution_lock=fleet_update_lock)  # type: ignore[attr-defined]
@@ -1998,7 +2018,7 @@ def main() -> None:
             "store", "admin_token", "read_token", "recordings_dir", "previews_dir",
             "bootstrap_token", "public_media_url", "public_webrtc_url", "recorder_supervisor",
             "tls_enabled",
-            "tls_ca_cert", "host_update_dir", "started_monotonic",
+            "tls_ca_cert", "host_update_dir", "started_monotonic", "server_log_path",
             "fleet_os_updater",
             "fleet_agent_updater",
         ):

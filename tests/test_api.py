@@ -565,6 +565,35 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(saved["revision"], "2")
         self.assertEqual(self.httpd.store.system_setting("setup_ap_profile")["password"], "new-password")
 
+    def test_server_logs_download_requires_admin_and_includes_maintenance_output(self):
+        self.httpd.store.create_user("admin", "admin-password", "admin")
+        self.httpd.store.create_user("operator", "operator-password", "operator")
+        admin = self.httpd.store.create_session("admin")
+        operator = self.httpd.store.create_session("operator")
+        log_path = Path(self.recordings.name) / "server.log"
+        self.httpd.server_log_path = log_path
+        log_path.write_text("management event\n")
+        Path(str(log_path) + ".1").write_text("earlier event\n")
+        (Path(self.host_updates.name) / "status.json").write_text(json.dumps({"state": "failed", "log": "update details", "error": "update failed"}))
+
+        def fetch(token=""):
+            conn = HTTPConnection(*self.base)
+            headers = {"Authorization": f"Bearer {token}"} if token else {}
+            conn.request("GET", "/api/server/logs", headers=headers)
+            response = conn.getresponse()
+            result = response.status, response.getheader("Content-Disposition"), response.read()
+            conn.close()
+            return result
+
+        self.assertEqual(fetch()[0], 401)
+        self.assertEqual(fetch(operator)[0], 401)
+        status, disposition, body = fetch(admin)
+        self.assertEqual(status, 200)
+        self.assertIn("attachment", disposition)
+        self.assertIn(b"earlier event", body)
+        self.assertIn(b"management event", body)
+        self.assertIn(b"update details", body)
+
     def test_server_update_over_http_queues_only_when_helper_is_installed(self):
         self.httpd.store.create_user("admin", "correct-horse-battery")
         token = self.httpd.store.create_session("admin")
