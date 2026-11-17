@@ -78,6 +78,9 @@ async function main() {
   window.previewWorkspaceTimelineScrub(40, 20);
   assert.match(status.innerHTML, /No recording/);
   assert.equal(visible.has('visible'), true, 'a gap covers the previous video frame');
+  await window.scrubWorkspaceTimeline(40);
+  assert.equal(visible.has('visible'), true, 'committing a gap keeps the old frame covered');
+  assert.match(status.innerHTML, /No recording/);
   window.previewWorkspaceTimelineScrub(20, -20);
   assert.doesNotMatch(status.innerHTML, /No recording/, 'returning to footage clears the gap status');
 }

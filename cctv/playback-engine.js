@@ -563,7 +563,10 @@
     state.requestToken += 1;
     const token = state.requestToken;
     if (!record) {
-      hidePreview();
+      // Keep the gap overlay visible after release so an earlier recording or
+      // the live stream cannot be mistaken for footage at the selected time.
+      if (video && !video.paused) video.pause();
+      setTarget(selected, 0);
       updateStatus('No recording is available at the selected time.');
       return;
     }
