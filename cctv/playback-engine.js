@@ -34,6 +34,7 @@
     lastTime: 0,
     committing: false,
     commitTimer: 0,
+    commitScheduleTimer: 0,
     pointerDown: false,
     active: false,
     hasFrame: false,
@@ -276,7 +277,7 @@
     if (state.atlasManifest) return true;
     if (state.atlasFailed || state.atlasWaiting || state.atlasChecking) return false;
     const path = record.path;
-    const check = api(`/api/recordings/scrub-frames?path=${encodeURIComponent(path)}`)
+    const check = api(`/api/recordings/scrub-frames?prepare=0&path=${encodeURIComponent(path)}`)
       .then(response => response.ok ? response.json() : null)
       .then(result => {
         if (result?.ready && result.manifest?.frames && result.urlBase) {
@@ -468,6 +469,8 @@
   function hidePreview() {
     state.active = false;
     window.workspaceScrubActive = false;
+    clearTimeout(state.commitScheduleTimer);
+    clearTimeout(state.commitTimer);
     state.pending = null;
     state.lastFrameTime = null;
     state.motionDirection = 0;
@@ -653,11 +656,13 @@
         settled = true;
         clearTimeout(timer);
         video.removeEventListener('seeked', ready);
+        video.removeEventListener('loadeddata', ready);
+        video.removeEventListener('canplay', ready);
         video.removeEventListener('error', failed);
         error ? reject(error) : resolve();
       };
       const ready = () => {
-        if (video.readyState < 2) return;
+        if (video.seeking || video.readyState < 2) return;
         // A paused Safari video may not produce another frame callback after
         // seeked; current data is sufficient to resume and reveal the video.
         finish();
@@ -665,6 +670,8 @@
       const failed = () => finish(video.error || new Error('frame decode failed'));
       const timer = setTimeout(() => finish(new Error('frame decode timed out')), 8000);
       video.addEventListener('seeked', ready);
+      video.addEventListener('loadeddata', ready);
+      video.addEventListener('canplay', ready);
       video.addEventListener('error', failed);
       if (!video.seeking && video.readyState >= 2) ready();
     });
@@ -704,13 +711,22 @@
       if (typeof verticalTimelineProgrammatic !== 'undefined' && verticalTimelineProgrammatic) return;
       clearTimeout(state.commitTimer);
       if (state.pointerDown) return;
-      state.commitTimer = setTimeout(() => {
-        if (state.active && state.lastValue !== null) void commit(state.lastValue);
-      }, 550);
+      // The document capture listener runs before the timeline's own scroll
+      // handler. Schedule after propagation, otherwise setTarget cancels the
+      // timer that was just created for this very scroll event.
+      clearTimeout(state.commitScheduleTimer);
+      state.commitScheduleTimer = setTimeout(() => {
+        if (state.pointerDown) return;
+        clearTimeout(state.commitTimer);
+        state.commitTimer = setTimeout(() => {
+          if (state.active && state.lastValue !== null) void commit(state.lastValue);
+        }, 350);
+      }, 0);
     }, true);
     document.addEventListener('pointerdown', event => {
       if (event.target?.closest?.('.vertical-timeline-scroll')) {
         state.pointerDown = true;
+        clearTimeout(state.commitScheduleTimer);
         clearTimeout(state.commitTimer);
       }
     }, true);
@@ -725,6 +741,18 @@
       if (video.dataset.playback === 'recording' && !state.active && typeof workspacePlaybackStartSeconds !== 'undefined') {
         updateTimelinePlayhead(workspacePlaybackStartSeconds + video.currentTime);
       }
+    });
+    video.addEventListener('ended', () => {
+      if (state.active || video.dataset.playback !== 'recording' ||
+          typeof workspaceTimelineRecords === 'undefined') return;
+      const current = workspaceTimelineRecords.find(record => record.url === workspacePlaybackUrl);
+      if (!current || !Number.isFinite(video.duration)) return;
+      const end = timelineSeconds(current) + video.duration;
+      const next = workspaceTimelineRecords
+        .filter(record => timelineSeconds(record) > timelineSeconds(current))
+        .sort((a, b) => timelineSeconds(a) - timelineSeconds(b))[0];
+      if (next && timelineSeconds(next) <= end + 2) void commit(timelineSeconds(next));
+      else updateStatus('Recording ended. Select another time to continue.');
     });
     window.addEventListener('resize', fitCanvas, { passive: true });
     new MutationObserver(() => {

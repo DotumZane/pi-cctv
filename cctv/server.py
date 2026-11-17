@@ -730,7 +730,8 @@ class Handler(BaseHTTPRequestHandler):
             failed = failure.is_file() and failure.stat().st_mtime_ns >= requested.stat().st_mtime_ns
             # An open MP4 may not yet have its moov atom. Wait for the recorder
             # to close it before starting a conversion.
-            if not ready and not failed and time.time() - requested.stat().st_mtime > 8 and shutil.which("ffmpeg") and (not frames or shutil.which("ffprobe")):
+            prepare = parse_qs(parsed.query).get("prepare", ["1"])[0] != "0"
+            if prepare and not ready and not failed and time.time() - requested.stat().st_mtime > 8 and shutil.which("ffmpeg") and (not frames or shutil.which("ffprobe")):
                 with TRICKPLAY_LOCK:
                     if str(target) not in TRICKPLAY_JOBS and TRICKPLAY_SLOTS.acquire(blocking=False):
                         TRICKPLAY_JOBS.add(str(target))

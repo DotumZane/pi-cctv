@@ -225,6 +225,7 @@ async function atlasScrubbing() {
 
 async function seekResumesPlayback() {
   const listeners = new Map();
+  const documentListeners = new Map();
   let plays = 0;
   const video = { dataset: { playback: 'live' }, clientWidth: 640, clientHeight: 360,
     readyState: 2, duration: 30, paused: false, seeking: false, currentTime: 0,
@@ -238,21 +239,38 @@ async function seekResumesPlayback() {
   const status = { innerHTML: '' };
   const document = { body: {}, head: { appendChild() {} }, documentElement: { dataset: {} },
     createElement(tag) { return tag === 'canvas' ? canvas : { setAttribute() {}, classList: { toggle() {} } }; },
-    querySelector(selector) { return selector === '#workspace-live' ? video : selector === '#workspace-player' ? status : null; }, addEventListener() {} };
+    querySelector(selector) { return selector === '#workspace-live' ? video : selector === '#workspace-player' ? status : null; },
+    addEventListener(type, callback) { documentListeners.set(type, callback); } };
   const record = { path: 'test.mp4', url: '/test.mp4' };
+  const nextRecord = { path: 'next.mp4', url: '/next.mp4' };
   const globals = { document, window: { workspaceCamera: 'cam', returnWorkspaceToLive: async () => {}, addEventListener() {} },
     URLSearchParams, location: { search: '' }, devicePixelRatio: 1, performance: { now: () => 1000 },
     requestAnimationFrame() { return 1; }, cancelAnimationFrame() {}, MutationObserver: class { observe() {} },
-    timelineDayLength: () => 86400, timelineRecordAt: () => record, timelineSeconds: () => 0,
+    timelineDayLength: () => 86400, timelineRecordAt: value => value >= 30 ? nextRecord : record,
+    timelineSeconds: item => item === nextRecord ? 30 : 0, workspaceTimelineRecords: [record, nextRecord],
     workspaceTimelineDate: '2026-11-17', workspacePlaybackUrl: '', workspacePlaybackStartSeconds: 0,
     workspaceTimelineLastValue: 0, verticalTimelineUserScrolling: true, updateTimelinePlayhead() {},
-    setWorkspaceMode(mode) { video.dataset.playback = mode; }, esc: value => value, setTimeout, clearTimeout, console };
+    setWorkspaceMode(mode) { video.dataset.playback = mode; }, esc: value => value,
+    async api() { return { ok: true, async json() { return { ready: false }; } }; },
+    setTimeout, clearTimeout, console };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', 'cctv', 'playback-engine.js'), 'utf8'), globals);
   await globals.window.scrubWorkspaceTimeline(8);
   assert.equal(video.currentTime, 8);
   assert.equal(plays, 1, 'playback resumes after seeking');
   assert.equal(globals.window.workspaceScrubActive, false);
   assert.equal(globals.verticalTimelineUserScrolling, false);
+  // A native scroll reaches document capture before the timeline updates its
+  // target. The final target must still be committed when scrolling stops.
+  documentListeners.get('scroll')({ target: { closest: () => true } });
+  await Promise.resolve(); // Browsers can run microtasks between event listeners.
+  globals.window.previewWorkspaceTimelineScrub(12, 1);
+  await new Promise(resolve => setTimeout(resolve, 450));
+  assert.equal(video.currentTime, 12, 'scroll event commits the latest position');
+  assert.equal(plays, 2, 'scrolling transitions from preview to playback');
+  listeners.get('ended')();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(video.src, nextRecord.url, 'playback advances to the adjacent segment');
+  assert.equal(plays, 3, 'playback continues after a segment ends');
 }
 
 Promise.resolve().then(main).then(proxyScrubbing).then(atlasScrubbing).then(seekResumesPlayback)
