@@ -223,6 +223,38 @@ async function atlasScrubbing() {
   assert.equal(proxyRequests, 0, 'ready atlas needs no proxy requests');
 }
 
-Promise.resolve().then(main).then(proxyScrubbing).then(atlasScrubbing)
+async function seekResumesPlayback() {
+  const listeners = new Map();
+  let plays = 0;
+  const video = { dataset: { playback: 'live' }, clientWidth: 640, clientHeight: 360,
+    readyState: 2, duration: 30, paused: false, seeking: false, currentTime: 0,
+    closest() { return { appendChild() {} }; }, setAttribute() {}, removeAttribute() {},
+    addEventListener(type, fn) { listeners.set(type, fn); }, removeEventListener() {},
+    pause() { this.paused = true; }, load() {}, play() { this.paused = false; plays++; return Promise.resolve(); },
+    // Safari may never call this callback for a paused, already-decoded frame.
+    requestVideoFrameCallback() {} };
+  const canvas = { width: 0, height: 0, classList: { add() {}, remove() {} }, setAttribute() {},
+    getContext() { return { fillRect() {}, drawImage() {}, set fillStyle(_) {} }; } };
+  const status = { innerHTML: '' };
+  const document = { body: {}, head: { appendChild() {} }, documentElement: { dataset: {} },
+    createElement(tag) { return tag === 'canvas' ? canvas : { setAttribute() {}, classList: { toggle() {} } }; },
+    querySelector(selector) { return selector === '#workspace-live' ? video : selector === '#workspace-player' ? status : null; }, addEventListener() {} };
+  const record = { path: 'test.mp4', url: '/test.mp4' };
+  const globals = { document, window: { workspaceCamera: 'cam', returnWorkspaceToLive: async () => {}, addEventListener() {} },
+    URLSearchParams, location: { search: '' }, devicePixelRatio: 1, performance: { now: () => 1000 },
+    requestAnimationFrame() { return 1; }, cancelAnimationFrame() {}, MutationObserver: class { observe() {} },
+    timelineDayLength: () => 86400, timelineRecordAt: () => record, timelineSeconds: () => 0,
+    workspaceTimelineDate: '2026-11-17', workspacePlaybackUrl: '', workspacePlaybackStartSeconds: 0,
+    workspaceTimelineLastValue: 0, verticalTimelineUserScrolling: true, updateTimelinePlayhead() {},
+    setWorkspaceMode(mode) { video.dataset.playback = mode; }, esc: value => value, setTimeout, clearTimeout, console };
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', 'cctv', 'playback-engine.js'), 'utf8'), globals);
+  await globals.window.scrubWorkspaceTimeline(8);
+  assert.equal(video.currentTime, 8);
+  assert.equal(plays, 1, 'playback resumes after seeking');
+  assert.equal(globals.window.workspaceScrubActive, false);
+  assert.equal(globals.verticalTimelineUserScrolling, false);
+}
+
+Promise.resolve().then(main).then(proxyScrubbing).then(atlasScrubbing).then(seekResumesPlayback)
   .then(() => process.exit(0))
   .catch(error => { console.error(error); process.exit(1); });

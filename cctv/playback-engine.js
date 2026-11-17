@@ -460,12 +460,14 @@
   function showPreview() {
     if (!ensurePreview()) return;
     state.active = true;
+    window.workspaceScrubActive = true;
     if (!state.hasFrame) drawMainFrame();
     if (state.hasFrame) state.canvas.classList.add('visible');
   }
 
   function hidePreview() {
     state.active = false;
+    window.workspaceScrubActive = false;
     state.pending = null;
     state.lastFrameTime = null;
     state.motionDirection = 0;
@@ -594,8 +596,11 @@
       catch (error) { if (token === state.requestToken) updateStatus(`Playback unavailable: ${error.message}`); return; }
       if (token === state.requestToken) {
         drawMainFrame();
+        if (typeof verticalTimelineUserScrolling !== 'undefined') verticalTimelineUserScrolling = false;
         if (typeof updateTimelinePlayhead === 'function') updateTimelinePlayhead(selected);
         if (typeof setWorkspaceMode === 'function') setWorkspaceMode('recording');
+        try { await video.play(); } catch (error) { updateStatus('Playback paused · press Play to continue.'); }
+        if (token !== state.requestToken) return;
         hidePreview();
       }
       return;
@@ -626,9 +631,12 @@
       await waitForDisplayedFrame(video);
       if (token !== state.requestToken) return;
       drawMainFrame();
+      if (typeof verticalTimelineUserScrolling !== 'undefined') verticalTimelineUserScrolling = false;
       if (typeof updateTimelinePlayhead === 'function') updateTimelinePlayhead(selected);
-      updateStatus('Playback paused · press Play to continue.');
       if (typeof setWorkspaceMode === 'function') setWorkspaceMode('recording');
+      try { await video.play(); updateStatus('Playing recording.'); }
+      catch (error) { updateStatus('Playback paused · press Play to continue.'); }
+      if (token !== state.requestToken) return;
       hidePreview();
       log('commit:ready', { selected, offset });
     } catch (error) {
@@ -650,8 +658,9 @@
       };
       const ready = () => {
         if (video.readyState < 2) return;
-        if (video.requestVideoFrameCallback) video.requestVideoFrameCallback(() => finish());
-        else finish();
+        // A paused Safari video may not produce another frame callback after
+        // seeked; current data is sufficient to resume and reveal the video.
+        finish();
       };
       const failed = () => finish(video.error || new Error('frame decode failed'));
       const timer = setTimeout(() => finish(new Error('frame decode timed out')), 8000);
