@@ -55,7 +55,7 @@ async function main() {
       return { ok: true, async blob() { return {}; } };
     },
     async createImageBitmap() { return { width: 640, height: 360 }; },
-    setTimeout(fn, ms) { return ms === 100 ? 0 : setTimeout(fn, ms); }, clearTimeout, console,
+    setTimeout(fn, ms) { return ms === 220 ? 0 : setTimeout(fn, ms); }, clearTimeout, console,
   };
   const source = fs.readFileSync(path.join(__dirname, '..', 'cctv', 'playback-engine.js'), 'utf8');
   vm.runInNewContext(source, globals);
@@ -137,7 +137,7 @@ async function proxyScrubbing() {
       return { ok: true, async blob() { return {}; } };
     },
     async createImageBitmap() { return { width: 640, height: 360 }; },
-    setTimeout(fn, ms) { return ms === 100 ? 0 : setTimeout(fn, ms); }, clearTimeout, console,
+    setTimeout(fn, ms) { return ms === 220 ? 0 : setTimeout(fn, ms); }, clearTimeout, console,
   };
   const source = fs.readFileSync(path.join(__dirname, '..', 'cctv', 'playback-engine.js'), 'utf8');
   vm.runInNewContext(source, globals);
@@ -197,7 +197,7 @@ async function atlasScrubbing() {
       return { ok: true, async blob() { return {}; } };
     },
     async createImageBitmap() { return { width: 2880, height: 1080, close() {} }; },
-    setTimeout(fn, ms) { return ms === 100 ? 0 : setTimeout(fn, ms); }, clearTimeout, console,
+    setTimeout(fn, ms) { return ms === 220 ? 0 : setTimeout(fn, ms); }, clearTimeout, console,
   };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', 'cctv', 'playback-engine.js'), 'utf8'), globals);
   globals.window.previewWorkspaceTimelineScrub(8, 20);
@@ -278,10 +278,10 @@ async function seekResumesPlayback() {
   assert.equal(plays, 3, 'playback continues after a segment ends');
   documentListeners.get('scroll')({ target: { closest: () => true } });
   globals.window.previewWorkspaceTimelineScrub(8, -1);
-  await new Promise(resolve => setTimeout(resolve, 150));
+  await new Promise(resolve => setTimeout(resolve, 260));
   assert.equal(video.src, record.url, 'the selected recording starts loading while scrolling');
   const preloaded = loads;
-  await new Promise(resolve => setTimeout(resolve, 300));
+  await new Promise(resolve => setTimeout(resolve, 200));
   assert.equal(loads, preloaded, 'committing reuses the recording load');
   assert.equal(plays, 4, 'the preloaded recording resumes playback');
   documentListeners.get('pointerdown')({ target: { closest: () => true } });
@@ -318,7 +318,7 @@ async function previewAcrossSegments() {
       return new Promise(resolve => requests.push(resolve));
     },
     async createImageBitmap(blob) { return { id: blob.id, width: 100, height: 100 }; },
-    setTimeout(fn, ms) { return ms === 100 ? 0 : setTimeout(fn, ms); }, clearTimeout, console };
+    setTimeout(fn, ms) { return ms === 220 ? 0 : setTimeout(fn, ms); }, clearTimeout, console };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', 'cctv', 'playback-engine.js'), 'utf8'), globals);
   globals.window.previewWorkspaceTimelineScrub(10, 10);
   await new Promise(resolve => setImmediate(resolve));

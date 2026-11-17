@@ -7,6 +7,7 @@ import json
 import math
 import os
 import shutil
+import struct
 import subprocess
 import threading
 import time
@@ -27,6 +28,54 @@ def recording_files(root: Path) -> list[Path]:
         files.extend(Path(directory) / name for name in names
                      if not name.startswith(".") and name.endswith((".mkv", ".mp4")))
     return files
+
+
+def mp4_duration(path: Path) -> float | None:
+    """Read the movie duration without decoding video or scanning media data."""
+    def boxes(handle, end):
+        while handle.tell() + 8 <= end:
+            start = handle.tell()
+            header = handle.read(8)
+            if len(header) != 8:
+                return
+            size, kind = struct.unpack('>I4s', header)
+            if size == 1:
+                extended = handle.read(8)
+                if len(extended) != 8:
+                    return
+                size = struct.unpack('>Q', extended)[0]
+            elif size == 0:
+                size = end - start
+            finish = start + size
+            if finish < handle.tell() or finish > end:
+                return
+            yield kind, finish
+            handle.seek(finish)
+    try:
+        with path.open('rb') as handle:
+            size = path.stat().st_size
+            for kind, end in boxes(handle, size):
+                if kind != b'moov':
+                    continue
+                for child, child_end in boxes(handle, end):
+                    if child != b'mvhd':
+                        continue
+                    payload = handle.read(min(32, child_end - handle.tell()))
+                    if not payload:
+                        return None
+                    if payload[0] == 0 and len(payload) >= 20:
+                        scale, duration = struct.unpack_from('>II', payload, 12)
+                        unknown = 0xffffffff
+                    elif payload[0] == 1 and len(payload) >= 32:
+                        scale, duration = struct.unpack_from('>IQ', payload, 20)
+                        unknown = 0xffffffffffffffff
+                    else:
+                        return None
+                    seconds = duration / scale if scale and duration != unknown else 0
+                    return seconds if 0 < seconds <= 7 * 86400 else None
+    except (OSError, ValueError, struct.error):
+        pass
+    return None
 
 
 def trickplay_path(root: Path, recording: Path) -> Path:

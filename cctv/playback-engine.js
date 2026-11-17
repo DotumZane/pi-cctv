@@ -570,7 +570,7 @@
       video.src = sourceFor(record);
       video.load();
       if (typeof setWorkspaceMode === 'function') setWorkspaceMode('recording');
-    }, 100);
+    }, 220);
   }
 
   function setTarget(value, velocity) {

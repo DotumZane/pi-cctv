@@ -25,7 +25,7 @@ from urllib import request as urllib_request
 
 from . import __agent_version__, __version__
 from .fleet import FleetAgentUpdateCoordinator, FleetOsUpdateCoordinator
-from .recording import (RecorderSupervisor, prepare_scrub_frames, prepare_trickplay,
+from .recording import (RecorderSupervisor, mp4_duration, prepare_scrub_frames, prepare_trickplay,
                         scrub_frames_dir, scrub_frames_ready, trickplay_path)
 from .store import Store
 
@@ -42,6 +42,8 @@ PLAYBACK_CACHE_LOCK = threading.Lock()
 SCRUB_FRAME_LOCK = threading.Lock()
 SCRUB_FRAME_SLOTS = threading.BoundedSemaphore(2)
 SCRUB_FRAME_CACHE: OrderedDict[tuple[str, int, int, int], bytes] = OrderedDict()
+RECORDING_DURATION_LOCK = threading.Lock()
+RECORDING_DURATION_CACHE: OrderedDict[tuple[str, int, int], float | None] = OrderedDict()
 TRICKPLAY_LOCK = threading.Lock()
 TRICKPLAY_JOBS: set[str] = set()
 TRICKPLAY_SLOTS = threading.BoundedSemaphore(2)
@@ -711,7 +713,21 @@ class Handler(BaseHTTPRequestHandler):
                     pass
                 if (start_bound or end_bound) and (start is None or (start_bound and start < start_bound) or (end_bound and start >= end_bound)):
                     continue
-                entries.append({"path": str(relative), "camera_id": relative.parts[0] if relative.parts else "", "bytes": stat.st_size, "modified": modified_at.isoformat(), "start": start.isoformat() if start else None, "url": "/recordings/" + str(relative)})
+                duration = None
+                if recording.suffix == '.mp4':
+                    duration_key = (str(recording), stat.st_mtime_ns, stat.st_size)
+                    with RECORDING_DURATION_LOCK:
+                        cached = duration_key in RECORDING_DURATION_CACHE
+                        if cached:
+                            duration = RECORDING_DURATION_CACHE[duration_key]
+                            RECORDING_DURATION_CACHE.move_to_end(duration_key)
+                    if not cached:
+                        duration = mp4_duration(recording)
+                        with RECORDING_DURATION_LOCK:
+                            RECORDING_DURATION_CACHE[duration_key] = duration
+                            while len(RECORDING_DURATION_CACHE) > 10000:
+                                RECORDING_DURATION_CACHE.popitem(last=False)
+                entries.append({"path": str(relative), "camera_id": relative.parts[0] if relative.parts else "", "bytes": stat.st_size, "modified": modified_at.isoformat(), "start": start.isoformat() if start else None, "duration": duration, "url": "/recordings/" + str(relative)})
             entries.sort(key=lambda entry: entry["modified"], reverse=True)
             self.send_json({"recordings": entries})
             return

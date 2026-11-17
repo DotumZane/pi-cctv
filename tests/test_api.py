@@ -287,6 +287,17 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.call("GET", "/api/recordings?camera_id=../cam-02")[0], 400)
         self.assertEqual(self.call("GET", "/api/recordings?start=invalid")[0], 400)
 
+    @unittest.skipUnless(shutil.which("ffmpeg"), "FFmpeg is required")
+    def test_recording_index_reports_actual_mp4_duration(self):
+        recording = Path(self.recordings.name) / "cam-01" / "2026-11-04" / "06-00-00.mp4"
+        recording.parent.mkdir(parents=True)
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+                        "color=c=red:s=64x64:r=2:d=45", "-c:v", "mpeg4", str(recording)], check=True)
+        os.utime(recording, (time.time() - 30, time.time() - 30))
+        status, index = self.call("GET", "/api/recordings?camera_id=cam-01")
+        self.assertEqual(status, 200)
+        self.assertAlmostEqual(index["recordings"][0]["duration"], 45.0, delta=0.1)
+
     def test_health_reports_server_and_agent_versions_separately(self):
         status, health = self.call("GET", "/api/health")
         self.assertEqual(status, 200)

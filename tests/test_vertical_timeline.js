@@ -3,6 +3,18 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
+function checkRecordedDuration() {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'cctv', 'timeline-enhancements.js'), 'utf8');
+  const duration = source.slice(source.indexOf('function workspaceRecordDuration('), source.indexOf('\nfunction mergeWorkspaceCoverage('));
+  const lookup = source.slice(source.indexOf('timelineRecordAt=function('), source.indexOf('\nupdateTimelinePlayhead='));
+  const record = { startSeconds: 0, duration: 45 };
+  const context = { timelineSeconds: item => item.startSeconds, workspaceTimelineRecords: [record], workspaceTimelineSegmentSeconds: 30 };
+  vm.createContext(context);
+  vm.runInContext(duration + '\n' + lookup, context);
+  assert.equal(context.timelineRecordAt(40), record, 'a longer recording remains selectable past the configured segment length');
+  assert.equal(context.timelineRecordAt(46), undefined, 'time beyond the actual recording remains a gap');
+}
+
 async function checkLiveEdge(initialDate) {
   const source = fs.readFileSync(path.join(__dirname, '..', 'cctv', 'dashboard.html'), 'utf8');
   const minimum = source.slice(source.indexOf('function verticalTimelineMinimumScroll('), source.indexOf('\nfunction verticalTimelineSecondsFromScroll('));
@@ -46,5 +58,5 @@ async function checkLiveEdge(initialDate) {
 
 const yesterday = new Date(); yesterday.setDate(yesterday.getDate() - 1);
 const key = date => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-Promise.resolve().then(() => checkLiveEdge(key(new Date()))).then(() => checkLiveEdge(key(yesterday)))
+Promise.resolve().then(checkRecordedDuration).then(() => checkLiveEdge(key(new Date()))).then(() => checkLiveEdge(key(yesterday)))
   .catch(error => { console.error(error); process.exitCode = 1; });

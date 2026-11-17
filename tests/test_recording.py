@@ -1,13 +1,23 @@
 import tempfile
 import unittest
+import struct
 from unittest.mock import patch
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from cctv.recording import RecorderConfig, prune_recordings, recording_files
+from cctv.recording import RecorderConfig, mp4_duration, prune_recordings, recording_files
 
 
 class RecordingTests(unittest.TestCase):
+    def test_reads_duration_from_version_one_movie_header(self):
+        def box(kind, payload):
+            return struct.pack('>I4s', len(payload) + 8, kind) + payload
+        mvhd = bytes([1, 0, 0, 0]) + bytes(16) + struct.pack('>IQ', 1000, 123456)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'recording.mp4'
+            path.write_bytes(box(b'free', b'') + box(b'mdat', b'video') + box(b'moov', box(b'mvhd', mvhd)))
+            self.assertAlmostEqual(mp4_duration(path), 123.456)
+
     def test_recording_scan_skips_preview_cache_directories(self):
         import os
         with tempfile.TemporaryDirectory() as directory:
