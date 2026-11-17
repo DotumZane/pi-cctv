@@ -284,6 +284,12 @@ async function seekResumesPlayback() {
   await new Promise(resolve => setTimeout(resolve, 300));
   assert.equal(loads, preloaded, 'committing reuses the recording load');
   assert.equal(plays, 4, 'the preloaded recording resumes playback');
+  documentListeners.get('pointerdown')({ target: { closest: () => true } });
+  globals.window.previewWorkspaceTimelineScrub(10, 1);
+  await globals.window.returnWorkspaceToLive();
+  documentListeners.get('pointerup')({});
+  await new Promise(resolve => setTimeout(resolve, 400));
+  assert.equal(plays, 4, 'releasing the scrollbar cannot restart a recording after returning live');
 }
 
 async function previewAcrossSegments() {

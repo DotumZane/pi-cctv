@@ -783,8 +783,19 @@
     const returnToLive = window.returnWorkspaceToLive;
     window.returnWorkspaceToLive = async (...args) => {
       state.requestToken += 1;
+      clearTimeout(state.commitScheduleTimer);
+      clearTimeout(state.commitTimer);
       clearTimeout(state.preloadTimer);
       state.preloadPath = null;
+      state.active = false;
+      state.pointerDown = false;
+      state.lastValue = null;
+      state.target = null;
+      state.targetAbsolute = null;
+      state.targetRecord = null;
+      state.motionDirection = 0;
+      state.motionEpoch += 1;
+      window.workspaceScrubActive = false;
       const result = await returnToLive(...args);
       const video = mainVideo();
       if (video?.readyState >= 2) hidePreview();
