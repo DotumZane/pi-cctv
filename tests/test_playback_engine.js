@@ -55,7 +55,7 @@ async function main() {
       return { ok: true, async blob() { return {}; } };
     },
     async createImageBitmap() { return { width: 640, height: 360 }; },
-    setTimeout, clearTimeout, console,
+    setTimeout(fn, ms) { return ms === 100 ? 0 : setTimeout(fn, ms); }, clearTimeout, console,
   };
   const source = fs.readFileSync(path.join(__dirname, '..', 'cctv', 'playback-engine.js'), 'utf8');
   vm.runInNewContext(source, globals);
@@ -137,7 +137,7 @@ async function proxyScrubbing() {
       return { ok: true, async blob() { return {}; } };
     },
     async createImageBitmap() { return { width: 640, height: 360 }; },
-    setTimeout, clearTimeout, console,
+    setTimeout(fn, ms) { return ms === 100 ? 0 : setTimeout(fn, ms); }, clearTimeout, console,
   };
   const source = fs.readFileSync(path.join(__dirname, '..', 'cctv', 'playback-engine.js'), 'utf8');
   vm.runInNewContext(source, globals);
@@ -195,7 +195,7 @@ async function atlasScrubbing() {
       return { ok: true, async blob() { return {}; } };
     },
     async createImageBitmap() { return { width: 2880, height: 1080, close() {} }; },
-    setTimeout, clearTimeout, console,
+    setTimeout(fn, ms) { return ms === 100 ? 0 : setTimeout(fn, ms); }, clearTimeout, console,
   };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', 'cctv', 'playback-engine.js'), 'utf8'), globals);
   globals.window.previewWorkspaceTimelineScrub(8, 20);
@@ -227,11 +227,12 @@ async function seekResumesPlayback() {
   const listeners = new Map();
   const documentListeners = new Map();
   let plays = 0;
+  let loads = 0;
   const video = { dataset: { playback: 'live' }, clientWidth: 640, clientHeight: 360,
     readyState: 2, duration: 30, paused: false, seeking: false, currentTime: 0,
     closest() { return { appendChild() {} }; }, setAttribute() {}, removeAttribute() {},
     addEventListener(type, fn) { listeners.set(type, fn); }, removeEventListener() {},
-    pause() { this.paused = true; }, load() {}, play() { this.paused = false; plays++; return Promise.resolve(); },
+    pause() { this.paused = true; }, load() { loads++; }, play() { this.paused = false; plays++; return Promise.resolve(); },
     // Safari may never call this callback for a paused, already-decoded frame.
     requestVideoFrameCallback() {} };
   const canvas = { width: 0, height: 0, classList: { add() {}, remove() {} }, setAttribute() {},
@@ -271,6 +272,14 @@ async function seekResumesPlayback() {
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(video.src, nextRecord.url, 'playback advances to the adjacent segment');
   assert.equal(plays, 3, 'playback continues after a segment ends');
+  documentListeners.get('scroll')({ target: { closest: () => true } });
+  globals.window.previewWorkspaceTimelineScrub(8, -1);
+  await new Promise(resolve => setTimeout(resolve, 150));
+  assert.equal(video.src, record.url, 'the selected recording starts loading while scrolling');
+  const preloaded = loads;
+  await new Promise(resolve => setTimeout(resolve, 300));
+  assert.equal(loads, preloaded, 'committing reuses the recording load');
+  assert.equal(plays, 4, 'the preloaded recording resumes playback');
 }
 
 Promise.resolve().then(main).then(proxyScrubbing).then(atlasScrubbing).then(seekResumesPlayback)

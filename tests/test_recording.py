@@ -12,6 +12,7 @@ class RecordingTests(unittest.TestCase):
         self.assertIn("-c", command)
         self.assertIn("copy", command)
         self.assertIn("segment", command)
+        self.assertEqual(command[command.index("-segment_format_options") + 1], "movflags=+faststart")
         self.assertTrue(command[-1].endswith("%H-%M-%S.mp4"))
 
     def test_prunes_only_expired_recordings(self):

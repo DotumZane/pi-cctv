@@ -35,6 +35,8 @@
     committing: false,
     commitTimer: 0,
     commitScheduleTimer: 0,
+    preloadTimer: 0,
+    preloadPath: null,
     pointerDown: false,
     active: false,
     hasFrame: false,
@@ -471,6 +473,8 @@
     window.workspaceScrubActive = false;
     clearTimeout(state.commitScheduleTimer);
     clearTimeout(state.commitTimer);
+    clearTimeout(state.preloadTimer);
+    state.preloadPath = null;
     state.pending = null;
     state.lastFrameTime = null;
     state.motionDirection = 0;
@@ -487,6 +491,34 @@
     scrubMessage('');
     if (state.frame) cancelAnimationFrame(state.frame);
     state.frame = 0;
+  }
+
+  function preparePlayback(record) {
+    if (!record || !/\.mp4(?:[?#]|$)/i.test(record.url || '')) return;
+    const video = mainVideo();
+    if (!video) return;
+    if (video.dataset.playback === 'recording' && workspacePlaybackUrl === record.url) {
+      clearTimeout(state.preloadTimer);
+      state.preloadPath = null;
+      return;
+    }
+    if (state.preloadPath === record.path) return;
+    clearTimeout(state.preloadTimer);
+    state.preloadPath = record.path;
+    state.preloadTimer = setTimeout(() => {
+      state.preloadTimer = 0;
+      if (!state.active || state.targetRecord?.path !== record.path) return;
+      // Keep the preview canvas visible while the normal player opens the
+      // recording. Commit can reuse this load instead of starting it again.
+      video.dataset.playback = 'recording';
+      video.pause();
+      video.onerror = null;
+      workspacePlaybackUrl = record.url;
+      workspacePlaybackStartSeconds = timelineSeconds(record);
+      video.src = sourceFor(record);
+      video.load();
+      if (typeof setWorkspaceMode === 'function') setWorkspaceMode('recording');
+    }, 100);
   }
 
   function setTarget(value, velocity) {
@@ -522,6 +554,8 @@
     if (typeof verticalTimelineSetPosition === 'function') verticalTimelineSetPosition(selected, false);
     if (typeof updateTimelinePlayhead === 'function') updateTimelinePlayhead(selected);
     if (!record) {
+      clearTimeout(state.preloadTimer);
+      state.preloadPath = null;
       log('scrub:gap', { selected });
       state.pending = null;
       if (state.frame) cancelAnimationFrame(state.frame);
@@ -546,6 +580,7 @@
       return;
     }
     scrubMessage('');
+    preparePlayback(record);
     if (wasGap) updateStatus('Loading recording preview…');
     if (ensureAtlas(record)) {
       state.pending = null;
@@ -587,7 +622,10 @@
     }
     const offset = Math.max(0, selected - timelineSeconds(record));
     const url = sourceFor(record);
-    const same = video && workspacePlaybackUrl === record.url && video.dataset.playback === 'recording' && video.readyState >= 1;
+    clearTimeout(state.preloadTimer);
+    state.preloadPath = null;
+    const sameSource = video && workspacePlaybackUrl === record.url && video.dataset.playback === 'recording';
+    const same = sameSource && video.readyState >= 1;
     // Keep the last decoded preview frame over the player while the main
     // element seeks. Replacing the source first and hiding the preview here
     // caused the visible black flash during every scrub commit.
@@ -614,8 +652,10 @@
     video.pause();
     video.onerror = null;
     video.dataset.playback = 'recording';
-    video.src = url;
-    video.load();
+    if (!sameSource) {
+      video.src = url;
+      video.load();
+    }
     workspacePlaybackUrl = record.url;
     workspacePlaybackStartSeconds = timelineSeconds(record);
     try {
@@ -689,6 +729,8 @@
     const returnToLive = window.returnWorkspaceToLive;
     window.returnWorkspaceToLive = async (...args) => {
       state.requestToken += 1;
+      clearTimeout(state.preloadTimer);
+      state.preloadPath = null;
       const result = await returnToLive(...args);
       const video = mainVideo();
       if (video?.readyState >= 2) hidePreview();

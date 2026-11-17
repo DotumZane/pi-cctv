@@ -127,6 +127,7 @@ class RecorderConfig:
             "ffmpeg", "-hide_banner", "-loglevel", "warning", "-nostdin",
             "-rtsp_transport", "tcp", "-fflags", "nobuffer", "-i", self.stream_url,
             "-map", "0:v:0", "-c", "copy", "-f", "segment", "-segment_format", "mp4",
+            "-segment_format_options", "movflags=+faststart",
             "-segment_time", str(self.segment_seconds), "-strftime", "1",
             "-reset_timestamps", "1", str(output),
         ]
