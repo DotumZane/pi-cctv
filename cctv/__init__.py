@@ -1,4 +1,4 @@
 """Raspberry Pi CCTV V1 application package."""
 
-__version__ = "0.1.192"
+__version__ = "0.1.193"
 __agent_version__ = "0.1.55"
