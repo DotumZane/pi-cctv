@@ -653,6 +653,19 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(body["error"], "use Change my password to update your own account")
         self.assertEqual(self.httpd.store.audit_entries(1)[0]["action"], "user.password_reset")
 
+    def test_stale_queued_server_update_reports_waiting_for_helper(self):
+        self.httpd.store.create_user("admin", "correct-horse-battery")
+        token = self.httpd.store.create_session("admin")
+        state_dir = Path(self.host_updates.name)
+        (state_dir / "installed").touch()
+        (state_dir / "request.json").write_text('{}')
+        (state_dir / "status.json").write_text(json.dumps({"state": "queued", "requested_at": "2000-01-01T00:00:00+00:00"}))
+        status, body = self.call("GET", "/api/server/update", token=token)
+        self.assertEqual(status, 200)
+        self.assertEqual(body["state"], "queued")
+        self.assertIn("waiting for the host update service", body["message"])
+        self.assertTrue((state_dir / "request.json").exists())
+
     def test_server_update_reports_missing_host_helper(self):
         self.httpd.store.create_user("admin", "correct-horse-battery")
         token = self.httpd.store.create_session("admin")

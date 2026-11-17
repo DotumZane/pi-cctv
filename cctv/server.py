@@ -273,6 +273,13 @@ class Handler(BaseHTTPRequestHandler):
                 status = json.loads((host_update_dir / "status.json").read_text())
             except (OSError, json.JSONDecodeError):
                 status = {"state": "idle"}
+            if status.get("state") == "queued" and (host_update_dir / "request.json").exists():
+                try:
+                    requested = datetime.fromisoformat(status.get("requested_at", "").replace("Z", "+00:00"))
+                    if requested.tzinfo is not None and (datetime.now(timezone.utc) - requested).total_seconds() > 120:
+                        status["message"] = "Still waiting for the host update service to pick up the request. Check the server update service."
+                except (TypeError, ValueError):
+                    pass
             self.send_json({"installed": True, "running_version": __version__, **status})
             return
         if parsed.path == "/api/server/os-update":

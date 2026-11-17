@@ -57,6 +57,17 @@ class ServerUpdaterTests(unittest.TestCase):
         self.assertEqual(status["state"], "succeeded")
         self.assertEqual(status["updated_commit"], "b" * 12)
 
+    def test_reports_running_before_git_work_starts(self):
+        def run(command, **kwargs):
+            status = json.loads((self.state / "status.json").read_text())
+            self.assertEqual(status["state"], "running")
+            self.assertEqual(status["request_id"], self.request_id)
+            return (0, " M README.md")
+
+        with patch.object(updater, "run", side_effect=run):
+            self.assertEqual(updater.main(), 1)
+        self.assertEqual(json.loads((self.state / "status.json").read_text())["state"], "failed")
+
     def test_refuses_dirty_checkout_without_running_compose(self):
         with patch.object(updater, "run", side_effect=[(0, " M README.md")]) as run:
             self.assertEqual(updater.main(), 1)
