@@ -44,6 +44,7 @@
     pointerDown: false,
     active: false,
     hasFrame: false,
+    hasPicture: false,
     proxy: null,
     proxyPath: null,
     proxyReady: false,
@@ -68,6 +69,9 @@
     atlasChecks: new Map(),
     atlasPrefetching: new Set(),
     atlasPrefetchRetry: new Map(),
+    atlasWarmTimer: 0,
+    atlasWarmPath: null,
+    atlasWarmRetry: new Map(),
     atlasFrame: 0,
   };
 
@@ -177,6 +181,7 @@
     state.ctx.fillRect(0, 0, cw, ch);
     state.ctx.drawImage(source, (cw - dw) / 2, (ch - dh) / 2, dw, dh);
     state.hasFrame = true;
+    state.hasPicture = true;
     if (source !== video) state.lastPreviewAt = performance.now();
     if (state.active) state.canvas.classList.add('visible');
     scrubMessage('');
@@ -193,6 +198,7 @@
     fitCanvas();
     paintBitmap(bitmap);
     state.hasFrame = true;
+    state.hasPicture = true;
     state.lastBitmap = bitmap;
     state.lastFrameTime = request.absolute;
     state.lastPreviewAt = performance.now();
@@ -256,6 +262,35 @@
     }).catch(() => {}).finally(() => state.atlasPrefetching.delete(next.path));
   }
 
+  function prepareVisitedAtlas(record) {
+    if (state.atlasManifest || state.atlasManifests.has(record.path) || state.atlasFailed ||
+        state.atlasWarmPath === record.path || (state.atlasWarmRetry.get(record.path) || 0) > performance.now()) return;
+    clearTimeout(state.atlasWarmTimer);
+    state.atlasWarmPath = record.path;
+    state.atlasWarmTimer = setTimeout(() => {
+      state.atlasWarmPath = null;
+      if (!state.active || state.targetRecord?.path !== record.path) return;
+      state.atlasWarmRetry.set(record.path, performance.now() + 10000);
+      if (state.atlasWarmRetry.size > 128) state.atlasWarmRetry.delete(state.atlasWarmRetry.keys().next().value);
+      // One server-wide worker prepares a visited segment in the background.
+      // Never block preview or recording while it is being prepared.
+      api(`/api/recordings/scrub-frames?prepare=1&path=${encodeURIComponent(record.path)}`)
+        .then(response => response.ok ? response.json() : null)
+        .then(result => {
+          // A background build may finish soon; do not retain an earlier
+          // negative prefetch result when this segment is revisited.
+          state.atlasPrefetchRetry.delete(record.path);
+          if (!result?.ready || !result.manifest?.frames || !result.urlBase) return;
+          state.atlasManifests.set(record.path, result);
+          if (state.atlasPath === record.path) {
+            state.atlasManifest = result.manifest;
+            state.atlasBase = result.urlBase;
+            scheduleAtlasFrame();
+          }
+        }).catch(() => {});
+    }, 150);
+  }
+
   function loadAtlasSheet(index) {
     const manifest = state.atlasManifest, path = state.atlasPath, base = state.atlasBase;
     const key = atlasKey(path, index);
@@ -303,6 +338,7 @@
         Math.floor(cell / manifest.columns) * manifest.height, manifest.width, manifest.height,
         (cw - dw) / 2, (ch - dh) / 2, dw, dh);
       state.hasFrame = true;
+      state.hasPicture = true;
       state.canvas.classList.add('visible');
       scrubMessage('');
       state.lastFrameTime = state.targetAbsolute;
@@ -505,12 +541,18 @@
   }
 
   function scheduleFrame() {
-    if (state.frame || state.frameDelay || state.inFlight >= 2 || !state.pending) return;
+    if (state.pending && state.frameDelay && state.frameCache.has(frameKey(state.pending))) {
+      clearTimeout(state.frameDelay);
+      state.frameDelay = 0;
+    }
+    if (state.frame || state.frameDelay || !state.pending ||
+        (state.inFlight >= 2 && !state.frameCache.has(frameKey(state.pending)))) return;
     state.frame = requestAnimationFrame(() => {
       state.frame = 0;
-      if (!state.active || state.inFlight >= 2 || !state.pending) return;
+      if (!state.active || !state.pending ||
+          (state.inFlight >= 2 && !state.frameCache.has(frameKey(state.pending)))) return;
       const request = state.pending;
-      const interval = Math.max(0, 180 - (performance.now() - state.lastRequestedAt));
+      const interval = state.frameCache.has(frameKey(request)) ? 0 : Math.max(0, 180 - (performance.now() - state.lastRequestedAt));
       if (interval) {
         state.frameDelay = setTimeout(() => { state.frameDelay = 0; scheduleFrame(); }, interval);
         return;
@@ -535,6 +577,8 @@
     clearTimeout(state.commitScheduleTimer);
     clearTimeout(state.commitTimer);
     clearTimeout(state.preloadTimer);
+    clearTimeout(state.atlasWarmTimer);
+    state.atlasWarmPath = null;
     state.preloadPath = null;
     state.pending = null;
     state.lastFrameTime = null;
@@ -600,6 +644,7 @@
       state.lastFrameTime = null;
       state.lastBitmap = null;
       state.hasFrame = false;
+      state.hasPicture = false;
       state.canvas?.classList.remove('visible');
     }
     const absolute = absoluteTimelineSeconds(workspaceTimelineDate, selected);
@@ -634,15 +679,18 @@
         scrubMessage('Loading recordings…');
         return;
       }
-      // Do not leave the last decoded frame (or live video) visible for a gap.
-      fitCanvas();
-      state.ctx.fillStyle = '#030507';
-      state.ctx.fillRect(0, 0, state.canvas.width, state.canvas.height);
-      state.lastBitmap = null;
+      // Keep the last picture visible, with an explicit gap label, instead of
+      // flashing black for brief gaps between recording segments.
+      const hadFrame = state.hasPicture;
+      if (!hadFrame) {
+        fitCanvas();
+        state.ctx.fillStyle = '#030507';
+        state.ctx.fillRect(0, 0, state.canvas.width, state.canvas.height);
+      }
       state.lastFrameTime = null;
       state.hasFrame = true;
       state.canvas.classList.add('visible');
-      scrubMessage(`No recording · ${date} ${formatTimelineTime(selected)}`);
+      scrubMessage(`No recording · ${date} ${formatTimelineTime(selected)}${hadFrame ? ' · last frame shown' : ''}`);
       updateStatus('No recording is available at the selected time.');
       return;
     }
@@ -650,6 +698,7 @@
     preparePlayback(record);
     if (wasGap) updateStatus('Loading recording preview…');
     const atlasReady = ensureAtlas(record);
+    if (!atlasReady) prepareVisitedAtlas(record);
     prefetchNearbyAtlas(record, state.motionDirection);
     if (atlasReady) {
       scheduleAtlasFrame();
@@ -662,14 +711,15 @@
     if (proxyReady) {
       seekProxy();
     }
-    if (!state.lastPreviewAt || performance.now() - state.lastPreviewAt >= 200) {
-      // Fast scrolling crosses minutes of footage per second. Reusing a
-      // nearby frame avoids redundant decodes; committed playback stays exact.
-      const step = speed > 120 ? 2 : speed > 30 ? 1 : 0.25;
-      const offset = Math.floor(state.targetOffset / step) * step;
-      const difference = state.targetOffset - offset;
-      state.pending = { selected: selected - difference, record, offset,
-        absolute: absolute - difference, camera: state.camera, direction: state.motionDirection, epoch: state.motionEpoch };
+    // Fast scrolling crosses minutes of footage per second. Reusing a
+    // nearby frame avoids redundant decodes; committed playback stays exact.
+    const step = speed > 120 ? 2 : speed > 30 ? 1 : 0.25;
+    const offset = Math.floor(state.targetOffset / step) * step;
+    const difference = state.targetOffset - offset;
+    const request = { selected: selected - difference, record, offset,
+      absolute: absolute - difference, camera: state.camera, direction: state.motionDirection, epoch: state.motionEpoch };
+    if (state.frameCache.has(frameKey(request)) || !state.lastPreviewAt || performance.now() - state.lastPreviewAt >= 200) {
+      state.pending = request;
       scheduleFrame();
     }
   }
@@ -804,6 +854,8 @@
       clearTimeout(state.commitScheduleTimer);
       clearTimeout(state.commitTimer);
       clearTimeout(state.preloadTimer);
+      clearTimeout(state.atlasWarmTimer);
+      state.atlasWarmPath = null;
       state.preloadPath = null;
       state.active = false;
       state.pointerDown = false;

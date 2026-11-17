@@ -7,12 +7,13 @@ const vm = require('node:vm');
 
 async function main() {
   let drawn = 0;
+  let clears = 0;
   let fetched = 0;
   let committed = 0;
   let clock = 1000;
   const visible = new Set();
   const animationFrames = [];
-  const context2d = { fillRect() {}, drawImage() { drawn++; }, set fillStyle(_) {} };
+  const context2d = { fillRect() { clears++; }, drawImage() { drawn++; }, set fillStyle(_) {} };
   const canvas = {
     width: 0, height: 0, classList: {
       add(name) { visible.add(name); }, remove(name) { visible.delete(name); },
@@ -75,9 +76,11 @@ async function main() {
   assert.equal(fetched, 2, 'reverse movement should request another frame');
   assert.equal(drawn, 2, 'reverse frame should appear before playback commits');
   assert.equal(committed, 0);
+  const clearsBeforeGap = clears;
   window.previewWorkspaceTimelineScrub(40, 20);
   assert.match(status.innerHTML, /No recording/);
-  assert.equal(visible.has('visible'), true, 'a gap covers the previous video frame');
+  assert.equal(visible.has('visible'), true, 'a gap keeps the preview visible');
+  assert.equal(clears, clearsBeforeGap, 'a gap does not erase the last decoded picture');
   await window.scrubWorkspaceTimeline(40);
   assert.equal(visible.has('visible'), true, 'committing a gap keeps the old frame covered');
   assert.match(status.innerHTML, /No recording/);
@@ -203,16 +206,16 @@ async function atlasScrubbing() {
   globals.window.previewWorkspaceTimelineScrub(8, 20);
   await new Promise(resolve => setImmediate(resolve));
   for (let i = 0; i < 4; i++) { while (animationFrames.length) animationFrames.shift()(); await new Promise(resolve => setImmediate(resolve)); }
-  const first = draws.at(-1);
+  const first = draws.filter(args => args.length === 9).at(-1);
   globals.window.previewWorkspaceTimelineScrub(9, 20);
   while (animationFrames.length) animationFrames.shift()();
-  const second = draws.at(-1);
+  const second = draws.filter(args => args.length === 9).at(-1);
   await new Promise(resolve => setImmediate(resolve));
   assert.ok(requestedSheets.some(url => url.includes('06-00-30')), 'the adjacent recording is warmed before reaching it');
   globals.window.previewWorkspaceTimelineScrub(8, -20);
   while (animationFrames.length) animationFrames.shift()();
   assert.notDeepEqual(first.slice(1, 3), second.slice(1, 3), 'forward movement paints another atlas cell');
-  assert.deepEqual(first.slice(1, 3), draws.at(-1).slice(1, 3), 'reverse movement paints the earlier cell');
+  assert.deepEqual(first.slice(1, 3), draws.filter(args => args.length === 9).at(-1).slice(1, 3), 'reverse movement paints the earlier cell');
   const originalSheetRequests = sheetRequests;
   globals.window.previewWorkspaceTimelineScrub(38, 20);
   await new Promise(resolve => setImmediate(resolve));
@@ -334,12 +337,12 @@ async function previewAcrossSegments() {
 
 async function deduplicatePreviewRequests() {
   const animationFrames = [], requests = [];
-  let clock = 1000;
+  let clock = 1000, warmRequests = 0, drawn = 0;
   const host = { appendChild() {} };
   const video = { dataset: { playback: 'live' }, clientWidth: 100, clientHeight: 100,
     readyState: 0, paused: true, closest: () => host, setAttribute() {}, removeAttribute() {}, addEventListener() {}, pause() {} };
   const canvas = { width: 0, height: 0, classList: { add() {}, remove() {} }, setAttribute() {},
-    getContext() { return { fillRect() {}, drawImage() {}, set fillStyle(_) {} }; } };
+    getContext() { return { fillRect() {}, drawImage() { drawn++; }, set fillStyle(_) {} }; } };
   const document = { body: {}, head: { appendChild() {} }, documentElement: { dataset: {} },
     createElement(tag) { return tag === 'canvas' ? canvas : { setAttribute() {}, classList: { toggle() {} } }; },
     querySelector(selector) { return selector === '#workspace-live' ? video : null; }, addEventListener() {} };
@@ -351,7 +354,10 @@ async function deduplicatePreviewRequests() {
     workspaceTimelineDate: '2026-11-17', workspaceTimelineLastValue: 0,
     verticalTimelineSetPosition() {}, updateTimelinePlayhead() {}, formatTimelineTime: value => String(value),
     api(url) {
-      if (url.includes('scrub-frames')) return Promise.resolve({ ok: true, json: async () => ({ ready: false }) });
+      if (url.includes('scrub-frames')) {
+        if (url.includes('prepare=1')) warmRequests++;
+        return Promise.resolve({ ok: true, json: async () => ({ ready: false }) });
+      }
       return new Promise(resolve => requests.push({ url, resolve }));
     },
     createImageBitmap: async () => ({ width: 100, height: 100 }),
@@ -375,6 +381,24 @@ async function deduplicatePreviewRequests() {
   assert.match(requests[1].url, /at=40\.00/, 'fast motion reuses a coarser preview frame');
   requests[1].resolve({ ok: true, blob: async () => ({}) });
   await new Promise(resolve => setImmediate(resolve));
+  clock += 200;
+  globals.window.previewWorkspaceTimelineScrub(60.1, 100);
+  while (animationFrames.length) animationFrames.shift()();
+  await new Promise(resolve => setImmediate(resolve));
+  clock += 200;
+  globals.window.previewWorkspaceTimelineScrub(80.1, 100);
+  while (animationFrames.length) animationFrames.shift()();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(requests.length, 4, 'two uncached frame requests are in flight');
+  const drawnBeforeReverse = drawn;
+  clock += 16;
+  globals.window.previewWorkspaceTimelineScrub(10.1, -100);
+  while (animationFrames.length) animationFrames.shift()();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(requests.length, 4, 'reversing over a cached frame does not fetch it again');
+  assert.ok(drawn > drawnBeforeReverse, 'cached frames appear even while both decode slots are busy');
+  await new Promise(resolve => setTimeout(resolve, 180));
+  assert.equal(warmRequests, 1, 'a visited segment is prepared once without blocking the preview');
 }
 
 Promise.resolve().then(main).then(proxyScrubbing).then(atlasScrubbing).then(seekResumesPlayback).then(previewAcrossSegments).then(deduplicatePreviewRequests)

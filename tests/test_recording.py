@@ -5,10 +5,25 @@ from unittest.mock import patch
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from cctv.recording import RecorderConfig, mp4_duration, prune_recordings, recording_files
+from cctv.recording import (RecorderConfig, SCRUB_ATLAS_BUILD_SLOT, mp4_duration,
+                            prepare_scrub_frames, prune_recordings, recording_files)
 
 
 class RecordingTests(unittest.TestCase):
+    def test_busy_preview_worker_does_not_mark_recording_failed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / 'recording.mp4'
+            source.touch()
+            target = root / '.scrub-frames' / 'recording'
+            self.assertTrue(SCRUB_ATLAS_BUILD_SLOT.acquire(blocking=False))
+            try:
+                with patch('cctv.recording.subprocess.run', side_effect=AssertionError('worker should stay idle')):
+                    prepare_scrub_frames(source, target)
+            finally:
+                SCRUB_ATLAS_BUILD_SLOT.release()
+            self.assertFalse(target.with_suffix('.failed').exists())
+
     def test_reads_duration_from_version_one_movie_header(self):
         def box(kind, payload):
             return struct.pack('>I4s', len(payload) + 8, kind) + payload

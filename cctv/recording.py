@@ -20,6 +20,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .store import Store
 
+SCRUB_ATLAS_BUILD_SLOT = threading.BoundedSemaphore(1)
+
 
 def recording_files(root: Path) -> list[Path]:
     files = []
@@ -95,10 +97,20 @@ def scrub_frames_ready(source: Path, directory: Path) -> bool:
 
 def prepare_scrub_frames(source: Path, directory: Path) -> None:
     """Build a compact sequence of real frames in seek-free JPEG atlases."""
+    try:
+        if scrub_frames_ready(source, directory):
+            return
+    except OSError:
+        return
+    if not SCRUB_ATLAS_BUILD_SLOT.acquire(blocking=False):
+        return
     temporary = directory.with_name(f"{directory.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     failure = directory.with_suffix(".failed")
     success = False
     try:
+        if scrub_frames_ready(source, directory):
+            success = True
+            return
         directory.parent.mkdir(parents=True, exist_ok=True)
         probe = subprocess.run(
             ["ffprobe", "-v", "error", "-show_entries", "format=duration",
@@ -134,9 +146,12 @@ def prepare_scrub_frames(source: Path, directory: Path) -> None:
     except (OSError, ValueError, subprocess.TimeoutExpired):
         pass
     finally:
-        shutil.rmtree(temporary, ignore_errors=True)
-        if not success and directory.parent.is_dir():
-            failure.touch()
+        try:
+            shutil.rmtree(temporary, ignore_errors=True)
+            if not success and directory.parent.is_dir():
+                failure.touch()
+        finally:
+            SCRUB_ATLAS_BUILD_SLOT.release()
 
 
 def prepare_trickplay(recording: Path, target: Path) -> None:
