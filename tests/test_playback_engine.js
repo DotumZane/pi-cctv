@@ -91,6 +91,7 @@ async function proxyScrubbing() {
   const listeners = new Map();
   let snapshotRequests = 0;
   let playbackLoads = 0;
+  let proxyRequests = 0;
   let position = 0;
   const proxy = {
     duration: 30, readyState: 2, videoWidth: 640, videoHeight: 360,
@@ -130,8 +131,8 @@ async function proxyScrubbing() {
     timelineSeconds: () => 0, workspaceTimelineDate: '2026-11-12',
     workspaceTimelineLastValue: 0, verticalTimelineSetPosition() {}, updateTimelinePlayhead() {},
     async api(url) {
-      if (url.includes('/scrub-frames?')) return { ok: true, async json() { return { ready: false, failed: true }; } };
-      if (url.includes('/trickplay?')) return { ok: true, async json() { return { ready: true, url: '/recordings/.trickplay-cache/cam-1/proxy.mp4' }; } };
+      if (url.includes('/scrub-frames?')) return { ok: true, async json() { return { ready: false }; } };
+      if (url.includes('/trickplay?')) { proxyRequests++; return { ok: true, async json() { return { ready: false }; } }; }
       snapshotRequests++;
       return { ok: true, async blob() { return {}; } };
     },
@@ -142,8 +143,7 @@ async function proxyScrubbing() {
   vm.runInNewContext(source, globals);
   globals.window.previewWorkspaceTimelineScrub(8, -20);
   await new Promise(resolve => setImmediate(resolve));
-  // The atlas failure is observed on the next pointer update before falling
-  // back to the old proxy for this segment.
+  // The original recording provides frames while the atlas is still building.
   globals.window.previewWorkspaceTimelineScrub(8, -20);
   await new Promise(resolve => setImmediate(resolve));
   for (const callback of listeners.get('loadedmetadata') || []) callback();
@@ -154,6 +154,8 @@ async function proxyScrubbing() {
   while (pendingFrames.length) pendingFrames.shift()();
   assert.deepEqual(drawnTimes.filter((value, index, array) => index === 0 || value !== array[index - 1]), [8, 12, 4]);
   assert.equal(playbackLoads, 1, 'proxy stays loaded across direction changes');
+  assert.equal(proxy.src, record.url, 'the original MP4 is used without waiting for conversion');
+  assert.equal(proxyRequests, 0, 'scrubbing does not start a competing proxy encode');
   assert.equal(snapshotRequests, 0, 'ready proxy needs no still-frame requests');
 }
 

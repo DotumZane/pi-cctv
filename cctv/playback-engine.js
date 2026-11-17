@@ -325,7 +325,7 @@
     });
   }
 
-  function ensureProxy(record) {
+  function ensureProxy(record, direct = false) {
     if (!record || !ensurePreview()) return false;
     if (!state.proxy && !document.createElement('video').addEventListener) return false;
     if (state.proxyPath !== record.path) {
@@ -349,10 +349,13 @@
     if (state.proxyFailed || state.proxyWaiting) return false;
     if (state.proxyLoading) return false;
     if (state.proxyChecking) return false;
-    // Keep the still-frame fallback until the proxy for this segment is ready.
+    // A browser-playable recording can provide frames immediately while its
+    // dense atlas is being generated. This avoids waiting for a full encode.
     const path = record.path;
-    state.proxyChecking = api(`/api/recordings/trickplay?path=${encodeURIComponent(path)}`)
-      .then(response => response.ok ? response.json() : null)
+    const source = direct ? Promise.resolve({ ready: true, url: record.url }) :
+      api(`/api/recordings/trickplay?path=${encodeURIComponent(path)}`)
+        .then(response => response.ok ? response.json() : null);
+    state.proxyChecking = source
       .then(result => {
         if (state.proxyPath !== path) return;
         if (result?.ready && result.url) {
@@ -380,7 +383,7 @@
                 seekProxy();
               }
             });
-            proxy.addEventListener('error', () => { state.proxyReady = false; state.proxyLoading = false; state.proxySeeking = false; });
+            proxy.addEventListener('error', () => { state.proxyReady = false; state.proxyLoading = false; state.proxySeeking = false; state.proxyFailed = true; if (state.active && state.pending) scheduleFrame(); });
             state.proxy = proxy;
           }
           state.proxyLoading = true;
@@ -426,7 +429,9 @@
       // newer frame or a frame from the opposite side after direction changes.
       const alreadyPassed = state.lastFrameTime !== null && request.direction &&
         Math.sign(request.selected - state.lastFrameTime) === -request.direction;
-      if (state.active && !state.proxyReady && !state.atlasManifest && request.epoch === state.motionEpoch && !alreadyPassed && state.targetRecord &&
+      const proxyAvailable = state.proxyReady && state.proxyPath === request.record.path;
+      const atlasAvailable = state.atlasManifest && state.atlasPath === request.record.path;
+      if (state.active && !proxyAvailable && !atlasAvailable && request.epoch === state.motionEpoch && !alreadyPassed && state.targetRecord &&
           state.targetRecord.path === request.record.path) drawExtractedFrame(bitmap, request);
     } catch (error) { log('scrub:frame-error', error.message); }
     finally {
@@ -516,6 +521,13 @@
       state.pending = null;
       if (state.frame) cancelAnimationFrame(state.frame);
       state.frame = 0;
+      const date = workspaceTimelineDate;
+      const loading = document.querySelector(`.vertical-timeline-day-layer[data-timeline-day="${date}"]`)?.dataset.loading === 'true';
+      if (loading) {
+        // Keep the last picture in place while older days are being indexed.
+        scrubMessage('Loading recordings…');
+        return;
+      }
       // Do not leave the last decoded frame (or live video) visible for a gap.
       fitCanvas();
       state.ctx.fillStyle = '#030507';
@@ -524,10 +536,8 @@
       state.lastFrameTime = null;
       state.hasFrame = true;
       state.canvas.classList.add('visible');
-      const date = workspaceTimelineDate;
-      const loading = document.querySelector(`.vertical-timeline-day-layer[data-timeline-day="${date}"]`)?.dataset.loading === 'true';
-      scrubMessage(loading ? 'Loading recordings…' : `No recording · ${date} ${formatTimelineTime(selected)}`);
-      if (!loading) updateStatus('No recording is available at the selected time.');
+      scrubMessage(`No recording · ${date} ${formatTimelineTime(selected)}`);
+      updateStatus('No recording is available at the selected time.');
       return;
     }
     scrubMessage('');
@@ -537,9 +547,10 @@
       scheduleAtlasFrame();
       return;
     }
-    // Atlas generation has priority. An extra proxy encode for the same
-    // segment would contend with it and postpone the seek-free preview.
-    const proxyReady = state.atlasFailed ? ensureProxy(record) : false;
+    // Seek the original MP4 while the atlas builds. Older MKV recordings use
+    // snapshots until a compatible proxy is available.
+    const direct = /\.mp4(?:[?#]|$)/i.test(record.url || '');
+    const proxyReady = state.atlasFailed ? ensureProxy(record) : (direct && ensureProxy(record, true));
     state.proxyDesired = state.targetOffset;
     if (proxyReady) {
       state.pending = null;
@@ -567,7 +578,6 @@
       // the live stream cannot be mistaken for footage at the selected time.
       if (video && !video.paused) video.pause();
       setTarget(selected, 0);
-      updateStatus('No recording is available at the selected time.');
       return;
     }
     const offset = Math.max(0, selected - timelineSeconds(record));
@@ -719,7 +729,7 @@
   style.textContent = `
     .workspace-scrub-frame { position:absolute; inset:0; z-index:5; width:100%; height:100%; object-fit:contain; display:none; pointer-events:none; background:#030507; }
     .workspace-scrub-frame.visible { display:block; }
-    .workspace-scrub-message { position:absolute; inset:0; z-index:5; display:none; align-items:center; justify-content:center; padding:20px; color:#d5dce7; background:#030507; font-size:clamp(14px,1.5vw,20px); font-weight:600; text-align:center; pointer-events:none; }
+    .workspace-scrub-message { position:absolute; left:50%; bottom:16px; transform:translateX(-50%); z-index:6; display:none; align-items:center; justify-content:center; padding:8px 14px; border-radius:8px; color:#d5dce7; background:#030507dd; font-size:clamp(14px,1.5vw,20px); font-weight:600; text-align:center; pointer-events:none; }
     .workspace-scrub-message.visible { display:flex; }
     .workspace-scrub-proxy { position:absolute; width:1px; height:1px; opacity:0; pointer-events:none; }
     #workspace-live, #workspace-live::-webkit-media-controls, #workspace-live::-webkit-media-controls-enclosure { -webkit-appearance:none; }
