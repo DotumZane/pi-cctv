@@ -156,7 +156,7 @@ async function proxyScrubbing() {
   assert.equal(playbackLoads, 1, 'proxy stays loaded across direction changes');
   assert.equal(proxy.src, record.url, 'the original MP4 is used without waiting for conversion');
   assert.equal(proxyRequests, 0, 'scrubbing does not start a competing proxy encode');
-  assert.equal(snapshotRequests, 0, 'ready proxy needs no still-frame requests');
+  assert.ok(snapshotRequests <= 1, 'fallback requests remain bounded during rapid movement');
 }
 
 async function atlasScrubbing() {
@@ -282,6 +282,46 @@ async function seekResumesPlayback() {
   assert.equal(plays, 4, 'the preloaded recording resumes playback');
 }
 
-Promise.resolve().then(main).then(proxyScrubbing).then(atlasScrubbing).then(seekResumesPlayback)
+async function previewAcrossSegments() {
+  const frames = [], requests = [];
+  const raf = [];
+  const proxyListeners = new Map();
+  const proxy = { duration: 30, readyState: 1, currentTime: 0,
+    addEventListener(type, fn) { proxyListeners.set(type, fn); }, setAttribute() {}, removeAttribute() {}, load() {} };
+  const host = { appendChild() {} };
+  const video = { dataset: { playback: 'live' }, clientWidth: 100, clientHeight: 100,
+    readyState: 0, paused: true, closest: () => host, setAttribute() {}, removeAttribute() {}, addEventListener() {}, pause() {} };
+  const canvas = { width: 0, height: 0, classList: { add() {}, remove() {} }, setAttribute() {},
+    getContext() { return { fillRect() {}, drawImage(bitmap) { frames.push(bitmap.id); }, set fillStyle(_) {} }; } };
+  const document = { body: {}, head: { appendChild() {} }, documentElement: { dataset: {} },
+    createElement(tag) { return tag === 'canvas' ? canvas : tag === 'video' ? proxy : { setAttribute() {}, classList: { toggle() {} } }; },
+    querySelector(selector) { return selector === '#workspace-live' ? video : null; }, addEventListener() {} };
+  const first = { path: 'first.mp4', url: '/first.mp4' }, second = { path: 'second.mp4', url: '/second.mp4' };
+  const globals = { document, window: { workspaceCamera: 'cam', returnWorkspaceToLive: async () => {}, addEventListener() {} },
+    URLSearchParams, location: { search: '' }, devicePixelRatio: 1, performance: { now: () => 1000 },
+    requestAnimationFrame(fn) { raf.push(fn); return raf.length; }, cancelAnimationFrame() {}, MutationObserver: class { observe() {} },
+    timelineDayLength: () => 86400, timelineRecordAt: value => value < 30 ? first : second,
+    timelineSeconds: record => record === first ? 0 : 30, workspaceTimelineDate: '2026-11-17',
+    workspaceTimelineLastValue: 0, verticalTimelineSetPosition() {}, updateTimelinePlayhead() {}, formatTimelineTime: value => String(value),
+    api(url) {
+      if (url.includes('scrub-frames')) return Promise.resolve({ ok: true, json: async () => ({ ready: false }) });
+      return new Promise(resolve => requests.push(resolve));
+    },
+    async createImageBitmap(blob) { return { id: blob.id, width: 100, height: 100 }; },
+    setTimeout(fn, ms) { return ms === 100 ? 0 : setTimeout(fn, ms); }, clearTimeout, console };
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', 'cctv', 'playback-engine.js'), 'utf8'), globals);
+  globals.window.previewWorkspaceTimelineScrub(10, 10);
+  await new Promise(resolve => setImmediate(resolve));
+  proxyListeners.get('loadedmetadata')(); // Metadata is ready, but decoding never completes.
+  while (raf.length) raf.shift()();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(requests.length, 1);
+  globals.window.previewWorkspaceTimelineScrub(40, 10);
+  requests[0]({ ok: true, blob: async () => ({ id: 'first segment' }) });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(frames, ['first segment'], 'a decoded frame remains visible when scrolling crosses a segment');
+}
+
+Promise.resolve().then(main).then(proxyScrubbing).then(atlasScrubbing).then(seekResumesPlayback).then(previewAcrossSegments)
   .then(() => process.exit(0))
   .catch(error => { console.error(error); process.exit(1); });

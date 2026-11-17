@@ -16,13 +16,16 @@
     ctx: null,
     scrubMessage: null,
     frame: 0,
+    frameDelay: 0,
     target: null,
     targetRecord: null,
     targetOffset: 0,
-    inFlight: false,
+    targetAbsolute: null,
+    inFlight: 0,
     pending: null,
     lastRequestedAt: 0,
     lastFrameTime: null,
+    lastPreviewAt: 0,
     lastBitmap: null,
     motionDirection: 0,
     motionEpoch: 0,
@@ -171,6 +174,7 @@
     state.ctx.fillRect(0, 0, cw, ch);
     state.ctx.drawImage(source, (cw - dw) / 2, (ch - dh) / 2, dw, dh);
     state.hasFrame = true;
+    if (source !== video) state.lastPreviewAt = performance.now();
     if (state.active) state.canvas.classList.add('visible');
     scrubMessage('');
     return true;
@@ -187,15 +191,20 @@
     paintBitmap(bitmap);
     state.hasFrame = true;
     state.lastBitmap = bitmap;
-    state.lastFrameTime = request.selected;
+    state.lastFrameTime = request.absolute;
+    state.lastPreviewAt = performance.now();
     state.canvas.classList.add('visible');
-    scrubMessage('');
+    scrubMessage(request.absolute === state.targetAbsolute ? '' : `Preview · ${formatTimelineTime(request.selected)}`);
     log('scrub:frame', { requested: request.selected, displayed: state.lastFrameTime,
       latencyMs: Math.round(performance.now() - request.startedAt) });
   }
 
   function frameKey(request) {
     return `${request.record.path}:${Math.round(request.offset * 4)}`;
+  }
+
+  function absoluteTimelineSeconds(date, value) {
+    return new Date(`${date}T00:00:00`).getTime() / 1000 + Number(value);
   }
 
   function atlasSheetName(index) { return `${String(index).padStart(3, '0')}.jpg`; }
@@ -251,7 +260,8 @@
       state.hasFrame = true;
       state.canvas.classList.add('visible');
       scrubMessage('');
-      state.lastFrameTime = state.target;
+      state.lastFrameTime = state.targetAbsolute;
+      state.lastPreviewAt = performance.now();
       loadAtlasSheet(sheet + (state.motionDirection >= 0 ? 1 : -1));
     });
   }
@@ -288,7 +298,6 @@
           if (state.atlasPath === path) {
             state.atlasManifest = result.manifest;
             state.atlasBase = result.urlBase;
-            state.pending = null;
             scheduleAtlasFrame();
           }
         } else if (result?.failed && state.atlasPath === path) state.atlasFailed = true;
@@ -373,7 +382,6 @@
             proxy.addEventListener('loadedmetadata', () => {
               state.proxyReady = true;
               state.proxyLoading = false;
-              state.pending = null;
               state.proxyDesired = state.targetOffset;
               seekProxy();
             });
@@ -407,7 +415,7 @@
   }
 
   async function fetchFrame(request) {
-    state.inFlight = true;
+    state.inFlight += 1;
     request.startedAt = performance.now();
     try {
       const key = frameKey(request);
@@ -431,27 +439,25 @@
       // A frame can trail the cursor during a fast move, but cannot replace a
       // newer frame or a frame from the opposite side after direction changes.
       const alreadyPassed = state.lastFrameTime !== null && request.direction &&
-        Math.sign(request.selected - state.lastFrameTime) === -request.direction;
-      const proxyAvailable = state.proxyReady && state.proxyPath === request.record.path;
-      const atlasAvailable = state.atlasManifest && state.atlasPath === request.record.path;
-      if (state.active && !proxyAvailable && !atlasAvailable && request.epoch === state.motionEpoch && !alreadyPassed && state.targetRecord &&
-          state.targetRecord.path === request.record.path) drawExtractedFrame(bitmap, request);
+        Math.sign(request.absolute - state.lastFrameTime) === -request.direction;
+      if (state.active && request.epoch === state.motionEpoch && !alreadyPassed && state.targetRecord &&
+          request.camera === state.camera) drawExtractedFrame(bitmap, request);
     } catch (error) { log('scrub:frame-error', error.message); }
     finally {
-      state.inFlight = false;
+      state.inFlight -= 1;
       if (state.pending && state.active) scheduleFrame();
     }
   }
 
   function scheduleFrame() {
-    if (state.frame || state.inFlight || !state.pending) return;
+    if (state.frame || state.frameDelay || state.inFlight >= 2 || !state.pending) return;
     state.frame = requestAnimationFrame(() => {
       state.frame = 0;
-      if (!state.active || state.inFlight || !state.pending) return;
+      if (!state.active || state.inFlight >= 2 || !state.pending) return;
       const request = state.pending;
-      const interval = Math.max(0, 90 - (performance.now() - state.lastRequestedAt));
+      const interval = Math.max(0, 180 - (performance.now() - state.lastRequestedAt));
       if (interval) {
-        state.frame = requestAnimationFrame(() => { state.frame = 0; scheduleFrame(); });
+        state.frameDelay = setTimeout(() => { state.frameDelay = 0; scheduleFrame(); }, interval);
         return;
       }
       state.pending = null;
@@ -491,6 +497,8 @@
     scrubMessage('');
     if (state.frame) cancelAnimationFrame(state.frame);
     state.frame = 0;
+    clearTimeout(state.frameDelay);
+    state.frameDelay = 0;
   }
 
   function preparePlayback(record) {
@@ -539,12 +547,14 @@
       state.hasFrame = false;
       state.canvas?.classList.remove('visible');
     }
-    const direction = state.target === null ? 0 : Math.sign(selected - state.target);
+    const absolute = absoluteTimelineSeconds(workspaceTimelineDate, selected);
+    const direction = state.targetAbsolute === null ? 0 : Math.sign(absolute - state.targetAbsolute);
     if (direction && state.motionDirection && direction !== state.motionDirection) state.motionEpoch += 1;
     if (direction) state.motionDirection = direction;
     state.lastInputAt = performance.now();
     state.lastValue = selected;
     state.target = selected;
+    state.targetAbsolute = absolute;
     state.targetRecord = record;
     state.targetOffset = record ? Math.max(0, selected - timelineSeconds(record)) : 0;
     const playing = mainVideo();
@@ -582,24 +592,23 @@
     scrubMessage('');
     preparePlayback(record);
     if (wasGap) updateStatus('Loading recording preview…');
-    if (ensureAtlas(record)) {
-      state.pending = null;
+    const atlasReady = ensureAtlas(record);
+    if (atlasReady) {
       scheduleAtlasFrame();
-      return;
     }
     // Seek the original MP4 while the atlas builds. Older MKV recordings use
     // snapshots until a compatible proxy is available.
     const direct = /\.mp4(?:[?#]|$)/i.test(record.url || '');
-    const proxyReady = state.atlasFailed ? ensureProxy(record) : (direct && ensureProxy(record, true));
+    const proxyReady = !atlasReady && (state.atlasFailed ? ensureProxy(record) : (direct && ensureProxy(record, true)));
     state.proxyDesired = state.targetOffset;
     if (proxyReady) {
-      state.pending = null;
       seekProxy();
-      return;
     }
-    state.pending = { selected, record, offset: state.targetOffset,
-      direction: state.motionDirection, epoch: state.motionEpoch };
-    scheduleFrame();
+    if (!state.lastPreviewAt || performance.now() - state.lastPreviewAt >= 200) {
+      state.pending = { selected, record, offset: state.targetOffset,
+        absolute, camera: state.camera, direction: state.motionDirection, epoch: state.motionEpoch };
+      scheduleFrame();
+    }
   }
 
   function updateStatus(message) {
