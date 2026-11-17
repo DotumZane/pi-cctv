@@ -337,6 +337,43 @@ async function previewAcrossSegments() {
   assert.deepEqual(frames, ['first segment'], 'a decoded frame remains visible when scrolling crosses a segment');
 }
 
+async function decoderRequiresPlayback() {
+  const listeners = new Map();
+  let plays = 0;
+  const video = { dataset: { playback: 'recording' }, clientWidth: 640, clientHeight: 360,
+    readyState: 1, duration: 30, paused: true, seeking: false, _time: 0,
+    get currentTime() { return this._time; }, set currentTime(value) { this._time = value; this.seeking = true; },
+    closest() { return { appendChild() {} }; }, setAttribute() {}, removeAttribute() {},
+    addEventListener(type, callback) { listeners.set(type, callback); }, removeEventListener() {},
+    pause() { this.paused = true; }, play() {
+      plays++; this.paused = false; this.seeking = false; this.readyState = 2;
+      listeners.get('seeked')?.(); return Promise.resolve();
+    } };
+  const canvas = { width: 0, height: 0, classList: { add() {}, remove() {} }, setAttribute() {},
+    getContext() { return { fillRect() {}, drawImage() {}, set fillStyle(_) {} }; } };
+  const status = { innerHTML: '' };
+  const document = { body: {}, head: { appendChild() {} }, documentElement: { dataset: {} },
+    createElement(tag) { return tag === 'canvas' ? canvas : { setAttribute() {}, classList: { toggle() {} } }; },
+    querySelector(selector) { return selector === '#workspace-live' ? video : selector === '#workspace-player' ? status : null; }, addEventListener() {} };
+  const record = { path: 'test.mp4', url: '/test.mp4' };
+  const globals = { document, window: { workspaceCamera: 'cam', returnWorkspaceToLive: async () => {}, addEventListener() {} },
+    URLSearchParams, location: { search: '' }, devicePixelRatio: 1, performance: { now: () => 1000 },
+    requestAnimationFrame() { return 1; }, cancelAnimationFrame() {}, MutationObserver: class { observe() {} },
+    timelineDayLength: () => 86400, timelineRecordAt: () => record, timelineSeconds: () => 0,
+    workspaceTimelineDate: '2026-11-17', workspacePlaybackUrl: record.url, workspacePlaybackStartSeconds: 0,
+    workspaceTimelineLastValue: 0, updateTimelinePlayhead() {}, setWorkspaceMode() {}, esc: value => value, setTimeout, clearTimeout, console };
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', 'cctv', 'playback-engine.js'), 'utf8'), globals);
+  await Promise.race([globals.window.scrubWorkspaceTimeline(8), new Promise((_, reject) => setTimeout(() => reject(new Error('seek stalled')), 300))]);
+  assert.equal(plays, 1, 'playback starts before waiting for a decoded frame');
+  assert.equal(video.currentTime, 8);
+  assert.equal(globals.window.workspaceScrubActive, false);
+  video.readyState = 1;
+  video.play = () => Promise.reject(Object.assign(new Error('autoplay blocked'), { name: 'NotAllowedError' }));
+  await globals.window.scrubWorkspaceTimeline(9);
+  assert.match(status.innerHTML, /press Play/, 'blocked autoplay offers a way to continue immediately');
+  assert.equal(globals.window.workspaceScrubActive, false, 'the player controls remain accessible');
+}
+
 async function deduplicatePreviewRequests() {
   const animationFrames = [], requests = [];
   let clock = 1000, warmRequests = 0, drawn = 0;
@@ -403,6 +440,6 @@ async function deduplicatePreviewRequests() {
   assert.equal(warmRequests, 1, 'a visited segment is prepared once without blocking the preview');
 }
 
-Promise.resolve().then(main).then(proxyScrubbing).then(atlasScrubbing).then(seekResumesPlayback).then(previewAcrossSegments).then(deduplicatePreviewRequests)
+Promise.resolve().then(main).then(proxyScrubbing).then(atlasScrubbing).then(seekResumesPlayback).then(decoderRequiresPlayback).then(previewAcrossSegments).then(deduplicatePreviewRequests)
   .then(() => process.exit(0))
   .catch(error => { console.error(error); process.exit(1); });

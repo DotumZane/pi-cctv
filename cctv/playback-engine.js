@@ -766,14 +766,15 @@
     if (same) {
       video.pause();
       try { video.currentTime = offset; } catch {}
-      try { await waitForDisplayedFrame(video); }
-      catch (error) { if (token === state.requestToken) updateStatus(`Playback unavailable: ${error.message}`); return; }
+      if (typeof setWorkspaceMode === 'function') setWorkspaceMode('recording');
+      // Some browsers defer decoding a paused seek until playback starts.
+      // Start it behind the preview instead of waiting on a paused element.
+      try { await startAndWaitForFrame(video); }
+      catch (error) { if (token === state.requestToken) handlePlaybackStartError(error); return; }
       if (token === state.requestToken) {
         drawMainFrame();
         if (typeof verticalTimelineUserScrolling !== 'undefined') verticalTimelineUserScrolling = false;
         if (typeof updateTimelinePlayhead === 'function') updateTimelinePlayhead(selected);
-        if (typeof setWorkspaceMode === 'function') setWorkspaceMode('recording');
-        try { await video.play(); } catch (error) { updateStatus('Playback paused · press Play to continue.'); }
         if (token !== state.requestToken) return;
         hidePreview();
       }
@@ -804,21 +805,37 @@
       if (token !== state.requestToken) return;
       if (Number.isFinite(video.duration)) video.currentTime = Math.min(offset, Math.max(0, video.duration - 0.05));
       video.pause();
-      await waitForDisplayedFrame(video);
+      if (typeof setWorkspaceMode === 'function') setWorkspaceMode('recording');
+      await startAndWaitForFrame(video);
       if (token !== state.requestToken) return;
       drawMainFrame();
       if (typeof verticalTimelineUserScrolling !== 'undefined') verticalTimelineUserScrolling = false;
       if (typeof updateTimelinePlayhead === 'function') updateTimelinePlayhead(selected);
-      if (typeof setWorkspaceMode === 'function') setWorkspaceMode('recording');
-      try { await video.play(); updateStatus('Playing recording.'); }
-      catch (error) { updateStatus('Playback paused · press Play to continue.'); }
+      updateStatus('Playing recording.');
       if (token !== state.requestToken) return;
       hidePreview();
       log('commit:ready', { selected, offset });
     } catch (error) {
-      if (token === state.requestToken) updateStatus(`Playback unavailable: ${error.message}`);
+      if (token === state.requestToken) handlePlaybackStartError(error);
       log('commit:error', error);
     } finally { state.committing = false; }
+  }
+
+  function startAndWaitForFrame(video) {
+    const frame = waitForDisplayedFrame(video);
+    let playback;
+    try { playback = Promise.resolve(video.play()); }
+    catch (error) { playback = Promise.reject(error); }
+    // Reject promptly if the browser blocks playback; otherwise keep the
+    // preview visible until the first frame has actually decoded.
+    return Promise.all([frame, playback]);
+  }
+
+  function handlePlaybackStartError(error) {
+    if (error?.name === 'NotAllowedError') {
+      updateStatus('Playback paused · press Play to continue.');
+      hidePreview();
+    } else updateStatus(`Playback unavailable: ${error?.message || 'unable to start video'}`);
   }
 
   function waitForDisplayedFrame(video) {
