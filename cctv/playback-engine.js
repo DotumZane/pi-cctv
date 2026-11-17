@@ -31,6 +31,7 @@
     motionEpoch: 0,
     camera: null,
     frameCache: new Map(),
+    frameLoads: new Map(),
     requestToken: 0,
     lastInputAt: 0,
     lastValue: null,
@@ -331,7 +332,8 @@
       }
     }
     if (state.atlasManifest) return true;
-    if (state.atlasFailed || state.atlasWaiting || state.atlasChecking) return false;
+    if (state.atlasFailed || state.atlasWaiting || state.atlasChecking ||
+        (state.atlasPrefetchRetry.get(record.path) || 0) > performance.now()) return false;
     const path = record.path;
     const check = api(`/api/recordings/scrub-frames?prepare=0&path=${encodeURIComponent(path)}`)
       .then(response => response.ok ? response.json() : null)
@@ -347,11 +349,13 @@
         } else if (result?.failed && state.atlasPath === path) state.atlasFailed = true;
         else {
           if (state.atlasPath !== path) return;
+          state.atlasPrefetchRetry.set(path, performance.now() + 5000);
+          if (state.atlasPrefetchRetry.size > 128) state.atlasPrefetchRetry.delete(state.atlasPrefetchRetry.keys().next().value);
           state.atlasWaiting = true;
           state.atlasRetry = setTimeout(() => {
             state.atlasWaiting = false;
             if (state.atlasPath === path && state.active) ensureAtlas(record);
-          }, 1200);
+          }, 5000);
         }
       }).catch(error => log('scrub:atlas-error', error.message))
       .finally(() => {
@@ -465,17 +469,24 @@
       const key = frameKey(request);
       let bitmap = state.frameCache.get(key);
       if (!bitmap) {
-        const url = `/api/recordings/snapshot?preview=1&path=${encodeURIComponent(request.record.path)}&at=${(Math.round(request.offset * 4) / 4).toFixed(2)}`;
-        const response = await api(url, { credentials: 'same-origin' });
-        if (!response.ok) throw new Error(`frame request ${response.status}`);
-        bitmap = await createImageBitmap(await response.blob());
-        state.frameCache.set(key, bitmap);
-        if (state.frameCache.size > 80) {
-          const oldest = state.frameCache.keys().next().value;
-          const evicted = state.frameCache.get(oldest);
-          if (evicted !== state.lastBitmap) evicted?.close?.();
-          state.frameCache.delete(oldest);
+        let pending = state.frameLoads.get(key);
+        if (!pending) {
+          const url = `/api/recordings/snapshot?preview=1&path=${encodeURIComponent(request.record.path)}&at=${request.offset.toFixed(2)}`;
+          pending = api(url, { credentials: 'same-origin' })
+            .then(response => { if (!response.ok) throw new Error(`frame request ${response.status}`); return response.blob(); })
+            .then(blob => createImageBitmap(blob)).then(image => {
+              state.frameCache.set(key, image);
+              if (state.frameCache.size > 80) {
+                const oldest = state.frameCache.keys().next().value;
+                const evicted = state.frameCache.get(oldest);
+                if (evicted !== state.lastBitmap) evicted?.close?.();
+                state.frameCache.delete(oldest);
+              }
+              return image;
+            }).finally(() => state.frameLoads.delete(key));
+          state.frameLoads.set(key, pending);
         }
+        bitmap = await pending;
       } else {
         state.frameCache.delete(key);
         state.frameCache.set(key, bitmap);
@@ -592,6 +603,8 @@
       state.canvas?.classList.remove('visible');
     }
     const absolute = absoluteTimelineSeconds(workspaceTimelineDate, selected);
+    const elapsed = state.lastInputAt ? Math.max(16, performance.now() - state.lastInputAt) : 0;
+    const speed = elapsed && state.targetAbsolute !== null ? Math.abs(absolute - state.targetAbsolute) * 1000 / elapsed : 0;
     const direction = state.targetAbsolute === null ? 0 : Math.sign(absolute - state.targetAbsolute);
     if (direction && state.motionDirection && direction !== state.motionDirection) state.motionEpoch += 1;
     if (direction) state.motionDirection = direction;
@@ -650,8 +663,13 @@
       seekProxy();
     }
     if (!state.lastPreviewAt || performance.now() - state.lastPreviewAt >= 200) {
-      state.pending = { selected, record, offset: state.targetOffset,
-        absolute, camera: state.camera, direction: state.motionDirection, epoch: state.motionEpoch };
+      // Fast scrolling crosses minutes of footage per second. Reusing a
+      // nearby frame avoids redundant decodes; committed playback stays exact.
+      const step = speed > 120 ? 2 : speed > 30 ? 1 : 0.25;
+      const offset = Math.floor(state.targetOffset / step) * step;
+      const difference = state.targetOffset - offset;
+      state.pending = { selected: selected - difference, record, offset,
+        absolute: absolute - difference, camera: state.camera, direction: state.motionDirection, epoch: state.motionEpoch };
       scheduleFrame();
     }
   }

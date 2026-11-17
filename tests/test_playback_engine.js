@@ -332,6 +332,51 @@ async function previewAcrossSegments() {
   assert.deepEqual(frames, ['first segment'], 'a decoded frame remains visible when scrolling crosses a segment');
 }
 
-Promise.resolve().then(main).then(proxyScrubbing).then(atlasScrubbing).then(seekResumesPlayback).then(previewAcrossSegments)
+async function deduplicatePreviewRequests() {
+  const animationFrames = [], requests = [];
+  let clock = 1000;
+  const host = { appendChild() {} };
+  const video = { dataset: { playback: 'live' }, clientWidth: 100, clientHeight: 100,
+    readyState: 0, paused: true, closest: () => host, setAttribute() {}, removeAttribute() {}, addEventListener() {}, pause() {} };
+  const canvas = { width: 0, height: 0, classList: { add() {}, remove() {} }, setAttribute() {},
+    getContext() { return { fillRect() {}, drawImage() {}, set fillStyle(_) {} }; } };
+  const document = { body: {}, head: { appendChild() {} }, documentElement: { dataset: {} },
+    createElement(tag) { return tag === 'canvas' ? canvas : { setAttribute() {}, classList: { toggle() {} } }; },
+    querySelector(selector) { return selector === '#workspace-live' ? video : null; }, addEventListener() {} };
+  const record = { path: 'test.mp4', url: '/test.mp4' };
+  const globals = { document, window: { workspaceCamera: 'cam', returnWorkspaceToLive: async () => {}, addEventListener() {} },
+    URLSearchParams, location: { search: '' }, devicePixelRatio: 1, performance: { now: () => clock },
+    requestAnimationFrame(fn) { animationFrames.push(fn); return animationFrames.length; }, cancelAnimationFrame() {}, MutationObserver: class { observe() {} },
+    timelineDayLength: () => 86400, timelineRecordAt: () => record, timelineSeconds: () => 0,
+    workspaceTimelineDate: '2026-11-17', workspaceTimelineLastValue: 0,
+    verticalTimelineSetPosition() {}, updateTimelinePlayhead() {}, formatTimelineTime: value => String(value),
+    api(url) {
+      if (url.includes('scrub-frames')) return Promise.resolve({ ok: true, json: async () => ({ ready: false }) });
+      return new Promise(resolve => requests.push({ url, resolve }));
+    },
+    createImageBitmap: async () => ({ width: 100, height: 100 }),
+    setTimeout(fn, ms) { return ms === 220 ? 0 : setTimeout(fn, ms); }, clearTimeout, console };
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', 'cctv', 'playback-engine.js'), 'utf8'), globals);
+  globals.window.previewWorkspaceTimelineScrub(10.1, 1);
+  while (animationFrames.length) animationFrames.shift()();
+  await new Promise(resolve => setImmediate(resolve));
+  clock += 200;
+  globals.window.previewWorkspaceTimelineScrub(10.2, 1);
+  while (animationFrames.length) animationFrames.shift()();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(requests.length, 1, 'identical in-flight preview frames share one request');
+  assert.match(requests[0].url, /at=10\.00/);
+  requests[0].resolve({ ok: true, blob: async () => ({}) });
+  await new Promise(resolve => setImmediate(resolve));
+  clock += 200;
+  globals.window.previewWorkspaceTimelineScrub(40.9, 100);
+  while (animationFrames.length) animationFrames.shift()();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.match(requests[1].url, /at=40\.00/, 'fast motion reuses a coarser preview frame');
+  requests[1].resolve({ ok: true, blob: async () => ({}) });
+  await new Promise(resolve => setImmediate(resolve));
+}
+
+Promise.resolve().then(main).then(proxyScrubbing).then(atlasScrubbing).then(seekResumesPlayback).then(previewAcrossSegments).then(deduplicatePreviewRequests)
   .then(() => process.exit(0))
   .catch(error => { console.error(error); process.exit(1); });
