@@ -10,10 +10,35 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from cctv.agent import run_pending
-from cctv.runtime import DeviceRuntime, _monitor_output_size, apply_monitor_schedule, camera_stream_published, command_for_assignment, commands_for_assignment, managed_monitor_commands, start_monitor_splash_setup
+from cctv.runtime import DeviceRuntime, _monitor_output_size, apply_monitor_schedule, camera_module_detected, camera_stream_published, command_for_assignment, commands_for_assignment, managed_monitor_commands, start_monitor_splash_setup
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_camera_module_probe_reports_missing_sensor(self):
+        import cctv.runtime as runtime_module
+
+        old_probe_at = runtime_module._camera_probe_at
+        old_probe_result = runtime_module._camera_probe_result
+        self.addCleanup(setattr, runtime_module, "_camera_probe_at", old_probe_at)
+        self.addCleanup(setattr, runtime_module, "_camera_probe_result", old_probe_result)
+        with patch("cctv.runtime.subprocess.run", return_value=Mock(returncode=1)) as run:
+            self.assertFalse(camera_module_detected(force=True))
+        run.assert_called_once()
+
+    def test_camera_module_probe_is_cached(self):
+        import cctv.runtime as runtime_module
+
+        old_probe_at = runtime_module._camera_probe_at
+        old_probe_result = runtime_module._camera_probe_result
+        self.addCleanup(setattr, runtime_module, "_camera_probe_at", old_probe_at)
+        self.addCleanup(setattr, runtime_module, "_camera_probe_result", old_probe_result)
+        with patch("cctv.runtime.time.monotonic", side_effect=[100.0, 110.0]), patch(
+            "cctv.runtime.subprocess.run", return_value=Mock(returncode=0)
+        ) as run:
+            self.assertTrue(camera_module_detected(force=True))
+            self.assertTrue(camera_module_detected())
+        run.assert_called_once()
+
     def test_quad_uses_monitor_fill_setting(self):
         assignment = {"layout": "2x2", "cameras": '["cam-1"]'}
         settings = {"scale_mode": "fill", "auto_resolution": False, "width": 1024, "height": 768}

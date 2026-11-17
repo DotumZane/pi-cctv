@@ -32,6 +32,9 @@ from .media import CameraMedia, MonitorMedia, idle_monitor_pipeline, quad_pipeli
 
 LOCAL_DISCOVERY_PORT = 37981
 LOCAL_DISCOVERY_REQUEST = "PI-CCTV-DISCOVER-1"
+CAMERA_PROBE_INTERVAL = 30.0
+_camera_probe_at = 0.0
+_camera_probe_result: bool | None = None
 
 
 def discover_camera_source(camera_id: str, timeout: float = 0.6) -> str | None:
@@ -128,8 +131,36 @@ def start_monitor_splash_setup(role: str, install_dir: Path = Path("/opt/pi-cctv
         print(f"Unable to start monitor splash setup: {_command_output(result)}", flush=True)
 
 
-def system_metrics() -> dict[str, float | int]:
-    metrics: dict[str, float | int] = {}
+def camera_module_detected(force: bool = False) -> bool | None:
+    """Return whether libcamera currently sees a camera sensor.
+
+    The probe is deliberately cached because it starts a camera utility and
+    should not run on every five-second heartbeat. ``None`` means neither
+    supported utility was installed, so an older or unusual Pi is not falsely
+    reported as missing its camera.
+    """
+    global _camera_probe_at, _camera_probe_result
+    now = time.monotonic()
+    if not force and now - _camera_probe_at < CAMERA_PROBE_INTERVAL:
+        return _camera_probe_result
+    for utility in ("rpicam-hello", "libcamera-hello"):
+        try:
+            result = subprocess.run(
+                [utility, "--list-cameras"], capture_output=True, text=True,
+                timeout=8, check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        _camera_probe_at = now
+        _camera_probe_result = result.returncode == 0
+        return _camera_probe_result
+    _camera_probe_at = now
+    _camera_probe_result = None
+    return None
+
+
+def system_metrics(include_camera: bool = False) -> dict[str, float | int | bool]:
+    metrics: dict[str, float | int | bool] = {}
     try:
         metrics["cpu_temperature_c"] = round(int(open("/sys/class/thermal/thermal_zone0/temp").read()) / 1000, 1)
     except (OSError, ValueError):
@@ -148,6 +179,10 @@ def system_metrics() -> dict[str, float | int]:
         metrics["uptime_seconds"] = int(float(open("/proc/uptime").read().split()[0]))
     except (OSError, ValueError, IndexError):
         pass
+    if include_camera:
+        detected = camera_module_detected()
+        if detected is not None:
+            metrics["camera_module_detected"] = detected
     return metrics
 
 
@@ -196,7 +231,8 @@ def collect_diagnostics(role: str, device_id: str, media_server: str, processes:
     """Collect bounded, read-only health details suitable for a dashboard report."""
     result = {"collected_at": datetime.datetime.now(datetime.timezone.utc).isoformat(), "device_id": device_id,
               "hostname": socket.gethostname(), "role": role, "platform": platform.platform(), "agent_version": __agent_version__,
-              "metrics": system_metrics(), "displays": connected_displays() if role == "monitor" else []}
+              "metrics": system_metrics(include_camera=role == "camera"),
+              "displays": connected_displays() if role == "monitor" else []}
     disks=[]
     for path in ("/", "/data", "/var/lib/mediamtx"):
         if os.path.exists(path):
@@ -677,7 +713,9 @@ class DeviceRuntime:
             print("Dashboard enrollment restored", flush=True)
 
     def heartbeat(self) -> None:
-        payload = {"runtime": "v1", "agent_version": __agent_version__, "metrics": system_metrics(), "recent_logs": recent_logs()}
+        payload = {"runtime": "v1", "agent_version": __agent_version__,
+                   "metrics": system_metrics(include_camera=self.role == "camera"),
+                   "recent_logs": recent_logs()}
         if self.role == "camera":
             payload["direct_rtsp_ready"] = camera_stream_published("127.0.0.1", self.device_id)
         if self.role == "monitor":
@@ -717,7 +755,8 @@ class DeviceRuntime:
             target = new_server.rstrip("/")
             target_media = new_media_server or self.media_server
             payload = {
-                "runtime": "v1", "agent_version": __agent_version__, "metrics": system_metrics(),
+                "runtime": "v1", "agent_version": __agent_version__,
+                "metrics": system_metrics(include_camera=self.role == "camera"),
                 "recent_logs": recent_logs(),
             }
             if self.role == "monitor":
