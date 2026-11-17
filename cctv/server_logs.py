@@ -8,6 +8,13 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 
+class SafeRotatingFileHandler(RotatingFileHandler):
+    def handleError(self, record):
+        # stderr is also captured, so logging's default traceback would recurse
+        # indefinitely when the filesystem is full or unwritable.
+        pass
+
+
 class TeeStream:
     def __init__(self, original, handler):
         self.original = original
@@ -29,8 +36,12 @@ class TeeStream:
 
 
 def capture_server_output(path: Path):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    handler = RotatingFileHandler(path, maxBytes=2_000_000, backupCount=2, encoding="utf-8")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handler = SafeRotatingFileHandler(path, maxBytes=2_000_000, backupCount=2, encoding="utf-8")
+    except OSError as exc:
+        print(f"Server log file unavailable: {exc}", file=sys.stderr)
+        return None
     handler.terminator = ""
     sys.stdout = TeeStream(sys.stdout, handler)
     sys.stderr = TeeStream(sys.stderr, handler)
