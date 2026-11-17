@@ -126,14 +126,15 @@ async function proxyScrubbing() {
     querySelector(selector) { return selector === '#workspace-live' ? video : null; }, addEventListener() {},
   };
   const record = { path: 'cam-1/2026-11-12/06-00-00.mp4', url: '/recordings/cam-1/2026-11-12/06-00-00.mp4' };
+  const laterRecords = [30, 60, 90].map(second => ({ path: `cam-1/segment-${second}.mp4`, url: `/recordings/cam-1/segment-${second}.mp4`, second }));
   const globals = {
     document, window: { workspaceCamera: 'cam-1', returnWorkspaceToLive: async () => {}, addEventListener() {} },
     URLSearchParams, location: { search: '' }, devicePixelRatio: 1,
     performance: { now: () => 1000 },
     requestAnimationFrame(callback) { pendingFrames.push(callback); return pendingFrames.length; },
     cancelAnimationFrame() {}, MutationObserver: class { observe() {} },
-    timelineDayLength: () => 86400, timelineRecordAt: () => record,
-    timelineSeconds: () => 0, workspaceTimelineDate: '2026-11-12',
+    timelineDayLength: () => 86400, timelineRecordAt: value => value < 30 ? record : laterRecords[Math.min(2, Math.floor(value / 30) - 1)],
+    timelineSeconds: item => item.second || 0, workspaceTimelineDate: '2026-11-12',
     workspaceTimelineLastValue: 0, verticalTimelineSetPosition() {}, updateTimelinePlayhead() {},
     async api(url) {
       if (url.includes('/scrub-frames?')) return { ok: true, async json() { return { ready: false }; } };
@@ -147,7 +148,7 @@ async function proxyScrubbing() {
   const source = fs.readFileSync(path.join(__dirname, '..', 'cctv', 'playback-engine.js'), 'utf8');
   vm.runInNewContext(source, globals);
   globals.window.previewWorkspaceTimelineScrub(8, -20);
-  await new Promise(resolve => setImmediate(resolve));
+  await new Promise(resolve => setTimeout(resolve, 140));
   // The original recording provides frames while the atlas is still building.
   globals.window.previewWorkspaceTimelineScrub(8, -20);
   await new Promise(resolve => setImmediate(resolve));
@@ -162,6 +163,12 @@ async function proxyScrubbing() {
   assert.equal(proxy.src, record.url, 'the original MP4 is used without waiting for conversion');
   assert.equal(proxyRequests, 0, 'scrubbing does not start a competing proxy encode');
   assert.ok(snapshotRequests <= 1, 'fallback requests remain bounded during rapid movement');
+  globals.window.previewWorkspaceTimelineScrub(35, 100);
+  globals.window.previewWorkspaceTimelineScrub(65, 100);
+  globals.window.previewWorkspaceTimelineScrub(95, 100);
+  await new Promise(resolve => setTimeout(resolve, 140));
+  assert.equal(proxy.src, laterRecords[2].url, 'the proxy opens the settled segment');
+  assert.equal(playbackLoads, 3, 'rapidly crossed segments do not each open a video decoder');
 }
 
 async function atlasScrubbing() {
@@ -326,7 +333,7 @@ async function previewAcrossSegments() {
     setTimeout(fn, ms) { return ms === 220 ? 0 : setTimeout(fn, ms); }, clearTimeout, console };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', 'cctv', 'playback-engine.js'), 'utf8'), globals);
   globals.window.previewWorkspaceTimelineScrub(10, 10);
-  await new Promise(resolve => setImmediate(resolve));
+  await new Promise(resolve => setTimeout(resolve, 140));
   proxyListeners.get('loadedmetadata')(); // Metadata is ready, but decoding never completes.
   while (raf.length) raf.shift()();
   await new Promise(resolve => setImmediate(resolve));

@@ -56,6 +56,8 @@
     proxyDesired: null,
     proxySeeking: false,
     proxyFrame: 0,
+    proxyOpenTimer: 0,
+    proxyOpenPath: null,
     atlasPath: null,
     atlasManifest: null,
     atlasBase: null,
@@ -509,6 +511,22 @@
     return false;
   }
 
+  function requestProxy(record, direct) {
+    if (state.proxyPath === record.path) return ensureProxy(record, direct);
+    if (state.proxyOpenPath === record.path) return false;
+    clearTimeout(state.proxyOpenTimer);
+    state.proxyOpenPath = record.path;
+    state.proxyOpenTimer = setTimeout(() => {
+      state.proxyOpenPath = null;
+      if (!state.active || state.targetRecord?.path !== record.path || state.atlasManifest) return;
+      if (ensureProxy(record, direct)) {
+        state.proxyDesired = state.targetOffset;
+        seekProxy();
+      }
+    }, 120);
+    return false;
+  }
+
   async function fetchFrame(request) {
     state.inFlight += 1;
     request.startedAt = performance.now();
@@ -596,6 +614,8 @@
     state.motionDirection = 0;
     state.proxyDesired = null;
     clearTimeout(state.proxyRetry);
+    clearTimeout(state.proxyOpenTimer);
+    state.proxyOpenPath = null;
     state.proxyWaiting = false;
     if (state.proxyFrame) cancelAnimationFrame(state.proxyFrame);
     state.proxyFrame = 0;
@@ -717,7 +737,7 @@
     // Seek the original MP4 while the atlas builds. Older MKV recordings use
     // snapshots until a compatible proxy is available.
     const direct = /\.mp4(?:[?#]|$)/i.test(record.url || '');
-    const proxyReady = !atlasReady && (state.atlasFailed ? ensureProxy(record) : (direct && ensureProxy(record, true)));
+    const proxyReady = !atlasReady && (state.atlasFailed ? requestProxy(record, false) : (direct && requestProxy(record, true)));
     state.proxyDesired = state.targetOffset;
     if (proxyReady) {
       seekProxy();
@@ -883,6 +903,8 @@
       clearTimeout(state.commitTimer);
       clearTimeout(state.preloadTimer);
       clearTimeout(state.atlasWarmTimer);
+      clearTimeout(state.proxyOpenTimer);
+      state.proxyOpenPath = null;
       state.atlasWarmPath = null;
       state.preloadPath = null;
       state.active = false;
