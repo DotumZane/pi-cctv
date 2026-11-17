@@ -654,16 +654,50 @@ class Handler(BaseHTTPRequestHandler):
             if not self.require_read_auth():
                 return
             root = Path(getattr(self.server, "recordings_dir", "recordings"))  # type: ignore[attr-defined]
-            camera_id = parse_qs(parsed.query).get("camera_id", [None])[0]
+            params = parse_qs(parsed.query)
+            camera_id = params.get("camera_id", [None])[0]
+            if camera_id and (camera_id.startswith(".") or "/" in camera_id or "\\" in camera_id):
+                self.send_json({"error": "invalid camera id"}, HTTPStatus.BAD_REQUEST)
+                return
+            try:
+                bounds = []
+                for key in ("start", "end"):
+                    value = params.get(key, [None])[0]
+                    stamp = datetime.fromisoformat(value.replace("Z", "+00:00")) if value else None
+                    if stamp and stamp.utcoffset() is None:
+                        raise ValueError("timestamp requires a timezone")
+                    bounds.append(stamp)
+                start_bound, end_bound = bounds
+                if start_bound and end_bound and start_bound >= end_bound:
+                    raise ValueError("invalid time range")
+            except ValueError:
+                self.send_json({"error": "invalid recording time range"}, HTTPStatus.BAD_REQUEST)
+                return
             entries = []
-            recordings = (*root.glob("**/*.mkv"), *root.glob("**/*.mp4"))
+            scan_root = root / camera_id if camera_id else root
+            recordings = []
+            # Never descend into atlas, snapshot, playback or trickplay caches.
+            # Filter dated camera directories before walking their contents.
+            for directory, dirs, files in os.walk(scan_root):
+                relative_dir = Path(directory).relative_to(root)
+                dirs[:] = [name for name in dirs if not name.startswith(".")]
+                if len(relative_dir.parts) == 1 and (start_bound or end_bound):
+                    first_day = start_bound.astimezone().date() if start_bound else None
+                    last_day = (end_bound - timedelta(microseconds=1)).astimezone().date() if end_bound else None
+                    def in_range(name: str) -> bool:
+                        try:
+                            day = datetime.strptime(name, "%Y-%m-%d").date()
+                        except ValueError:
+                            return True
+                        return (first_day is None or day >= first_day) and (last_day is None or day <= last_day)
+                    dirs[:] = [name for name in dirs if in_range(name)]
+                recordings.extend(Path(directory) / name for name in files if name.endswith((".mkv", ".mp4")) and not name.startswith("."))
             for recording in recordings:
-                if any(part.startswith(".") for part in recording.relative_to(root).parts):
-                    continue
                 relative = recording.relative_to(root)
-                if camera_id and relative.parts[0] != camera_id:
-                    continue
-                stat = recording.stat()
+                try:
+                    stat = recording.stat()
+                except OSError:
+                    continue  # Retention can remove a file while the index is built.
                 modified_at = datetime.fromtimestamp(stat.st_mtime, timezone.utc)
                 if datetime.now(timezone.utc) - modified_at < timedelta(seconds=10):
                     continue
@@ -675,6 +709,8 @@ class Handler(BaseHTTPRequestHandler):
                     start = datetime.strptime(f"{relative.parts[-2]} {recording.stem}", "%Y-%m-%d %H-%M-%S").astimezone(timezone.utc)
                 except (IndexError, ValueError):
                     pass
+                if (start_bound or end_bound) and (start is None or (start_bound and start < start_bound) or (end_bound and start >= end_bound)):
+                    continue
                 entries.append({"path": str(relative), "camera_id": relative.parts[0] if relative.parts else "", "bytes": stat.st_size, "modified": modified_at.isoformat(), "start": start.isoformat() if start else None, "url": "/recordings/" + str(relative)})
             entries.sort(key=lambda entry: entry["modified"], reverse=True)
             self.send_json({"recordings": entries})

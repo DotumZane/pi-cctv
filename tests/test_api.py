@@ -7,10 +7,12 @@ import tempfile
 import threading
 import time
 import unittest
+from datetime import datetime, timedelta
 from http.client import HTTPConnection
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
+from urllib.parse import urlencode
 
 from cctv.server import Handler
 from cctv import __agent_version__, __version__
@@ -260,6 +262,30 @@ class ApiTests(unittest.TestCase):
         status, index = self.call("GET", "/api/recordings?camera_id=cam-01")
         self.assertEqual(status, 200)
         self.assertEqual(index["recordings"][0]["path"], "cam-01/2026-11-04/06-00-00.mkv")
+
+    def test_recording_index_limits_camera_and_time_without_walking_caches(self):
+        root = Path(self.recordings.name)
+        for path in ("cam-01/2026-11-04/06-00-00.mp4", "cam-01/2026-11-05/06-00-00.mp4",
+                     "cam-02/2026-11-04/06-00-00.mp4", ".scrub-frames/cam-01/hidden.mp4"):
+            recording = root / path
+            recording.parent.mkdir(parents=True, exist_ok=True)
+            recording.write_bytes(b"video")
+            os.utime(recording, (time.time() - 30, time.time() - 30))
+        start = datetime(2026, 11, 4).astimezone()
+        end = (datetime(2026, 11, 4) + timedelta(days=1)).astimezone()
+        query = urlencode({"camera_id": "cam-01", "start": start.isoformat(), "end": end.isoformat()})
+        real_scandir = os.scandir
+        visited = []
+        def scandir(path):
+            visited.append(str(path))
+            return real_scandir(path)
+        with patch("cctv.server.os.scandir", side_effect=scandir):
+            status, data = self.call("GET", "/api/recordings?" + query)
+        self.assertEqual(status, 200)
+        self.assertEqual([item["path"] for item in data["recordings"]], ["cam-01/2026-11-04/06-00-00.mp4"])
+        self.assertFalse(any(".scrub-frames" in path or "cam-02" in path or "2026-11-05" in path for path in visited))
+        self.assertEqual(self.call("GET", "/api/recordings?camera_id=../cam-02")[0], 400)
+        self.assertEqual(self.call("GET", "/api/recordings?start=invalid")[0], 400)
 
     def test_health_reports_server_and_agent_versions_separately(self):
         status, health = self.call("GET", "/api/health")
