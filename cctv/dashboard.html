@@ -10,7 +10,7 @@
 </style><style>.routing-table-wrap{overflow:auto;max-height:calc(100vh - 190px)}.routing-table{min-width:760px}.routing-table td{vertical-align:top}.routing-table td:first-child strong,.routing-table td:first-child small{display:block}.routing-table td:first-child small{color:var(--muted);margin-top:3px}.layout-badge{display:inline-block;border:1px solid var(--line);border-radius:999px;padding:4px 9px;color:var(--muted)}.route-summary{display:block;min-width:220px;color:var(--muted);white-space:normal}.route-editor{margin-top:8px}.route-editor>[data-layout]{margin-bottom:7px}.route-editor .slots{margin:0;max-width:360px}.routing-table td:last-child{white-space:nowrap}.routing-table td:last-child button+button{margin-left:6px}@media(max-width:850px){.routing-table-wrap{max-height:calc(100vh - 230px)}.routing-table{min-width:680px}}</style><style>@media (prefers-color-scheme:dark){:root:not(.light){color-scheme:dark;--bg:#101418;--panel:#182027;--panel2:#202a33;--text:#f2f4f7;--muted:#98a2b3;--line:#34404b;--accent:#74a5ff;--good:#42d392;--bad:#ff7169;--shadow:0 8px 24px #0005}}</style></head>
 <body><div class="app"><aside class="sidebar"><div class="brand">Pi <span>CCTV</span></div><nav class="nav"><button class="active" data-view="overview">▦ Overview</button><button data-view="live">◉ Live views</button><button data-view="routing">⇄ Monitor routing</button><button data-view="devices">▤ Devices</button><button data-view="settings">⚙ Camera settings</button></nav><div class="sidebar-foot"><label class="token muted">Admin token<input id="token" type="password" placeholder="optional"></label><button class="primary" onclick="saveToken()">Save token</button></div></aside><section class="main"><header class="topbar"><h1 id="title">Overview</h1><div class="top-actions"><span id="refresh-status" class="notice">Updating…</span><button class="ghost" onclick="toggleDark()" id="theme">☾ Dark mode</button></div></header><main class="content">
 <section class="view active" id="view-overview"><div class="grid stats"><div class="stat"><div class="label">Online devices</div><div class="value" id="online">—</div></div><div class="stat"><div class="label">Offline devices</div><div class="value" id="offline">—</div></div><div class="stat"><div class="label">Cameras</div><div class="value" id="camera-count">—</div></div><div class="stat"><div class="label">Monitors</div><div class="value" id="monitor-count">—</div></div></div><div class="grid two"><div class="panel"><div class="panel-head"><h2>Pending devices</h2><button class="ghost" onclick="loadAll()">Refresh</button></div><div id="pending">Loading…</div></div><div class="panel"><div class="panel-head"><h2>System status</h2></div><p id="overview-status" class="muted">Loading…</p><p id="overview-server-health" class="notice">Loading server health…</p><p class="notice">Use Live views for previews, Monitor routing for matrix assignments, and Devices for detailed status.</p></div></div></section>
-<section class="view" id="view-live"><div class="panel"><div class="panel-head"><div><h2>Live camera views</h2><span class="notice">Browser preview via MediaMTX HLS. Pi monitors use low-latency RTSP.</span></div><input id="live-filter" placeholder="Filter cameras…" oninput="renderLive()"></div><div id="live-grid" class="live-grid"></div></div></section>
+<section class="view" id="view-live"><div class="panel"><div class="panel-head"><div><h2>Live camera views</h2><span class="notice">Browser preview via MediaMTX HLS. Pi monitors use low-latency RTSP.</span></div><input id="live-filter" placeholder="Filter cameras…" oninput="renderLive()"></div><div id="live-grid" class="live-grid"><div class="empty">Loading cameras…</div></div></div></section>
 <section class="view" id="view-routing"><div class="panel"><div class="panel-head"><div><h2>Monitor routing</h2><span class="notice">Select a monitor to configure its display routing.</span></div><input id="routing-filter" placeholder="Filter monitors…" oninput="renderRouting()"></div><div id="assignments"></div></div></section>
 <section class="view" id="view-devices"><div class="panel"><div class="panel-head"><div><h2>Devices</h2><span class="notice">Select a device to inspect health and run safe diagnostics.</span></div><input id="device-filter" placeholder="Filter devices…" oninput="renderDevices()"></div><div id="fleet-update-panel" hidden style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:12px 0;padding:12px;border:1px solid var(--line);border-radius:10px"><strong>Fleet software update</strong><span id="fleet-update-summary" class="notice" style="flex:1;min-width:220px">Checking agent versions…</span><button class="ghost" id="fleet-build-refresh-button" type="button" onclick="checkLatestBuild(event)">Check latest build</button><button class="primary" id="fleet-update-button" type="button">Update outdated online Pis</button><hr style="flex-basis:100%;margin:0;border:0;border-top:1px solid var(--line)"><strong>Fleet Pi OS updates</strong><span id="fleet-os-update-summary" class="notice" style="flex:1;min-width:220px">Checking online Pis…</span><button class="ghost" id="fleet-os-update-button" type="button">Update online Pis one at a time</button></div><div class="table-wrap"><table><thead><tr><th>Name</th><th>Type</th><th>Location</th><th>Status</th><th>Agent version</th><th>Temperature</th><th>Memory</th><th>Last seen</th><th></th></tr></thead><tbody id="devices"></tbody></table></div></div></section>
 <section class="view" id="view-device-detail"><div id="device-detail-page"></div></section>
@@ -123,17 +123,20 @@ async function loadAll(){
   if(!authUi.user)return;
   try{
     const admin=authUi.user.role==='admin';
-    const [healthResponse,devicesResponse,assignmentsResponse,pendingResponse,serverHealthResponse]=await Promise.all([
-      api('/api/health'),api('/api/devices'),admin?api('/api/assignments'):Promise.resolve(null),
-      admin?api('/api/pending'):Promise.resolve(null),admin?api('/api/server/health'):Promise.resolve(null)
-    ]);
-    if(!healthResponse.ok||!devicesResponse.ok||(admin&&!assignmentsResponse.ok))throw new Error('Dashboard refresh failed');
+    const [healthResponse,devicesResponse]=await Promise.all([api('/api/health'),api('/api/devices')]);
+    if(!healthResponse.ok||!devicesResponse.ok)throw new Error('Dashboard refresh failed');
     const health=await healthResponse.json(),devices=await devicesResponse.json();
+    state.health=health.devices;state.latestAgentVersion=health.latest_agent_version||health.version||'';
+    state.devices=devices.devices||[];
+    renderLive();
+    const [assignmentsResponse,pendingResponse,serverHealthResponse]=admin?await Promise.all([
+      api('/api/assignments'),api('/api/pending'),api('/api/server/health')
+    ]):[null,null,null];
+    if(admin&&!assignmentsResponse.ok)throw new Error('Dashboard refresh failed');
     const assignments=admin?await assignmentsResponse.json():{assignments:[]};
     const pending=admin&&pendingResponse.ok?await pendingResponse.json():{devices:[]};
     const serverHealth=admin&&serverHealthResponse.ok?await serverHealthResponse.json():null;
-    state.health=health.devices;state.latestAgentVersion=health.latest_agent_version||health.version||'';
-    state.devices=devices.devices||[];state.assignments=assignments.assignments||[];state.pending=pending.devices||[];
+    state.assignments=assignments.assignments||[];state.pending=pending.devices||[];
     if(typeof loadNvr==='function'&&document.querySelector('#view-nvr.active'))loadNvr();
     document.querySelector('#online').textContent=state.health.online;
     document.querySelector('#offline').textContent=state.health.offline;
@@ -142,10 +145,9 @@ async function loadAll(){
     document.querySelector('#overview-status').textContent=`${state.health.online} online · ${state.health.offline} offline · updated ${new Date().toLocaleTimeString()}`;
     document.querySelector('#overview-server-health').textContent=admin?formatServerHealth(serverHealth):'';
     if(admin){renderPending();if(!document.querySelector('#assignments [data-routing-dirty="true"]'))renderRouting();renderDevices();renderFleetUpdate();renderSettings()}
-    renderLive();
     document.querySelector('#refresh-status').textContent='Updated '+new Date().toLocaleTimeString();
     return true;
-  }catch(error){document.querySelector('#refresh-status').textContent='Connection error';return false}
+  }catch(error){document.querySelector('#refresh-status').textContent='Connection error';if(!state.devices.length){document.querySelector('#live-grid').innerHTML='<div class="empty">Unable to load cameras. Retrying…</div>';liveSignature=''}return false}
 }
 document.querySelector('#assignments')?.addEventListener('change',event=>{if(event.target.matches('select,input'))event.target.closest('[data-monitor-card]')?.setAttribute('data-routing-dirty','true')});
 
