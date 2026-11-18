@@ -27,7 +27,7 @@ from urllib import request as urllib_request
 from . import __agent_version__, __version__
 from .fleet import FleetAgentUpdateCoordinator, FleetOsUpdateCoordinator
 from .recording import (RecorderSupervisor, mp4_duration, prepare_scrub_frames, prepare_trickplay,
-                        scrub_frames_dir, scrub_frames_ready, trickplay_path)
+                        scrub_frames_dir, scrub_frames_ready, trickplay_path, recording_schedule_active)
 from .store import Store
 from .server_logs import capture_server_output, read_server_logs
 
@@ -41,6 +41,7 @@ DEFAULT_NVR_SETTINGS = {
     "min_free_gb": 5,
     "recording_schedule": {"mode": "always", "start": "08:00", "end": "17:00", "timezone": "UTC"},
     "camera_recording": {},
+    "camera_schedules": {},
 }
 PLAYBACK_CACHE_LOCK = threading.Lock()
 SCRUB_FRAME_LOCK = threading.Lock()
@@ -437,8 +438,25 @@ class Handler(BaseHTTPRequestHandler):
             except OSError:
                 storage = None
             processes = dict(supervisor._processes) if supervisor else {}
-            cameras = {camera["id"]: bool((entry := processes.get(camera["id"])) and entry[0].poll() is None) for camera in self.store.devices("camera")}
-            self.send_json({"storage": storage, "recordings_path": str(root), "recorder_running": bool(supervisor and supervisor._thread and supervisor._thread.is_alive()), "camera_processes": cameras})
+            devices = self.store.devices("camera")
+            cameras = {camera["id"]: bool((entry := processes.get(camera["id"])) and entry[0].poll() is None) for camera in devices}
+            running = bool(supervisor and supervisor._thread and supervisor._thread.is_alive())
+            settings = supervisor._settings() if supervisor else {}
+            alerts = []
+            if storage is None:
+                alerts.append("Recording storage is unavailable")
+            elif storage["free_bytes"] <= int(settings.get("min_free_gb", 5)) * 1024**3:
+                alerts.append("Recording paused: minimum free-space reserve reached")
+            if settings.get("recording_enabled", True) and not running:
+                alerts.append("Recorder service is unavailable")
+            if settings.get("recording_enabled", True) and running:
+                for camera in devices:
+                    if not settings.get("camera_recording", {}).get(camera["id"], True):
+                        continue
+                    schedule = settings.get("camera_schedules", {}).get(camera["id"], settings.get("recording_schedule", {}))
+                    if recording_schedule_active(schedule) and not cameras[camera["id"]]:
+                        alerts.append(f"{camera.get('name', camera['id'])}: recorder is not running")
+            self.send_json({"storage": storage, "recordings_path": str(root), "recorder_running": running, "camera_processes": cameras, "alerts": alerts})
             return
         if parsed.path == "/api/nvr/settings":
             if not self.require_read_auth(): return
@@ -1714,6 +1732,7 @@ class Handler(BaseHTTPRequestHandler):
                 min_free = int(payload.get("min_free_gb", 5))
                 camera_recording = payload.get("camera_recording", {})
                 schedule = payload.get("recording_schedule", DEFAULT_NVR_SETTINGS["recording_schedule"])
+                camera_schedules = payload.get("camera_schedules", {})
             except (TypeError, ValueError):
                 self.send_json({"error": "NVR settings contain invalid values"}, HTTPStatus.BAD_REQUEST)
                 return
@@ -1733,8 +1752,27 @@ class Handler(BaseHTTPRequestHandler):
             except (KeyError, TypeError, ValueError, ZoneInfoNotFoundError):
                 self.send_json({"error": "Invalid recording schedule or time zone"}, HTTPStatus.BAD_REQUEST)
                 return
+            if not isinstance(camera_schedules, dict):
+                self.send_json({"error": "Invalid camera schedules"}, HTTPStatus.BAD_REQUEST)
+                return
+            validated_schedules = {}
+            for camera_id, item in camera_schedules.items():
+                try:
+                    if not isinstance(item, dict) or item.get("mode") not in {"always", "daily"}:
+                        raise ValueError()
+                    start, end, zone = item["start"], item["end"], item["timezone"]
+                    if not all(isinstance(v, str) and re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", v) for v in (start, end)) or start == end:
+                        raise ValueError()
+                    if not isinstance(zone, str) or len(zone) > 100:
+                        raise ValueError()
+                    ZoneInfo(zone)
+                    if self.store.device(str(camera_id)) and self.store.device(str(camera_id)).get("kind") == "camera":
+                        validated_schedules[str(camera_id)] = {"mode": item["mode"], "start": start, "end": end, "timezone": zone}
+                except (KeyError, TypeError, ValueError, ZoneInfoNotFoundError):
+                    self.send_json({"error": "Invalid camera schedule or time zone"}, HTTPStatus.BAD_REQUEST)
+                    return
             camera_recording = {str(key): value for key, value in camera_recording.items() if self.store.device(str(key)) and self.store.device(str(key)).get("kind") == "camera"}
-            saved = {"recording_enabled": enabled, "retention_hours": retention, "segment_seconds": segment, "storage_limit_gb": storage_limit, "min_free_gb": min_free, "recording_schedule": schedule, "camera_recording": camera_recording}
+            saved = {"recording_enabled": enabled, "retention_hours": retention, "segment_seconds": segment, "storage_limit_gb": storage_limit, "min_free_gb": min_free, "recording_schedule": schedule, "camera_recording": camera_recording, "camera_schedules": validated_schedules}
             path = Path(getattr(self.server, "recordings_dir", "recordings")) / "nvr-settings.json"  # type: ignore[attr-defined]
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(json.dumps(saved, indent=2) + "\n")

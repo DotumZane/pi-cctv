@@ -399,9 +399,11 @@ class RecorderSupervisor:
                 today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
                 desired: dict[str, tuple[int, int, int]] = {}
                 schedule_active = recording_schedule_active(settings.get("recording_schedule", {}))
-                if recording_enabled and space_available and schedule_active:
+                if recording_enabled and space_available:
                     for camera in self.store.devices("camera"):
-                        if camera.get("status") == "online" and per_camera.get(camera["id"], True):
+                        camera_schedule = settings.get("camera_schedules", {}).get(camera["id"])
+                        is_scheduled = recording_schedule_active(camera_schedule) if camera_schedule else schedule_active
+                        if is_scheduled and camera.get("status") == "online" and per_camera.get(camera["id"], True):
                             desired[camera["id"]] = (segment_seconds, retention, storage_limit_gb)
 
                 for camera_id, (process, current_settings, started_day) in list(self._processes.items()):

@@ -709,6 +709,19 @@ class ApiTests(unittest.TestCase):
         self.assertFalse(body["installed"])
         self.assertEqual(body["state"], "not_installed")
 
+    def test_nvr_camera_schedules_round_trip_and_validate(self):
+        self.call("POST", "/api/devices", {"id": "cam-1", "kind": "camera", "name": "Saw 1"})
+        schedule = {"mode": "daily", "start": "22:00", "end": "06:00", "timezone": "America/Los_Angeles"}
+        status, result = self.call("PUT", "/api/nvr/settings", {"camera_schedules": {"cam-1": schedule}})
+        self.assertEqual(status, 200)
+        self.assertEqual(result["settings"]["camera_schedules"]["cam-1"], schedule)
+        status, result = self.call("GET", "/api/nvr/settings")
+        self.assertEqual(status, 200)
+        self.assertEqual(result["settings"]["camera_schedules"]["cam-1"], schedule)
+        schedule["timezone"] = "invalid/timezone"
+        status, _ = self.call("PUT", "/api/nvr/settings", {"camera_schedules": {"cam-1": schedule}})
+        self.assertEqual(status, 400)
+
     def test_server_health_requires_read_auth_and_reports_runtime_and_storage(self):
         self.httpd.read_token = "read-token"
         status, _ = self.call("GET", "/api/server/health")
