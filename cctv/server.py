@@ -20,6 +20,7 @@ from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from urllib.parse import parse_qs, quote, unquote, urlparse
 from urllib import request as urllib_request
 
@@ -37,6 +38,8 @@ DEFAULT_NVR_SETTINGS = {
     "retention_hours": 24,
     "segment_seconds": 30,
     "storage_limit_gb": 500,
+    "min_free_gb": 5,
+    "recording_schedule": {"mode": "always", "start": "08:00", "end": "17:00", "timezone": "UTC"},
     "camera_recording": {},
 }
 PLAYBACK_CACHE_LOCK = threading.Lock()
@@ -423,6 +426,19 @@ class Handler(BaseHTTPRequestHandler):
                 "recordings_storage": recordings_storage,
                 "database_bytes": database_bytes,
             })
+            return
+        if parsed.path == "/api/nvr/status":
+            if not self.require_read_auth(): return
+            root = Path(getattr(self.server, "recordings_dir", "recordings"))
+            supervisor = getattr(self.server, "recorder_supervisor", None)
+            try:
+                disk = shutil.disk_usage(root)
+                storage = {"total_bytes": disk.total, "free_bytes": disk.free, "used_bytes": disk.used}
+            except OSError:
+                storage = None
+            processes = dict(supervisor._processes) if supervisor else {}
+            cameras = {camera["id"]: bool((entry := processes.get(camera["id"])) and entry[0].poll() is None) for camera in self.store.devices("camera")}
+            self.send_json({"storage": storage, "recordings_path": str(root), "recorder_running": bool(supervisor and supervisor._thread and supervisor._thread.is_alive()), "camera_processes": cameras})
             return
         if parsed.path == "/api/nvr/settings":
             if not self.require_read_auth(): return
@@ -1695,15 +1711,30 @@ class Handler(BaseHTTPRequestHandler):
                 retention = int(payload.get("retention_hours", 24))
                 segment = int(payload.get("segment_seconds", 30))
                 storage_limit = int(payload.get("storage_limit_gb", 500))
+                min_free = int(payload.get("min_free_gb", 5))
                 camera_recording = payload.get("camera_recording", {})
+                schedule = payload.get("recording_schedule", DEFAULT_NVR_SETTINGS["recording_schedule"])
             except (TypeError, ValueError):
                 self.send_json({"error": "NVR settings contain invalid values"}, HTTPStatus.BAD_REQUEST)
                 return
-            if not isinstance(enabled, bool) or not (1 <= retention <= 8760 and 10 <= segment <= 3600 and 1 <= storage_limit <= 100000 and isinstance(camera_recording, dict)) or any(not isinstance(value, bool) for value in camera_recording.values()):
+            if not isinstance(enabled, bool) or not (1 <= retention <= 8760 and 10 <= segment <= 3600 and 1 <= storage_limit <= 100000 and 0 <= min_free <= 100000 and isinstance(camera_recording, dict)) or any(not isinstance(value, bool) for value in camera_recording.values()):
                 self.send_json({"error": "Retention, segment length, storage cap, or camera selections are invalid"}, HTTPStatus.BAD_REQUEST)
                 return
+            try:
+                if not isinstance(schedule, dict) or schedule.get("mode") not in {"always", "daily"}:
+                    raise ValueError("invalid mode")
+                start, end, zone = schedule["start"], schedule["end"], schedule["timezone"]
+                if not isinstance(start, str) or not isinstance(end, str) or not all(re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", value) for value in (start, end)) or start == end:
+                    raise ValueError("invalid time")
+                if not isinstance(zone, str) or len(zone) > 100:
+                    raise ValueError("invalid timezone")
+                ZoneInfo(zone)
+                schedule = {"mode": schedule["mode"], "start": start, "end": end, "timezone": zone}
+            except (KeyError, TypeError, ValueError, ZoneInfoNotFoundError):
+                self.send_json({"error": "Invalid recording schedule or time zone"}, HTTPStatus.BAD_REQUEST)
+                return
             camera_recording = {str(key): value for key, value in camera_recording.items() if self.store.device(str(key)) and self.store.device(str(key)).get("kind") == "camera"}
-            saved = {"recording_enabled": enabled, "retention_hours": retention, "segment_seconds": segment, "storage_limit_gb": storage_limit, "camera_recording": camera_recording}
+            saved = {"recording_enabled": enabled, "retention_hours": retention, "segment_seconds": segment, "storage_limit_gb": storage_limit, "min_free_gb": min_free, "recording_schedule": schedule, "camera_recording": camera_recording}
             path = Path(getattr(self.server, "recordings_dir", "recordings")) / "nvr-settings.json"  # type: ignore[attr-defined]
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(json.dumps(saved, indent=2) + "\n")

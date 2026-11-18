@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 if TYPE_CHECKING:
     from .store import Store
@@ -314,6 +315,29 @@ def run(config: RecorderConfig, cleanup_interval: int = 300) -> None:
         time.sleep(3)
 
 
+def recording_schedule_active(schedule: dict, now: datetime | None = None) -> bool:
+    """Evaluate a daily local-time window, including windows across midnight."""
+    if schedule.get("mode", "always") == "always":
+        return True
+    try:
+        zone = ZoneInfo(schedule["timezone"])
+        now = (now or datetime.now(timezone.utc)).astimezone(zone)
+        start = int(schedule["start"][:2]) * 60 + int(schedule["start"][3:])
+        end = int(schedule["end"][:2]) * 60 + int(schedule["end"][3:])
+        minute = now.hour * 60 + now.minute
+        return start <= minute < end if start < end else minute >= start or minute < end
+    except (KeyError, ValueError, TypeError, ZoneInfoNotFoundError):
+        return False
+
+
+def recording_space_available(output_dir: Path, reserve_gb: int) -> bool:
+    """Stop recording before consuming the configured free-space reserve."""
+    try:
+        return shutil.disk_usage(output_dir).free > max(0, reserve_gb) * 1024**3
+    except OSError:
+        return False
+
+
 class RecorderSupervisor:
     """Keep one stream-copy recorder running for each enabled online camera."""
 
@@ -370,10 +394,12 @@ class RecorderSupervisor:
                 segment_seconds = int(settings.get("segment_seconds", 30))
                 storage_limit_gb = int(settings.get("storage_limit_gb", 500))
                 recording_enabled = settings.get("recording_enabled", True)
+                space_available = recording_space_available(self.output_dir, int(settings.get("min_free_gb", 5)))
                 per_camera = settings.get("camera_recording", {})
                 today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
                 desired: dict[str, tuple[int, int, int]] = {}
-                if recording_enabled:
+                schedule_active = recording_schedule_active(settings.get("recording_schedule", {}))
+                if recording_enabled and space_available and schedule_active:
                     for camera in self.store.devices("camera"):
                         if camera.get("status") == "online" and per_camera.get(camera["id"], True):
                             desired[camera["id"]] = (segment_seconds, retention, storage_limit_gb)

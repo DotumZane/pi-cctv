@@ -6,10 +6,27 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from cctv.recording import (RecorderConfig, SCRUB_ATLAS_BUILD_SLOT, mp4_duration,
-                            prepare_scrub_frames, prune_recordings, recording_files)
+                            prepare_scrub_frames, prune_recordings, recording_files, recording_schedule_active, recording_space_available)
 
 
 class RecordingTests(unittest.TestCase):
+    def test_daily_schedule_handles_midnight_and_timezone(self):
+        schedule = {"mode": "daily", "start": "22:00", "end": "06:00", "timezone": "America/Los_Angeles"}
+        self.assertTrue(recording_schedule_active(schedule, datetime(2026, 1, 2, 7, 0, tzinfo=timezone.utc)))
+        self.assertFalse(recording_schedule_active(schedule, datetime(2026, 1, 2, 20, 0, tzinfo=timezone.utc)))
+        self.assertTrue(recording_schedule_active({"mode": "always"}))
+        self.assertFalse(recording_schedule_active({"mode": "daily", "timezone": "invalid"}))
+
+    def test_space_reserve_fails_closed_and_stops_at_threshold(self):
+        from collections import namedtuple
+        usage = namedtuple('usage', 'total used free')
+        with patch('cctv.recording.shutil.disk_usage', return_value=usage(100, 90, 5 * 1024**3)):
+            self.assertFalse(recording_space_available(Path('/test'), 5))
+        with patch('cctv.recording.shutil.disk_usage', side_effect=OSError('unavailable')):
+            self.assertFalse(recording_space_available(Path('/test'), 5))
+        with patch('cctv.recording.shutil.disk_usage', return_value=usage(100, 90, 6 * 1024**3)):
+            self.assertTrue(recording_space_available(Path('/test'), 5))
+
     def test_busy_preview_worker_does_not_mark_recording_failed(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
