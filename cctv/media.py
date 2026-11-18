@@ -14,6 +14,9 @@ from shlex import quote
 from urllib.parse import unquote, urlsplit
 
 
+MONITOR_JITTER_MS = 50
+
+
 def _camera_label(stream_url: str) -> str:
     return unquote(urlsplit(stream_url).path.rsplit("/", 1)[-1]) or "Camera"
 
@@ -133,7 +136,7 @@ class MonitorMedia:
             "input-selector name=cctv_selector_0 sync-streams=false ! "
             f"videoconvert{filter_chain} ! cctv_splash_selector.sink_0 "
             f"{offline} "
-            f"rtspsrc name=cctv_source_0 location={quote(self.stream_url)} protocols=tcp latency=0 drop-on-latency=true ! "
+            f"rtspsrc name=cctv_source_0 location={quote(self.stream_url)} protocols=tcp latency={MONITOR_JITTER_MS} drop-on-latency=true ! "
             "rtph264depay ! h264parse ! v4l2h264dec ! identity name=cctv_live_0 ! "
             "queue max-size-buffers=2 leaky=downstream ! cctv_selector_0.sink_1 "
             f"{_splash_branch(self.width or 1920, self.height or 1080)}"
@@ -201,7 +204,7 @@ def quad_pipeline(stream_urls: list[str], width: int = 1920, height: int = 1080,
         branches.append(
             f"input-selector name=cctv_selector_{index} sync-streams=false ! compositor.sink_{index} "
             f"{_offline_branch(index, (camera_names or [])[index] if camera_names and index < len(camera_names) else _camera_label(url), cell_width, cell_height)} "
-            f"rtspsrc name=cctv_source_{index} location={quote(url)} protocols=tcp latency=0 drop-on-latency=true ! "
+            f"rtspsrc name=cctv_source_{index} location={quote(url)} protocols=tcp latency={MONITOR_JITTER_MS} drop-on-latency=true ! "
             f"rtph264depay ! h264parse ! v4l2h264dec ! videoconvert ! {scaling} ! "
             f"video/x-raw,width={cell_width},height={cell_height},pixel-aspect-ratio=1/1 ! identity name=cctv_live_{index} ! "
             f"queue max-size-buffers=2 leaky=downstream ! cctv_selector_{index}.sink_1"

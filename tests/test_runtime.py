@@ -152,13 +152,28 @@ class RuntimeTests(unittest.TestCase):
                 patch.object(runtime, "stop_media", side_effect=lambda: runtime.processes.clear()), \
                 patch("cctv.runtime.time.monotonic", side_effect=lambda: clock[0]):
             runtime.reconcile_media()
-            clock[0] = 21
-            runtime.reconcile_media()
-            clock[0] = 42
-            runtime.reconcile_media()
+            for value in (21, 26, 31, 52, 57, 62):
+                clock[0] = value
+                runtime.reconcile_media()
         self.assertEqual(len(processes), 3)
         self.assertIn("--width 2560 --height 1440", runtime.camera_requested_command[0])
         self.assertIn("--width 1920 --height 1080", runtime.last_command[0])
+
+    def test_camera_does_not_restart_on_transient_relay_probe_failures(self):
+        process = Mock(poll=Mock(return_value=None))
+        runtime = DeviceRuntime("camera", "cam-1", "Camera", "", "http://server", "media")
+        runtime.processes = [process]
+        runtime.last_command = ("camera-pipeline",)
+        runtime.camera_requested_command = runtime.last_command
+        runtime.media_started_at = 0
+        with patch.object(runtime, "desired_command", return_value=["camera-pipeline"]), \
+                patch.object(runtime, "stop_media") as stop, \
+                patch("cctv.runtime.time.monotonic", return_value=30), \
+                patch("cctv.runtime.camera_stream_published", side_effect=[False, False, True, False]):
+            for _ in range(4):
+                runtime.reconcile_media()
+        stop.assert_not_called()
+        self.assertEqual(runtime.camera_unpublished_checks, 1)
 
     def test_monitor_media_is_wrapped_in_controllable_player(self):
         command = managed_monitor_commands(['gst-launch-1.0 -e videotestsrc ! textoverlay text="camera name" ! fakesink'], "monitor-01")

@@ -522,6 +522,7 @@ class DeviceRuntime:
         self.camera_requested_command: tuple[str, ...] | None = None
         self.camera_fallback_active = False
         self.camera_failures = 0
+        self.camera_unpublished_checks = 0
         self.media_started_at = 0.0
         self.forwarder: subprocess.Popen | None = None
         self.next_forward_retry = 0.0
@@ -1156,16 +1157,23 @@ class DeviceRuntime:
                 self.camera_requested_command = requested_signature
                 self.camera_fallback_active = False
                 self.camera_failures = 0
+                self.camera_unpublished_checks = 0
             now = time.monotonic()
             expected_command = tuple(self.desired_command((1920, 1080))) if self.camera_fallback_active else requested_signature
             if self.processes and self.last_command == expected_command and all(process.poll() is None for process in self.processes):
                 if camera_stream_published("127.0.0.1", self.device_id):
                     self.camera_failures = 0
+                    self.camera_unpublished_checks = 0
                     return
                 if now - self.media_started_at < 20:
                     return
+                self.camera_unpublished_checks += 1
+                if self.camera_unpublished_checks < 3:
+                    print(f"Camera relay probe failed ({self.camera_unpublished_checks}/3); checking again before restart", flush=True)
+                    return
+                self.camera_unpublished_checks = 0
                 self.camera_failures += 1
-                print(f"Camera stream is unpublished after startup ({self.camera_failures}); restarting publisher", flush=True)
+                print(f"Camera stream remains unpublished ({self.camera_failures}); restarting publisher", flush=True)
             elif self.processes and now - self.media_started_at >= 5:
                 self.camera_failures += 1
             width = re.search(r"--width (\d+)", requested[0])

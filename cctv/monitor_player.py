@@ -104,7 +104,7 @@ class MonitorPlayer:
                 "selector": selector, "offline": offline, "source": source,
                 "heading": heading, "last_frame": None, "last_received": None,
                 "showing_live": False, "restarting": False, "last_retry_at": self.started_at,
-                "last_slate_text": None,
+                "last_slate_text": None, "retry_count": 0, "healthy_since": None,
             }
             pad = live.get_static_pad("src")
             pad.add_probe(Gst.PadProbeType.BUFFER, self._on_camera_buffer, index)
@@ -163,6 +163,8 @@ class MonitorPlayer:
             with self.lock:
                 camera = self.cameras[index]
                 camera["last_frame"] = time.monotonic()
+                if camera.get("healthy_since") is None:
+                    camera["healthy_since"] = camera["last_frame"]
                 camera["last_received"] = datetime.now().astimezone()
                 should_switch = not camera["showing_live"]
             if should_switch:
@@ -171,6 +173,11 @@ class MonitorPlayer:
 
     def _show_live(self, index: int) -> bool:
         camera = self.cameras[index]
+        with self.lock:
+            last_frame = camera["last_frame"]
+        # An idle callback may run after the stream has already stalled.
+        if last_frame is None or time.monotonic() - last_frame > OFFLINE_AFTER_SECONDS:
+            return False
         if not camera["showing_live"] and not camera["restarting"]:
             camera["selector"].set_property("active-pad", camera["selector"].get_static_pad("sink_1"))
             camera["showing_live"] = True
@@ -197,7 +204,10 @@ class MonitorPlayer:
             with self.lock:
                 last_frame = camera["last_frame"]
             if last_frame is None or now - last_frame > OFFLINE_AFTER_SECONDS:
+                camera["healthy_since"] = None
                 self._show_offline(index)
+            elif camera.get("healthy_since") is not None and now - camera["healthy_since"] >= 10:
+                camera["retry_count"] = 0
             retry_anchor = max(last_frame or 0, camera["last_retry_at"])
             if not camera["restarting"] and now - retry_anchor > RECONNECT_AFTER_SECONDS:
                 self._restart_source(index)
@@ -209,8 +219,11 @@ class MonitorPlayer:
         camera["last_retry_at"] = time.monotonic()
         self._show_offline(index)
         camera["source"].set_state(self.Gst.State.NULL)
-        print(f"Reconnecting camera {camera['heading']}", flush=True)
-        self.GLib.timeout_add(self.reconnect_seconds * 1000, self._resume_source, index)
+        camera["healthy_since"] = None
+        camera["retry_count"] = camera.get("retry_count", 0) + 1
+        delay_ms = min(self.reconnect_seconds * 1000, 250 * (2 ** min(camera["retry_count"] - 1, 8)))
+        print(f"Reconnecting camera {camera['heading']} in {delay_ms} ms", flush=True)
+        self.GLib.timeout_add(delay_ms, self._resume_source, index)
 
     def _resume_source(self, index: int) -> bool:
         camera = self.cameras[index]

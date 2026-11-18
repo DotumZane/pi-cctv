@@ -35,6 +35,7 @@ class MediaTests(unittest.TestCase):
         command = MonitorMedia("rtsp://media:8554/cam-1").pipeline()
         self.assertIn("v4l2h264dec", command)
         self.assertIn("drop-on-latency=true", command)
+        self.assertIn("protocols=tcp latency=50", command)
         self.assertIn('textoverlay name=cctv_stats text="" silent=true', command)
         self.assertIn("input-selector name=cctv_selector_0", command)
         self.assertIn("cctv_selector_0.sink_0", command)
