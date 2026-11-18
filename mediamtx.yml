@@ -6,17 +6,16 @@ rtsp: true
 rtspAddress: :8554
 hls: true
 hlsAddress: :8888
-# Safari is used from the HTTPS dashboard. Encrypt HLS and WebRTC so browsers
-# do not block the live stream as mixed active content.
+# HLS is encrypted for clients that connect directly to the relay.
 hlsEncryption: true
 hlsServerKey: /run/pi-cctv/tls/server.key
 hlsServerCert: /run/pi-cctv/tls/server.crt
 hlsVariant: mpegts
 webrtc: true
 webrtcAddress: :8889
-webrtcEncryption: true
-webrtcServerKey: /run/pi-cctv/tls/server.key
-webrtcServerCert: /run/pi-cctv/tls/server.crt
+# The dashboard opens this player over HTTP. WebRTC media uses DTLS/SRTP;
+# only the player and signaling endpoint use HTTP.
+webrtcEncryption: false
 readTimeout: 5s
 writeTimeout: 5s
 writeQueueSize: 512
