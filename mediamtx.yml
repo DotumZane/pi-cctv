@@ -4,6 +4,9 @@
 logLevel: warn
 rtsp: true
 rtspAddress: :8554
+rtmp: no
+srt: no
+moq: no
 hls: true
 hlsAddress: :8888
 # HLS is encrypted for clients that connect directly to the relay.
@@ -19,6 +22,16 @@ webrtcEncryption: false
 readTimeout: 5s
 writeTimeout: 5s
 writeQueueSize: 512
+# Anonymous media access is limited to private LANs, Docker networks, and
+# Tailscale. Tailscale's own ACLs must restrict access to this tailnet.
+authInternalUsers:
+  - user: any
+    pass:
+    ips: ["127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "::1/128", "fc00::/7", "fe80::/10"]
+    permissions:
+      - action: publish
+      - action: read
+      - action: playback
 paths:
   all:
     source: publisher

@@ -5,6 +5,17 @@ rtmp: no
 hls: no
 webrtc: no
 srt: no
+moq: no
+# Anonymous media access is limited to private LANs, Docker networks, and
+# Tailscale. Tailscale's own ACLs must restrict access to this tailnet.
+authInternalUsers:
+  - user: any
+    pass:
+    ips: ["127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "::1/128", "fc00::/7", "fe80::/10"]
+    permissions:
+      - action: publish
+      - action: read
+      - action: playback
 paths:
   all:
     source: publisher

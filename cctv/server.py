@@ -490,9 +490,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         hls_match = re.fullmatch(r"/api/cameras/([^/]+)/hls/(.+)", parsed.path)
         if hls_match:
-            # MediaMTX's HLS endpoint is intentionally public on the LAN. Keep
-            # this browser-media proxy public too because <video> requests
-            # cannot attach the dashboard's localStorage bearer token.
+            # Same-origin video requests carry the HttpOnly dashboard session cookie.
+            if not self.store.user_count():
+                self.send_json({"error": "sign in to view live video"}, HTTPStatus.UNAUTHORIZED)
+                return
+            if not self.require_read_auth():
+                return
             camera_id = unquote(hls_match.group(1))
             resource = unquote(hls_match.group(2))
             camera = self.store.device(camera_id)

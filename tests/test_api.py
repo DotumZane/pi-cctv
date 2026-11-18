@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 from http.client import HTTPConnection, HTTPSConnection
 from http.server import ThreadingHTTPServer
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from urllib.parse import urlencode
 
 from cctv.server import Handler, TLSThreadingHTTPServer
@@ -893,6 +893,33 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.call("POST", "/api/devices/cam-1/maintenance/os-update", {
             "state": "unknown", "details": {},
         }, device_token)[0], 400)
+
+    def test_hls_proxy_requires_dashboard_session_and_allows_viewers(self):
+        self.httpd.store.register({"id": "cam-1", "kind": "camera", "name": "Camera"})
+        self.httpd.store.create_user("admin", "admin-password", "admin")
+        self.httpd.store.create_user("viewer", "viewer-password", "viewer")
+        viewer = self.httpd.store.create_session("viewer")
+        remote = Mock()
+        remote.__enter__ = Mock(return_value=remote)
+        remote.__exit__ = Mock(return_value=None)
+        remote.headers = {"Content-Type": "application/vnd.apple.mpegurl"}
+        remote.read.return_value = b"#EXTM3U\n"
+
+        def fetch(cookie=""):
+            connection = HTTPConnection(*self.base)
+            connection.request("GET", "/api/cameras/cam-1/hls/index.m3u8", headers={"Cookie": cookie} if cookie else {})
+            response = connection.getresponse()
+            result = response.status, response.read()
+            connection.close()
+            return result
+
+        with patch("cctv.server.urllib_request.urlopen", return_value=remote) as upstream:
+            self.assertEqual(fetch()[0], 401)
+            upstream.assert_not_called()
+            status, body = fetch(f"cctv_session={viewer}")
+            self.assertEqual(status, 200)
+            self.assertEqual(body, b"#EXTM3U\n")
+            upstream.assert_called_once()
 
     def test_camera_live_urls_are_available(self):
         self.call("POST", "/api/devices", {"id": "cam-1", "kind": "camera", "name": "Saw 1"})

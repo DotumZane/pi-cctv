@@ -31,6 +31,13 @@ PY
 fi
 install -d -m 0755 /etc/pi-cctv
 source_dir="${CCTV_INSTALL_DIR:-/opt/pi-cctv}"
+relay_config_changed=0
+if ! cmp -s "$source_dir/services/pi-cctv-relay.yml" /etc/pi-cctv/relay.yml; then
+  relay_config_changed=1
+fi
 install -m 0644 "$source_dir/services/pi-cctv-relay.yml" /etc/pi-cctv/relay.yml
 install -m 0644 "$source_dir/services/pi-cctv-relay.service" /etc/systemd/system/pi-cctv-relay.service
 systemctl daemon-reload
+if [[ "$relay_config_changed" == 1 ]] && systemctl is-active --quiet pi-cctv-relay.service; then
+  systemctl restart pi-cctv-relay.service
+fi
