@@ -173,7 +173,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"error": "viewer access is limited to live camera views and recordings"}, HTTPStatus.FORBIDDEN)
             return
         if isinstance(self.connection, ssl.SSLSocket) and parsed.path in {
-            "/", "/timeline-enhancements.js", "/settings-enhancements.js", "/playback-engine.js"
+            "/", "/timeline-enhancements.js", "/settings-enhancements.js", "/playback-engine.js", "/vendor/hls.light.min.js"
         }:
             self.send_json({"error": "dashboard is available over HTTP"}, HTTPStatus.NOT_FOUND)
             return
@@ -327,6 +327,15 @@ class Handler(BaseHTTPRequestHandler):
             if not self.require_auth():
                 return
             self.send_json({"users": self.store.users()})
+            return
+        if parsed.path == "/vendor/hls.light.min.js":
+            content = (ROOT / "vendor" / "hls.light.min.js").read_bytes()
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/javascript; charset=utf-8")
+            self.send_header("Cache-Control", "public, max-age=86400")
+            self.send_header("Content-Length", str(len(content)))
+            self.end_headers()
+            self.wfile.write(content)
             return
         if parsed.path == "/timeline-enhancements.js":
             content = (ROOT / "timeline-enhancements.js").read_bytes()

@@ -81,7 +81,7 @@ class ApiTests(unittest.TestCase):
             return status, body
 
         try:
-            for path in ("/", "/timeline-enhancements.js", "/settings-enhancements.js", "/playback-engine.js"):
+            for path in ("/", "/timeline-enhancements.js", "/settings-enhancements.js", "/playback-engine.js", "/vendor/hls.light.min.js"):
                 self.assertEqual(get(HTTPConnection(*self.base), path)[0], 200)
                 self.assertEqual(get(HTTPSConnection("127.0.0.1", server.server_port, context=ssl._create_unverified_context()), path)[0], 404)
             self.assertEqual(get(HTTPSConnection("127.0.0.1", server.server_port, context=ssl._create_unverified_context()), "/api/health")[0], 200)

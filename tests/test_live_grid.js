@@ -8,7 +8,7 @@ const timers = new Map(), listeners = {};
 const video = {dataset:{live:'cam-1'}, isConnected:true, currentSrc:'', readyState:0, currentTime:0, error:null,
   closest(selector){if(selector==='#live-grid') return {}; return null},
   addEventListener(name, fn){listeners[name]=fn}, pause(){}, removeAttribute(){}, load(){},
-  play(){return Promise.resolve()}};
+  canPlayType(){return 'probably'}, play(){return Promise.resolve()}};
 const document = {head:{appendChild(){}}, createElement(){return {}},
   querySelector(selector){if(selector==='#view-live.active') return active ? {} : null; return null},
   querySelectorAll(){return [video]}};
