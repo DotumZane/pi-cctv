@@ -649,6 +649,7 @@
       // Keep the preview canvas visible while the normal player opens the
       // recording. Commit can reuse this load instead of starting it again.
       video.dataset.playback = 'recording';
+      if (typeof closeLiveRtc === 'function') closeLiveRtc(video);
       video.pause();
       video.onerror = null;
       workspacePlaybackUrl = record.url;
@@ -806,6 +807,7 @@
     video.pause();
     video.onerror = null;
     video.dataset.playback = 'recording';
+    if (typeof closeLiveRtc === 'function') closeLiveRtc(video);
     if (!sameSource) {
       video.src = url;
       video.load();

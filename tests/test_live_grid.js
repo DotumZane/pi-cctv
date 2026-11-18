@@ -25,6 +25,7 @@ vm.runInContext(code, context);
   context.resumeLiveGrid();
   await new Promise(resolve=>setImmediate(resolve));
   assert.equal(requests,1,'opening the page starts an online camera automatically');
+  assert.match(video.src,/\/api\/cameras\/cam-1\/hls\/index\.m3u8/, 'HLS remains available when WebRTC is unavailable');
   listeners.error();
   const before = timers.size;
   assert.ok(before>0,'a real error schedules recovery');
