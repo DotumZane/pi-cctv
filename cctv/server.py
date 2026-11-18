@@ -172,6 +172,11 @@ class Handler(BaseHTTPRequestHandler):
         if self.viewer_restricted_path(parsed.path):
             self.send_json({"error": "viewer access is limited to live camera views and recordings"}, HTTPStatus.FORBIDDEN)
             return
+        if isinstance(self.connection, ssl.SSLSocket) and parsed.path in {
+            "/", "/timeline-enhancements.js", "/settings-enhancements.js", "/playback-engine.js"
+        }:
+            self.send_json({"error": "dashboard is available over HTTP"}, HTTPStatus.NOT_FOUND)
+            return
         if parsed.path == "/ca.crt":
             if not isinstance(self.connection, ssl.SSLSocket):
                 self.send_json({"error": "download the local CA certificate over HTTPS"}, HTTPStatus.UPGRADE_REQUIRED)

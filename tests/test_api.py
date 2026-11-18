@@ -2,19 +2,20 @@ import json
 import os
 import shutil
 import socket
+import ssl
 import subprocess
 import tempfile
 import threading
 import time
 import unittest
 from datetime import datetime, timedelta
-from http.client import HTTPConnection
+from http.client import HTTPConnection, HTTPSConnection
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import urlencode
 
-from cctv.server import Handler
+from cctv.server import Handler, TLSThreadingHTTPServer
 from cctv import __agent_version__, __version__
 from cctv.fleet import FleetAgentUpdateCoordinator, FleetOsUpdateCoordinator
 from cctv.store import Store
@@ -57,6 +58,40 @@ class ApiTests(unittest.TestCase):
         body = json.loads(response.read())
         connection.close()
         return response.status, body
+
+    @unittest.skipUnless(shutil.which("openssl"), "openssl is required to test HTTPS")
+    def test_dashboard_is_http_only_while_device_https_remains_available(self):
+        root = Path(self.recordings.name)
+        cert, key = root / "server.crt", root / "server.key"
+        subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", str(key), "-out", str(cert), "-days", "1", "-subj", "/CN=localhost"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(cert, key)
+        server = TLSThreadingHTTPServer(("127.0.0.1", 0), Handler, context)
+        server.store = self.httpd.store
+        server.tls_ca_cert = str(cert)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+
+        def get(connection, path):
+            connection.request("GET", path)
+            response = connection.getresponse()
+            body = response.read()
+            status = response.status
+            connection.close()
+            return status, body
+
+        try:
+            for path in ("/", "/timeline-enhancements.js", "/settings-enhancements.js", "/playback-engine.js"):
+                self.assertEqual(get(HTTPConnection(*self.base), path)[0], 200)
+                self.assertEqual(get(HTTPSConnection("127.0.0.1", server.server_port, context=ssl._create_unverified_context()), path)[0], 404)
+            self.assertEqual(get(HTTPSConnection("127.0.0.1", server.server_port, context=ssl._create_unverified_context()), "/api/health")[0], 200)
+            status, body = get(HTTPSConnection("127.0.0.1", server.server_port, context=ssl._create_unverified_context()), "/ca.crt")
+            self.assertEqual(status, 200)
+            self.assertIn(b"BEGIN CERTIFICATE", body)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join()
 
     def test_register_and_assign(self):
         self.assertEqual(self.call("POST", "/api/devices", {"id": "cam-1", "kind": "camera", "name": "Saw 1"})[0], 201)
