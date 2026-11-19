@@ -240,17 +240,25 @@
       state.atlasRecordIndices = new Map(workspaceTimelineRecords.map((item, index) => [item.path, index]));
     }
     const index = state.atlasRecordIndices.get(record.path) ?? -1;
-    const next = workspaceTimelineRecords[index + (direction < 0 ? -1 : 1)];
-    if (index < 0 || !next || state.atlasPrefetching.has(next.path) || state.atlasPrefetching.size >= 2 ||
+    if (index < 0) return;
+    for (let step = 1; step <= 3; step++) {
+      const next = workspaceTimelineRecords[index + Math.sign(direction) * step];
+      if (next) prefetchAtlas(next, direction, Number(state.target) + Math.sign(direction) * 24 * step);
+    }
+  }
+
+  function prefetchAtlas(next, direction, predictedSeconds) {
+    if (!next || state.atlasPrefetching.has(next.path) || state.atlasPrefetching.size >= 4 ||
         (state.atlasPrefetchRetry.get(next.path) || 0) > performance.now()) return;
     state.atlasPrefetching.add(next.path);
-    const predictedSeconds = Number(state.target) + Math.sign(direction) * 24;
     const loadManifest = state.atlasManifests.has(next.path) ? Promise.resolve(state.atlasManifests.get(next.path)) :
       api(`/api/recordings/scrub-frames?prepare=0&path=${encodeURIComponent(next.path)}`)
         .then(response => response.ok ? response.json() : null);
     loadManifest.then(result => {
       if (!result?.ready || !result.manifest?.frames || !result.urlBase) {
-        state.atlasPrefetchRetry.set(next.path, performance.now() + 30000);
+        // A segment may finish building moments after this check. Retry soon
+        // instead of suppressing a newly available preview for half a minute.
+        state.atlasPrefetchRetry.set(next.path, performance.now() + 5000);
         if (state.atlasPrefetchRetry.size > 128) state.atlasPrefetchRetry.delete(state.atlasPrefetchRetry.keys().next().value);
         return;
       }
@@ -274,7 +282,7 @@
         .then(response => { if (!response.ok) throw new Error('preview unavailable'); return response.blob(); })
         .then(blob => createImageBitmap(blob)).then(bitmap => {
           state.atlasCache.set(key, bitmap);
-          if (state.atlasCache.size > 8) {
+          if (state.atlasCache.size > 12) {
             const oldest = state.atlasCache.keys().next().value;
             state.atlasCache.get(oldest)?.close?.();
             state.atlasCache.delete(oldest);
@@ -284,6 +292,16 @@
       state.atlasLoads.set(key, job);
       return job;
     }).catch(() => {}).finally(() => state.atlasPrefetching.delete(next.path));
+  }
+
+  function warmRecentAtlases() {
+    if (typeof workspaceTimelineRecords === 'undefined' || !workspaceTimelineRecords.length) return;
+    // Start with the three most recent closed segments while the live view is
+    // already visible, so the first backward wheel notches need less waiting.
+    workspaceTimelineRecords.slice(-4).reverse().forEach(record => {
+      const duration = Number(record.duration) || Number(typeof workspaceTimelineSegmentSeconds === 'undefined' ? 30 : workspaceTimelineSegmentSeconds) || 30;
+      prefetchAtlas(record, -1, timelineSeconds(record) + Math.max(0, duration - 1));
+    });
   }
 
   function prepareVisitedAtlas(record) {
@@ -326,7 +344,7 @@
         // Retain decoded sheets across short recording boundaries. A wheel
         // gesture commonly crosses several 30-second files and then reverses.
         state.atlasCache.set(key, bitmap);
-        if (state.atlasCache.size > 8) {
+        if (state.atlasCache.size > 12) {
           const oldest = state.atlasCache.keys().next().value;
           state.atlasCache.get(oldest)?.close?.();
           state.atlasCache.delete(oldest);
@@ -1031,6 +1049,14 @@
     if (!video || document.documentElement.dataset.playbackEngineInstalled) return;
     document.documentElement.dataset.playbackEngineInstalled = 'true';
     ensurePreview();
+    const openWorkspace = window.openLiveWorkspace;
+    if (typeof openWorkspace === 'function') {
+      window.openLiveWorkspace = async (...args) => {
+        const result = await openWorkspace(...args);
+        if (window.workspaceCamera === args[0]) warmRecentAtlases();
+        return result;
+      };
+    }
     const originalScrub = window.scrubWorkspaceTimeline;
     window.previewWorkspaceTimeline = (value) => setTarget(value, 0);
     window.previewWorkspaceTimelineScrub = (value, velocity) => setTarget(value, velocity);

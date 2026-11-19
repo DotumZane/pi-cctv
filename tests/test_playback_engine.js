@@ -491,6 +491,33 @@ async function deduplicatePreviewRequests() {
   assert.equal(warmRequests, 1, 'a visited segment is prepared once without blocking the preview');
 }
 
-Promise.resolve().then(main).then(proxyScrubbing).then(atlasScrubbing).then(seekResumesPlayback).then(decoderRequiresPlayback).then(previewAcrossSegments).then(deduplicatePreviewRequests)
+async function warmBeforeScrolling() {
+  const requested = [];
+  const video = {dataset: {playback: 'live'}, clientWidth: 100, clientHeight: 100, readyState: 0, paused: true,
+    closest: () => ({appendChild() {}}), setAttribute() {}, removeAttribute() {}, addEventListener() {}, pause() {}};
+  const canvas = {width: 0, height: 0, classList: {add() {}, remove() {}}, setAttribute() {},
+    getContext: () => ({fillRect() {}, drawImage() {}, set fillStyle(_) {}})};
+  const document = {body: {}, head: {appendChild() {}}, documentElement: {dataset: {}},
+    createElement(tag) { return tag === 'canvas' ? canvas : {setAttribute() {}, classList: {toggle() {}}}; },
+    querySelector(selector) { return selector === '#workspace-live' ? video : null; }, addEventListener() {}};
+  const records = Array.from({length: 4}, (_, i) => ({path: `cam/${i}.mp4`, url: `/recordings/cam/${i}.mp4`, startSeconds: i * 30, duration: 30}));
+  const globals = {document, window: {workspaceCamera: 'cam', openLiveWorkspace: async () => {}, returnWorkspaceToLive: async () => {}, addEventListener() {}},
+    URLSearchParams, location: {search: ''}, devicePixelRatio: 1, performance: {now: () => 1000},
+    requestAnimationFrame() {return 1;}, cancelAnimationFrame() {}, MutationObserver: class {observe() {}},
+    timelineDayLength: () => 86400, timelineSeconds: item => item.startSeconds,
+    workspaceTimelineRecords: records, workspaceTimelineDate: '2026-11-17',
+    api: async url => {requested.push(url); return url.includes('scrub-frames?')
+      ? {ok: true, json: async () => ({ready: true, urlBase: '/atlas/', manifest: {fps: 1, frames: 30, columns: 6, rows: 4, sheets: 2}})}
+      : {ok: true, blob: async () => ({})};},
+    createImageBitmap: async () => ({close() {}}), setTimeout, clearTimeout, console};
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', 'cctv', 'playback-engine.js'), 'utf8'), globals);
+  await globals.window.openLiveWorkspace('cam');
+  await new Promise(resolve => setImmediate(resolve));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(requested.filter(url => url.includes('scrub-frames?')).length, 4, 'recent previews are requested before the first scroll');
+  assert.ok(requested.some(url => url.endsWith('.jpg')), 'preview sheets are decoded in advance');
+}
+
+Promise.resolve().then(main).then(proxyScrubbing).then(atlasScrubbing).then(seekResumesPlayback).then(decoderRequiresPlayback).then(previewAcrossSegments).then(deduplicatePreviewRequests).then(warmBeforeScrolling)
   .then(() => process.exit(0))
   .catch(error => { console.error(error); process.exit(1); });

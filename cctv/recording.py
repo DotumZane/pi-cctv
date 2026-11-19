@@ -104,7 +104,7 @@ def scrub_frames_ready(source: Path, directory: Path) -> bool:
     return manifest.is_file() and manifest.stat().st_mtime_ns >= source.stat().st_mtime_ns
 
 
-def prepare_scrub_frames(source: Path, directory: Path, fps: int = SCRUB_ATLAS_FPS) -> None:
+def prepare_scrub_frames(source: Path, directory: Path, fps: int = SCRUB_ATLAS_FPS) -> bool | None:
     """Build a compact sequence of real frames in seek-free JPEG atlases."""
     try:
         if scrub_frames_ready(source, directory):
@@ -112,7 +112,7 @@ def prepare_scrub_frames(source: Path, directory: Path, fps: int = SCRUB_ATLAS_F
     except OSError:
         return
     if not SCRUB_ATLAS_BUILD_SLOT.acquire(blocking=False):
-        return
+        return False
     temporary = directory.with_name(f"{directory.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     failure = directory.with_suffix(".failed")
     success = False
@@ -390,6 +390,7 @@ class RecorderSupervisor:
         self.stream_url_template = stream_url_template
         self.poll_seconds = poll_seconds
         self._stop = threading.Event()
+        self._preview_wake = threading.Event()
         self._processes: dict[str, tuple[subprocess.Popen, tuple[int, int, int], str]] = {}
         self._thread: threading.Thread | None = None
         self._trickplay_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cctv-trickplay")
@@ -406,6 +407,7 @@ class RecorderSupervisor:
 
     def stop(self) -> None:
         self._stop.set()
+        self._preview_wake.set()
         if self._thread:
             self._thread.join(timeout=10)
         self._trickplay_pool.shutdown(wait=False, cancel_futures=True)
@@ -428,6 +430,15 @@ class RecorderSupervisor:
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait()
+
+    def _preview_finished(self, future) -> None:
+        try:
+            # A busy shared worker is retried on the normal poll, avoiding a
+            # tight loop when a requested preview owns the decoder slot.
+            if future.result() is not False:
+                self._preview_wake.set()
+        except Exception:
+            pass
 
     def _run(self) -> None:
         last_cleanup = 0.0
@@ -473,6 +484,7 @@ class RecorderSupervisor:
                         self._scrub_oldest_first = not self._scrub_oldest_first
                         self._trickplay_job = self._trickplay_pool.submit(
                             prepare_scrub_frames, source, scrub_frames_dir(self.output_dir, source), fps)
+                        self._trickplay_job.add_done_callback(self._preview_finished)
 
                 if time.monotonic() - last_cleanup >= 300:
                     prune_recordings(self.output_dir, retention)
@@ -480,7 +492,8 @@ class RecorderSupervisor:
                     last_cleanup = time.monotonic()
             except Exception as exc:
                 print(f"NVR recorder supervisor error: {exc}", flush=True)
-            self._stop.wait(self.poll_seconds)
+            self._preview_wake.wait(self.poll_seconds)
+            self._preview_wake.clear()
 
         for camera_id in list(self._processes):
             self._stop_recorder(camera_id)

@@ -9,12 +9,27 @@ from unittest.mock import patch
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from cctv.recording import (RecorderConfig, SCRUB_ATLAS_BUILD_SLOT, mp4_duration,
+from cctv.recording import (RecorderConfig, RecorderSupervisor, SCRUB_ATLAS_BUILD_SLOT, mp4_duration,
                             next_scrub_frame_source, prepare_scrub_frames, scrub_frames_ready,
                             prune_recordings, recording_files, recording_schedule_active, recording_space_available)
 
 
 class RecordingTests(unittest.TestCase):
+    def test_preview_completion_wakes_backfill_but_busy_decoder_does_not(self):
+        from concurrent.futures import Future
+        supervisor = RecorderSupervisor(None, Path('/unused'))
+        try:
+            busy = Future()
+            busy.set_result(False)
+            supervisor._preview_finished(busy)
+            self.assertFalse(supervisor._preview_wake.is_set())
+            finished = Future()
+            finished.set_result(None)
+            supervisor._preview_finished(finished)
+            self.assertTrue(supervisor._preview_wake.is_set())
+        finally:
+            supervisor.stop()
+
     def test_preview_backfill_includes_old_files_and_retries_failures(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
