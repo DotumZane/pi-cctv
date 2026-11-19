@@ -244,6 +244,7 @@
     if (index < 0 || !next || state.atlasPrefetching.has(next.path) || state.atlasPrefetching.size >= 2 ||
         (state.atlasPrefetchRetry.get(next.path) || 0) > performance.now()) return;
     state.atlasPrefetching.add(next.path);
+    const predictedSeconds = Number(state.target) + Math.sign(direction) * 24;
     const loadManifest = state.atlasManifests.has(next.path) ? Promise.resolve(state.atlasManifests.get(next.path)) :
       api(`/api/recordings/scrub-frames?prepare=0&path=${encodeURIComponent(next.path)}`)
         .then(response => response.ok ? response.json() : null);
@@ -260,7 +261,13 @@
         state.atlasBase = result.urlBase;
         scheduleAtlasFrame();
       }
-      const sheet = direction < 0 ? result.manifest.sheets - 1 : 0;
+      // A mouse-wheel notch moves about 24 seconds. Warm the sheet the next
+      // notch is likely to land on, including the middle of a segment.
+      const predicted = predictedSeconds - timelineSeconds(next);
+      const perSheet = result.manifest.columns * result.manifest.rows;
+      const frame = Math.max(0, Math.min(result.manifest.frames - 1, Math.floor(predicted * result.manifest.fps)));
+      const sheet = Number.isFinite(frame / perSheet) && perSheet > 0
+        ? Math.floor(frame / perSheet) : (direction < 0 ? result.manifest.sheets - 1 : 0);
       const key = atlasKey(next.path, sheet);
       if (state.atlasCache.has(key) || state.atlasLoads.has(key)) return;
       const job = api(result.urlBase + atlasSheetName(sheet), { credentials: 'same-origin' })

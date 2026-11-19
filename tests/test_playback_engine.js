@@ -221,6 +221,7 @@ async function atlasScrubbing() {
   const second = draws.filter(args => args.length === 9).at(-1);
   await new Promise(resolve => setImmediate(resolve));
   assert.ok(requestedSheets.some(url => url.includes('06-00-30')), 'the adjacent recording is warmed before reaching it');
+  assert.ok(requestedSheets.some(url => url.includes('06-00-30/001.jpg')), 'the next wheel position warms its predicted atlas sheet');
   globals.window.previewWorkspaceTimelineScrub(8, -20);
   while (animationFrames.length) animationFrames.shift()();
   assert.notDeepEqual(first.slice(1, 3), second.slice(1, 3), 'forward movement paints another atlas cell');

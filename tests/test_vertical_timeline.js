@@ -7,11 +7,12 @@ function checkWheelSensitivity() {
   const source = fs.readFileSync(path.join(__dirname, '..', 'cctv', 'dashboard.html'), 'utf8');
   const wheel = source.slice(source.indexOf('function timelineWheelPixels('), source.indexOf('\nfunction verticalTimelineMinimumScroll('));
   const context = {}; vm.createContext(context); vm.runInContext(wheel, context);
-  assert.equal(context.timelineWheelPixels({deltaY: 100, deltaMode: 0}), 12, 'a Chrome wheel notch advances about five minutes');
-  assert.equal(context.timelineWheelPixels({deltaY: -120, deltaMode: 0}), -12, 'reverse mouse scrolling uses the same sensitivity');
-  assert.equal(context.timelineWheelPixels({deltaY: 3, deltaMode: 1}), 12, 'line-mode wheels are normalized');
+  assert.equal(context.timelineWheelPixels({deltaY: 100, deltaMode: 0}), 1, 'a Chrome wheel notch advances 24 seconds on a normal day');
+  assert.equal(context.timelineWheelPixels({deltaY: -120, deltaMode: 0}), -1, 'reverse mouse scrolling uses the same sensitivity');
+  assert.equal(context.timelineWheelPixels({deltaY: 3, deltaMode: 1}), 1, 'line-mode wheels are normalized');
+  assert.equal(context.timelineWheelPixels({deltaY: 1, deltaMode: 1}), 1 / 3, 'small line deltas retain fractional notches');
   assert.equal(context.timelineWheelPixels({deltaY: 4.5, deltaMode: 0}), 4.5, 'trackpad pixel scrolling stays unchanged');
-  assert.equal(context.timelineWheelPixels({deltaY: 200, deltaMode: 0}), 24, 'multiple wheel notches accumulate');
+  assert.equal(context.timelineWheelPixels({deltaY: 200, deltaMode: 0}), 2, 'multiple wheel notches accumulate');
 }
 
 function checkRecordedDuration() {
@@ -94,7 +95,14 @@ async function checkLiveEdge(initialDate) {
   assert.equal(globals.workspaceTimelineDate, today);
   assert.equal(input.value, today);
   assert.equal(loads, initialDate === today ? 0 : 1, 'an older-date view reloads today');
-  if (initialDate === today) assert.ok(scroll.scrollTop > 0, 'future times are clamped');
+  if (initialDate === today) {
+    assert.ok(scroll.scrollTop > 0, 'future times are clamped');
+    scroll.scrollTop += 1;
+    // Let the programmatic return-to-live scroll settle before a wheel notch.
+    while (callbacks.length) callbacks.shift()();
+    scrollHandler({ stopImmediatePropagation() {} });
+    assert.equal(previews, 2, 'one wheel notch away from live previews the past');
+  }
 }
 
 const yesterday = new Date(); yesterday.setDate(yesterday.getDate() - 1);
