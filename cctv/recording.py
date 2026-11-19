@@ -22,6 +22,9 @@ if TYPE_CHECKING:
     from .store import Store
 
 SCRUB_ATLAS_BUILD_SLOT = threading.BoundedSemaphore(1)
+SCRUB_ATLAS_FPS = 8
+SCRUB_BACKFILL_FPS = 1
+SCRUB_ATLAS_RETRY_SECONDS = 600
 
 
 def recording_files(root: Path) -> list[Path]:
@@ -96,7 +99,7 @@ def scrub_frames_ready(source: Path, directory: Path) -> bool:
     return manifest.is_file() and manifest.stat().st_mtime_ns >= source.stat().st_mtime_ns
 
 
-def prepare_scrub_frames(source: Path, directory: Path) -> None:
+def prepare_scrub_frames(source: Path, directory: Path, fps: int = SCRUB_ATLAS_FPS) -> None:
     """Build a compact sequence of real frames in seek-free JPEG atlases."""
     try:
         if scrub_frames_ready(source, directory):
@@ -125,7 +128,7 @@ def prepare_scrub_frames(source: Path, directory: Path) -> None:
         result = subprocess.run(
             ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
              "-i", str(source), "-map", "0:v:0", "-an",
-             "-vf", "fps=8,scale=384:216:force_original_aspect_ratio=decrease,"
+             "-vf", f"fps={fps},scale=384:216:force_original_aspect_ratio=decrease,"
                     "pad=384:216:(ow-iw)/2:(oh-ih)/2,tile=6x4",
              "-fps_mode", "vfr", "-q:v", "7", "-start_number", "0",
              str(temporary / "%03d.jpg")],
@@ -134,9 +137,9 @@ def prepare_scrub_frames(source: Path, directory: Path) -> None:
         sheets = sorted(temporary.glob("*.jpg"))
         if result.returncode != 0 or not sheets:
             return
-        frame_count = min(math.ceil(duration * 8), len(sheets) * 24)
+        frame_count = min(math.ceil(duration * fps), len(sheets) * 24)
         (temporary / "manifest.json").write_text(json.dumps({
-            "fps": 8, "width": 384, "height": 216, "columns": 6, "rows": 4,
+            "fps": fps, "width": 384, "height": 216, "columns": 6, "rows": 4,
             "frames": frame_count, "sheets": len(sheets),
         }))
         if directory.exists():
@@ -338,6 +341,33 @@ def recording_space_available(output_dir: Path, reserve_gb: int) -> bool:
         return False
 
 
+def next_scrub_frame_source(output_dir: Path, *, oldest_first: bool, now: float | None = None) -> Path | None:
+    """Choose a closed segment needing a preview, including older footage."""
+    now = time.time() if now is None else now
+    candidates = []
+    for source in recording_files(output_dir):
+        try:
+            modified = source.stat().st_mtime
+            if now - modified >= 8:
+                candidates.append((modified, source))
+        except OSError:
+            continue
+    candidates.sort(key=lambda item: item[0], reverse=not oldest_first)
+    for _, source in candidates:
+        try:
+            frames = scrub_frames_dir(output_dir, source)
+            if scrub_frames_ready(source, frames):
+                continue
+            failure = frames.with_suffix('.failed')
+            if failure.is_file() and now - failure.stat().st_mtime < SCRUB_ATLAS_RETRY_SECONDS:
+                continue
+            return source
+        except OSError:
+            # Retention can remove a segment while the index is being scanned.
+            continue
+    return None
+
+
 class RecorderSupervisor:
     """Keep one stream-copy recorder running for each enabled online camera."""
 
@@ -351,6 +381,7 @@ class RecorderSupervisor:
         self._thread: threading.Thread | None = None
         self._trickplay_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cctv-trickplay")
         self._trickplay_job = None
+        self._scrub_oldest_first = False
 
     def start(self) -> None:
         if not shutil.which("ffmpeg"):
@@ -422,19 +453,13 @@ class RecorderSupervisor:
 
                 # Prepare one closed segment at a time without blocking the
                 # stream-copy recorder or opening another camera connection.
-                if not self._trickplay_job or self._trickplay_job.done():
-                    candidates = sorted(recording_files(self.output_dir), key=lambda p: p.stat().st_mtime, reverse=True)[:24]
-                    for source in candidates:
-                        if time.time() - source.stat().st_mtime < 8:
-                            continue
-                        frames = scrub_frames_dir(self.output_dir, source)
-                        if scrub_frames_ready(source, frames):
-                            continue
-                        failure = frames.with_suffix(".failed")
-                        if failure.is_file() and failure.stat().st_mtime_ns >= source.stat().st_mtime_ns:
-                            continue
-                        self._trickplay_job = self._trickplay_pool.submit(prepare_scrub_frames, source, frames)
-                        break
+                if space_available and (not self._trickplay_job or self._trickplay_job.done()):
+                    source = next_scrub_frame_source(self.output_dir, oldest_first=self._scrub_oldest_first)
+                    if source:
+                        fps = SCRUB_BACKFILL_FPS if self._scrub_oldest_first else SCRUB_ATLAS_FPS
+                        self._scrub_oldest_first = not self._scrub_oldest_first
+                        self._trickplay_job = self._trickplay_pool.submit(
+                            prepare_scrub_frames, source, scrub_frames_dir(self.output_dir, source), fps)
 
                 if time.monotonic() - last_cleanup >= 300:
                     prune_recordings(self.output_dir, retention)
