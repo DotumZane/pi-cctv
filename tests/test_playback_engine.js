@@ -331,6 +331,21 @@ async function seekResumesPlayback() {
   documentListeners.get('pointerup')({});
   await new Promise(resolve => setTimeout(resolve, 400));
   assert.equal(plays, 6, 'releasing the scrollbar cannot restart a recording after returning live');
+  let attempts = 0;
+  video.play = function () {
+    attempts++;
+    if (attempts === 1) return Promise.reject(Object.assign(new Error('unsupported container'), {name: 'NotSupportedError'}));
+    this.paused = false;
+    return Promise.resolve();
+  };
+  globals.workspacePlaybackUrl = '';
+  await globals.window.scrubWorkspaceTimeline(8);
+  assert.equal(video.src, `${record.url}?format=mp4`, 'a format error retries with a compatible recording');
+  assert.equal(attempts, 2, 'the compatible recording is attempted only once');
+  video.play = () => Promise.reject(Object.assign(new Error('autoplay blocked'), {name: 'NotAllowedError'}));
+  globals.workspacePlaybackUrl = '';
+  await globals.window.scrubWorkspaceTimeline(8);
+  assert.equal(video.src, record.url, 'autoplay errors do not trigger conversion');
 }
 
 async function previewAcrossSegments() {

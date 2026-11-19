@@ -89,6 +89,11 @@ def trickplay_path(root: Path, recording: Path) -> Path:
     return root / ".trickplay-cache" / relative.parent / f"{relative.stem}.mp4"
 
 
+def playback_cache_path(root: Path, recording: Path) -> Path:
+    relative = recording.relative_to(root)
+    return root / '.playback-cache' / relative.parent / f'{relative.stem}.mp4'
+
+
 def scrub_frames_dir(root: Path, recording: Path) -> Path:
     relative = recording.relative_to(root)
     return root / ".scrub-frames" / relative.parent / relative.stem
@@ -217,6 +222,7 @@ def prune_recordings(output_dir: Path, retention_hours: int, now: datetime | Non
             path.unlink()
             proxy = trickplay_path(output_dir, path)
             proxy.unlink(missing_ok=True)
+            playback_cache_path(output_dir, path).unlink(missing_ok=True)
             proxy.with_suffix(".failed").unlink(missing_ok=True)
             frames = scrub_frames_dir(output_dir, path)
             shutil.rmtree(frames, ignore_errors=True)
@@ -230,6 +236,10 @@ def prune_recordings(output_dir: Path, retention_hours: int, now: datetime | Non
         source = output_dir / failure.relative_to(output_dir / ".trickplay-cache").with_suffix(".mp4")
         if not source.is_file() and not source.with_suffix(".mkv").is_file():
             failure.unlink(missing_ok=True)
+    for cached in (output_dir / '.playback-cache').glob('**/*.mp4'):
+        source = output_dir / cached.relative_to(output_dir / '.playback-cache')
+        if not source.is_file() and not source.with_suffix('.mkv').is_file():
+            cached.unlink(missing_ok=True)
     frame_root = output_dir / ".scrub-frames"
     for manifest in frame_root.glob("**/manifest.json"):
         source = output_dir / manifest.parent.relative_to(frame_root).with_suffix(".mp4")
@@ -246,8 +256,10 @@ def enforce_storage_limit(output_dir: Path, limit_gb: int) -> int:
     files = sorted(recording_files(output_dir), key=lambda path: path.stat().st_mtime)
     def assets_size(path: Path) -> int:
         proxy = trickplay_path(output_dir, path)
+        playback = playback_cache_path(output_dir, path)
         frames = scrub_frames_dir(output_dir, path)
         return ((proxy.stat().st_size if proxy.is_file() else 0)
+                + (playback.stat().st_size if playback.is_file() else 0)
                 + sum(frame.stat().st_size for frame in frames.glob("*.jpg")))
     total = sum(path.stat().st_size + assets_size(path) for path in files)
     removed = 0
@@ -259,6 +271,7 @@ def enforce_storage_limit(output_dir: Path, limit_gb: int) -> int:
         proxy = trickplay_path(output_dir, path)
         proxy_size = assets_size(path)
         proxy.unlink(missing_ok=True)
+        playback_cache_path(output_dir, path).unlink(missing_ok=True)
         proxy.with_suffix(".failed").unlink(missing_ok=True)
         frames = scrub_frames_dir(output_dir, path)
         shutil.rmtree(frames, ignore_errors=True)

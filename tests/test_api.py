@@ -357,6 +357,30 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.read(), b"test-video")
         connection.close()
 
+    @unittest.skipUnless(shutil.which('ffmpeg') and shutil.which('ffprobe'), 'FFmpeg is required')
+    def test_compatible_recording_can_be_opened_with_byte_ranges(self):
+        encoders = subprocess.run(['ffmpeg', '-hide_banner', '-encoders'], capture_output=True, text=True, check=True).stdout
+        if 'libx264' not in encoders:
+            self.skipTest('libx264 is required')
+        recording = Path(self.recordings.name) / 'cam-01' / '2026-11-04' / '06-00-00.mp4'
+        recording.parent.mkdir(parents=True)
+        subprocess.run(['ffmpeg', '-v', 'error', '-f', 'lavfi', '-i',
+                        'testsrc=size=160x90:rate=10:duration=2', '-c:v', 'mpeg4', str(recording)],
+                       capture_output=True, check=True)
+        connection = HTTPConnection(*self.base)
+        connection.request('GET', '/recordings/cam-01/2026-11-04/06-00-00.mp4?format=mp4',
+                           headers={'Range': 'bytes=0-127'})
+        response = connection.getresponse()
+        self.assertEqual(response.status, 206)
+        self.assertEqual(response.getheader('Content-Type'), 'video/mp4')
+        self.assertEqual(len(response.read()), 128)
+        connection.close()
+        cached = Path(self.recordings.name) / '.playback-cache/cam-01/2026-11-04/06-00-00.mp4'
+        result = subprocess.run(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries',
+                                 'stream=codec_name', '-of', 'default=noprint_wrappers=1:nokey=1', str(cached)],
+                                capture_output=True, text=True, check=True)
+        self.assertEqual(result.stdout.strip(), 'h264')
+
     @unittest.skipUnless(shutil.which("ffmpeg"), "FFmpeg is required for frame extraction")
     def test_scrub_frame_uses_recording_and_reuses_cached_decode(self):
         recording = Path(self.recordings.name) / "cam-01" / "2026-11-04" / "06-00-00.mp4"

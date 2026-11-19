@@ -133,3 +133,17 @@ class RecordingTests(unittest.TestCase):
             self.assertEqual(prune_recordings(root, 24, reference), 1)
             self.assertFalse(old.exists())
             self.assertTrue(fresh.exists())
+
+    def test_pruning_removes_compatible_playback_cache(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / 'camera' / 'day' / 'video.mp4'
+            cached = root / '.playback-cache' / 'camera' / 'day' / 'video.mp4'
+            source.parent.mkdir(parents=True)
+            cached.parent.mkdir(parents=True)
+            source.write_bytes(b'video')
+            cached.write_bytes(b'converted')
+            old = (datetime.now(timezone.utc) - timedelta(hours=25)).timestamp()
+            os.utime(source, (old, old))
+            self.assertEqual(prune_recordings(root, 24), 1)
+            self.assertFalse(cached.exists())

@@ -874,7 +874,14 @@
     return true;
   };
 
-  async function commit(value) {
+  function canRetryRecording(error, record, converted) {
+    if (converted || !/\.mp4(?:[?#]|$)/i.test(record?.url || '')) return false;
+    // Only retry media format/decode failures. Network and autoplay errors
+    // should not launch a costly server-side conversion.
+    return error?.code === 3 || error?.code === 4 || error?.name === 'NotSupportedError';
+  }
+
+  async function commit(value, converted = false) {
     const selected = Math.max(0, Math.min(timelineDayLength(workspaceTimelineDate) - 0.001, Number(value) || 0));
     const record = timelineRecordAt(selected);
     const video = mainVideo();
@@ -891,11 +898,11 @@
       return;
     }
     const offset = recordingOffset(record, selected);
-    const url = sourceFor(record);
+    const url = converted ? `${record.url}${record.url.includes('?') ? '&' : '?'}format=mp4` : sourceFor(record);
     clearTimeout(state.preloadTimer);
     state.preloadPath = null;
-    const sameSource = video && workspacePlaybackUrl === record.url && video.dataset.playback === 'recording';
-    const same = sameSource && video.readyState >= 1;
+    const sameSource = video && workspacePlaybackUrl === record.url && video.dataset.playback === 'recording' && !converted;
+    const same = sameSource && video.readyState >= 1 && !video.error;
     // Keep the last decoded preview frame over the player while the main
     // element seeks. Replacing the source first and hiding the preview here
     // caused the visible black flash during every scrub commit.
@@ -907,7 +914,14 @@
       // Some browsers defer decoding a paused seek until playback starts.
       // Start it behind the preview instead of waiting on a paused element.
       try { await startAndWaitForFrame(video); }
-      catch (error) { if (token === state.requestToken) handlePlaybackStartError(error); return; }
+      catch (error) {
+        if (token === state.requestToken && canRetryRecording(video.error || error, record, converted)) {
+          updateStatus('Preparing compatible playback…');
+          return commit(selected, true);
+        }
+        if (token === state.requestToken) handlePlaybackStartError(error);
+        return;
+      }
       if (token === state.requestToken) {
         if (userPaused()) video.pause();
         drawMainFrame();
@@ -932,8 +946,9 @@
     workspacePlaybackUrl = record.url;
     workspacePlaybackStartSeconds = timelineSeconds(record);
     try {
+      if (sameSource && video.error) throw video.error;
       await new Promise((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error('recording load timed out')), 15000);
+        const timer = setTimeout(() => reject(new Error('recording load timed out')), converted ? 180000 : 15000);
         const done = (error) => { clearTimeout(timer); video.removeEventListener('loadedmetadata', ready); video.removeEventListener('error', failed); error ? reject(error) : resolve(); };
         const ready = () => done();
         const failed = () => done(video.error || new Error('recording could not be decoded'));
@@ -956,6 +971,10 @@
       hidePreview();
       log('commit:ready', { selected, offset });
     } catch (error) {
+      if (token === state.requestToken && canRetryRecording(video.error || error, record, converted)) {
+        updateStatus('Preparing compatible playback…');
+        return commit(selected, true);
+      }
       if (token === state.requestToken) handlePlaybackStartError(error);
       log('commit:error', error);
     } finally { state.committing = false; }
