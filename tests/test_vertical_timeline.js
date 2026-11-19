@@ -3,6 +3,17 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
+function checkWheelSensitivity() {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'cctv', 'dashboard.html'), 'utf8');
+  const wheel = source.slice(source.indexOf('function timelineWheelPixels('), source.indexOf('\nfunction verticalTimelineMinimumScroll('));
+  const context = {}; vm.createContext(context); vm.runInContext(wheel, context);
+  assert.equal(context.timelineWheelPixels({deltaY: 100, deltaMode: 0}), 12, 'a Chrome wheel notch advances about five minutes');
+  assert.equal(context.timelineWheelPixels({deltaY: -120, deltaMode: 0}), -12, 'reverse mouse scrolling uses the same sensitivity');
+  assert.equal(context.timelineWheelPixels({deltaY: 3, deltaMode: 1}), 12, 'line-mode wheels are normalized');
+  assert.equal(context.timelineWheelPixels({deltaY: 4.5, deltaMode: 0}), 4.5, 'trackpad pixel scrolling stays unchanged');
+  assert.equal(context.timelineWheelPixels({deltaY: 200, deltaMode: 0}), 24, 'multiple wheel notches accumulate');
+}
+
 function checkRecordedDuration() {
   const source = fs.readFileSync(path.join(__dirname, '..', 'cctv', 'timeline-enhancements.js'), 'utf8');
   const duration = source.slice(source.indexOf('function workspaceRecordDuration('), source.indexOf('\nfunction mergeWorkspaceCoverage('));
@@ -76,5 +87,5 @@ async function checkLiveEdge(initialDate) {
 
 const yesterday = new Date(); yesterday.setDate(yesterday.getDate() - 1);
 const key = date => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-Promise.resolve().then(checkRecordedDuration).then(() => checkLiveEdge(key(new Date()))).then(() => checkLiveEdge(key(yesterday)))
+Promise.resolve().then(checkWheelSensitivity).then(checkRecordedDuration).then(() => checkLiveEdge(key(new Date()))).then(() => checkLiveEdge(key(yesterday)))
   .catch(error => { console.error(error); process.exitCode = 1; });
