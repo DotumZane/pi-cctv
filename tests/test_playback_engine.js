@@ -500,7 +500,7 @@ async function warmBeforeScrolling() {
   const document = {body: {}, head: {appendChild() {}}, documentElement: {dataset: {}},
     createElement(tag) { return tag === 'canvas' ? canvas : {setAttribute() {}, classList: {toggle() {}}}; },
     querySelector(selector) { return selector === '#workspace-live' ? video : null; }, addEventListener() {}};
-  const records = Array.from({length: 4}, (_, i) => ({path: `cam/${i}.mp4`, url: `/recordings/cam/${i}.mp4`, startSeconds: i * 30, duration: 30}));
+  const records = Array.from({length: 10}, (_, i) => ({path: `cam/${i}.mp4`, url: `/recordings/cam/${i}.mp4`, startSeconds: i * 30, duration: 30}));
   const globals = {document, window: {workspaceCamera: 'cam', openLiveWorkspace: async () => {}, returnWorkspaceToLive: async () => {}, addEventListener() {}},
     URLSearchParams, location: {search: ''}, devicePixelRatio: 1, performance: {now: () => 1000},
     requestAnimationFrame() {return 1;}, cancelAnimationFrame() {}, MutationObserver: class {observe() {}},
@@ -512,9 +512,8 @@ async function warmBeforeScrolling() {
     createImageBitmap: async () => ({close() {}}), setTimeout, clearTimeout, console};
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', 'cctv', 'playback-engine.js'), 'utf8'), globals);
   await globals.window.openLiveWorkspace('cam');
-  await new Promise(resolve => setImmediate(resolve));
-  await new Promise(resolve => setImmediate(resolve));
-  assert.equal(requested.filter(url => url.includes('scrub-frames?')).length, 4, 'recent previews are requested before the first scroll');
+  for (let i = 0; i < 6; i++) await new Promise(resolve => setImmediate(resolve));
+  assert.equal(requested.filter(url => url.includes('scrub-frames?')).length, 10, 'five minutes of 30-second segments are warmed before the first scroll');
   assert.ok(requested.some(url => url.endsWith('.jpg')), 'preview sheets are decoded in advance');
 }
 

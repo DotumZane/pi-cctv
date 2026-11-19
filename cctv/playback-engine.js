@@ -74,6 +74,7 @@
     atlasManifests: new Map(),
     atlasChecks: new Map(),
     atlasPrefetching: new Set(),
+    atlasPrefetchQueue: new Map(),
     atlasRecordList: null,
     atlasRecordIndices: new Map(),
     atlasPrefetchRetry: new Map(),
@@ -241,15 +242,22 @@
     }
     const index = state.atlasRecordIndices.get(record.path) ?? -1;
     if (index < 0) return;
-    for (let step = 1; step <= 3; step++) {
+    // Ten 30-second segments cover approximately five minutes. Retarget the
+    // pending queue whenever the user changes position or direction.
+    state.atlasPrefetchQueue.clear();
+    for (let step = 1; step <= 10; step++) {
       const next = workspaceTimelineRecords[index + Math.sign(direction) * step];
       if (next) prefetchAtlas(next, direction, Number(state.target) + Math.sign(direction) * 24 * step);
     }
   }
 
   function prefetchAtlas(next, direction, predictedSeconds) {
-    if (!next || state.atlasPrefetching.has(next.path) || state.atlasPrefetching.size >= 4 ||
+    if (!next || state.atlasPrefetching.has(next.path) ||
         (state.atlasPrefetchRetry.get(next.path) || 0) > performance.now()) return;
+    if (state.atlasPrefetching.size >= 4) {
+      state.atlasPrefetchQueue.set(next.path, {next, direction, predictedSeconds});
+      return;
+    }
     state.atlasPrefetching.add(next.path);
     const loadManifest = state.atlasManifests.has(next.path) ? Promise.resolve(state.atlasManifests.get(next.path)) :
       api(`/api/recordings/scrub-frames?prepare=0&path=${encodeURIComponent(next.path)}`)
@@ -291,16 +299,28 @@
         }).catch(() => {}).finally(() => state.atlasLoads.delete(key));
       state.atlasLoads.set(key, job);
       return job;
-    }).catch(() => {}).finally(() => state.atlasPrefetching.delete(next.path));
+    }).catch(() => {}).finally(() => {
+      state.atlasPrefetching.delete(next.path);
+      while (state.atlasPrefetching.size < 4 && state.atlasPrefetchQueue.size) {
+        const [path, queued] = state.atlasPrefetchQueue.entries().next().value;
+        state.atlasPrefetchQueue.delete(path);
+        prefetchAtlas(queued.next, queued.direction, queued.predictedSeconds);
+      }
+    });
   }
 
   function warmRecentAtlases() {
     if (typeof workspaceTimelineRecords === 'undefined' || !workspaceTimelineRecords.length) return;
-    // Start with the three most recent closed segments while the live view is
+    // Start with recent segments while the live view is
     // already visible, so the first backward wheel notches need less waiting.
-    workspaceTimelineRecords.slice(-4).reverse().forEach(record => {
-      const duration = Number(record.duration) || Number(typeof workspaceTimelineSegmentSeconds === 'undefined' ? 30 : workspaceTimelineSegmentSeconds) || 30;
-      prefetchAtlas(record, -1, timelineSeconds(record) + Math.max(0, duration - 1));
+    state.atlasPrefetchQueue.clear();
+    const recent = workspaceTimelineRecords.slice(-10).reverse();
+    const latest = recent[0];
+    const duration = Number(latest.duration) || Number(typeof workspaceTimelineSegmentSeconds === 'undefined' ? 30 : workspaceTimelineSegmentSeconds) || 30;
+    const live = typeof liveTimelineSeconds === 'function' ? liveTimelineSeconds() : null;
+    const start = live ?? (timelineSeconds(latest) + duration);
+    recent.forEach((record, index) => {
+      prefetchAtlas(record, -1, start - 24 * (index + 1));
     });
   }
 
@@ -1064,6 +1084,7 @@
     const returnToLive = window.returnWorkspaceToLive;
     window.returnWorkspaceToLive = async (...args) => {
       stopGapClock();
+      state.atlasPrefetchQueue.clear();
       state.requestToken += 1;
       clearTimeout(state.commitScheduleTimer);
       clearTimeout(state.commitTimer);
