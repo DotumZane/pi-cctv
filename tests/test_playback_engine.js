@@ -244,6 +244,7 @@ async function seekResumesPlayback() {
   const documentListeners = new Map();
   let plays = 0;
   let loads = 0;
+  let nextStart = 30;
   const video = { dataset: { playback: 'live' }, clientWidth: 640, clientHeight: 360,
     readyState: 2, duration: 30, paused: false, seeking: false, currentTime: 0,
     closest() { return { appendChild() {} }; }, setAttribute() {}, removeAttribute() {},
@@ -263,11 +264,11 @@ async function seekResumesPlayback() {
   const globals = { document, window: { workspaceCamera: 'cam', returnWorkspaceToLive: async () => {}, addEventListener() {} },
     URLSearchParams, location: { search: '' }, devicePixelRatio: 1, performance: { now: () => 1000 },
     requestAnimationFrame() { return 1; }, cancelAnimationFrame() {}, MutationObserver: class { observe() {} },
-    timelineDayLength: () => 86400, timelineRecordAt: value => value >= 30 ? nextRecord : record,
-    timelineSeconds: item => item === nextRecord ? 30 : 0, workspaceTimelineRecords: [record, nextRecord],
+    timelineDayLength: () => 86400, timelineRecordAt: value => value >= nextStart ? nextRecord : value < 30 ? record : undefined,
+    timelineSeconds: item => item === nextRecord ? nextStart : 0, workspaceTimelineRecords: [record, nextRecord],
     workspaceTimelineDate: '2026-11-17', workspacePlaybackUrl: '', workspacePlaybackStartSeconds: 0,
     workspaceTimelineLastValue: 0, verticalTimelineUserScrolling: true, updateTimelinePlayhead() {},
-    setWorkspaceMode(mode) { video.dataset.playback = mode; }, esc: value => value,
+    setWorkspaceMode(mode) { video.dataset.playback = mode; }, esc: value => value, formatTimelineTime: value => String(value),
     async api() { return { ok: true, async json() { return { ready: false }; } }; },
     setTimeout, clearTimeout, console };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', 'cctv', 'playback-engine.js'), 'utf8'), globals);
@@ -288,6 +289,19 @@ async function seekResumesPlayback() {
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(video.src, nextRecord.url, 'playback advances to the adjacent segment');
   assert.equal(plays, 3, 'playback continues after a segment ends');
+  nextStart = 45;
+  globals.workspaceUserPaused = true;
+  await globals.window.scrubWorkspaceTimeline(35);
+  assert.equal(video.src, nextRecord.url, 'paused playback does not skip the gap');
+  globals.workspaceUserPaused = false;
+  await globals.window.scrubWorkspaceTimeline(35);
+  assert.equal(video.currentTime, 0, 'playing skips to the next available recording');
+  nextStart = 30;
+  globals.workspaceUserPaused = true;
+  await globals.window.scrubWorkspaceTimeline(8);
+  assert.equal(video.paused, true, 'a paused user stays paused after seeking');
+  globals.workspaceUserPaused = false;
+
   documentListeners.get('scroll')({ target: { closest: () => true } });
   globals.window.previewWorkspaceTimelineScrub(8, -1);
   await new Promise(resolve => setTimeout(resolve, 260));
@@ -295,13 +309,13 @@ async function seekResumesPlayback() {
   const preloaded = loads;
   await new Promise(resolve => setTimeout(resolve, 200));
   assert.equal(loads, preloaded, 'committing reuses the recording load');
-  assert.equal(plays, 4, 'the preloaded recording resumes playback');
+  assert.equal(plays, 6, 'the preloaded recording resumes playback');
   documentListeners.get('pointerdown')({ target: { closest: () => true } });
   globals.window.previewWorkspaceTimelineScrub(10, 1);
   await globals.window.returnWorkspaceToLive();
   documentListeners.get('pointerup')({});
   await new Promise(resolve => setTimeout(resolve, 400));
-  assert.equal(plays, 4, 'releasing the scrollbar cannot restart a recording after returning live');
+  assert.equal(plays, 6, 'releasing the scrollbar cannot restart a recording after returning live');
 }
 
 async function previewAcrossSegments() {

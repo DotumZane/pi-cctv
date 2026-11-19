@@ -772,6 +772,23 @@
     if (status && message) status.innerHTML = `<span class="notice">${esc(message)}</span>`;
   }
 
+  function userPaused() {
+    return typeof workspaceUserPaused !== 'undefined' && workspaceUserPaused;
+  }
+
+  // Find the next actual segment rather than repeatedly seeking into a gap.
+  function nextRecording(seconds) {
+    return (typeof workspaceTimelineRecords === 'undefined' ? [] : workspaceTimelineRecords)
+      .filter(item => timelineSeconds(item) > seconds)
+      .sort((a, b) => timelineSeconds(a) - timelineSeconds(b))[0];
+  }
+
+  window.resumeWorkspaceGap = function () {
+    if (!state.active || state.target === null || state.targetRecord) return false;
+    void commit(state.target);
+    return true;
+  };
+
   async function commit(value) {
     const selected = Math.max(0, Math.min(timelineDayLength(workspaceTimelineDate) - 1, Number(value) || 0));
     const record = timelineRecordAt(selected);
@@ -779,6 +796,39 @@
     state.requestToken += 1;
     const token = state.requestToken;
     if (!record) {
+      const next = !userPaused() && nextRecording(selected);
+      if (next) {
+        updateStatus('Skipping unrecorded time…');
+        return commit(timelineSeconds(next));
+      }
+      // The timeline normally holds one day's index. Search later days too,
+      // without treating an unavailable index as an empty recording.
+      if (!userPaused() && typeof workspaceNextDate === 'function' &&
+          typeof loadCameraTimeline === 'function' && window.workspaceCamera &&
+          workspaceNextDate(workspaceTimelineDate).getTime() < Date.now()) {
+        const date = workspaceTimelineDate;
+        try {
+          const start = workspaceNextDate(date).toISOString();
+          const response = await api(`/api/recordings?camera_id=${encodeURIComponent(window.workspaceCamera)}&start=${encodeURIComponent(start)}&end=${encodeURIComponent(new Date().toISOString())}`);
+          if (!response.ok) throw new Error('recording index unavailable');
+          const data = await response.json();
+          if (token !== state.requestToken || userPaused() || workspaceTimelineDate !== date) return;
+          const later = (data.recordings || []).filter(item => item.start).sort((a, b) => new Date(a.start) - new Date(b.start))[0];
+          if (later) {
+            const input = document.querySelector('#workspace-date');
+            if (input) {
+              input.value = localDateKey(later.start);
+              await loadCameraTimeline(window.workspaceCamera);
+              if (token !== state.requestToken || userPaused()) return;
+              const loaded = workspaceTimelineRecords.find(item => item.url === later.url);
+              if (loaded) return commit(timelineSeconds(loaded));
+            }
+          }
+        } catch (error) {
+          if (token === state.requestToken) updateStatus('Unable to check for later recordings.');
+          return;
+        }
+      }
       // Keep the gap overlay visible after release so an earlier recording or
       // the live stream cannot be mistaken for footage at the selected time.
       if (video && !video.paused) video.pause();
@@ -804,6 +854,7 @@
       try { await startAndWaitForFrame(video); }
       catch (error) { if (token === state.requestToken) handlePlaybackStartError(error); return; }
       if (token === state.requestToken) {
+        if (userPaused()) video.pause();
         drawMainFrame();
         if (typeof verticalTimelineUserScrolling !== 'undefined') verticalTimelineUserScrolling = false;
         if (typeof updateTimelinePlayhead === 'function') updateTimelinePlayhead(selected);
@@ -841,10 +892,11 @@
       if (typeof setWorkspaceMode === 'function') setWorkspaceMode('recording');
       await startAndWaitForFrame(video);
       if (token !== state.requestToken) return;
+      if (userPaused()) video.pause();
       drawMainFrame();
       if (typeof verticalTimelineUserScrolling !== 'undefined') verticalTimelineUserScrolling = false;
       if (typeof updateTimelinePlayhead === 'function') updateTimelinePlayhead(selected);
-      updateStatus('Playing recording.');
+      updateStatus(userPaused() ? 'Recording paused.' : 'Playing recording.');
       if (token !== state.requestToken) return;
       hidePreview();
       log('commit:ready', { selected, offset });
@@ -983,16 +1035,17 @@
       }
     });
     video.addEventListener('ended', () => {
-      if (state.active || video.dataset.playback !== 'recording' ||
+      if (state.active || userPaused() || video.dataset.playback !== 'recording' ||
           typeof workspaceTimelineRecords === 'undefined') return;
       const current = workspaceTimelineRecords.find(record => record.url === workspacePlaybackUrl);
       if (!current || !Number.isFinite(video.duration)) return;
-      const end = timelineSeconds(current) + video.duration;
-      const next = workspaceTimelineRecords
-        .filter(record => timelineSeconds(record) > timelineSeconds(current))
-        .sort((a, b) => timelineSeconds(a) - timelineSeconds(b))[0];
-      if (next && timelineSeconds(next) <= end + 2) void commit(timelineSeconds(next));
-      else updateStatus('Recording ended. Select another time to continue.');
+      const next = nextRecording(timelineSeconds(current));
+      if (next) void commit(timelineSeconds(next));
+      else {
+        const after = timelineSeconds(current) + Math.max(video.duration, typeof workspaceTimelineSegmentSeconds === 'number' ? workspaceTimelineSegmentSeconds : 0) + 0.1;
+        if (after < timelineDayLength(workspaceTimelineDate)) void commit(after);
+        else updateStatus('Recording ended. No later recording is available on this date.');
+      }
     });
     window.addEventListener('resize', fitCanvas, { passive: true });
     new MutationObserver(() => {
