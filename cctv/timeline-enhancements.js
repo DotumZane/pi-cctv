@@ -15,7 +15,7 @@ timelineRecordAt=function(value){
   const records=workspaceTimelineRecords,seconds=Number(value)||0;
   if(!workspaceTimelineLookup||workspaceTimelineLookup.records!==records||workspaceTimelineLookup.date!==workspaceTimelineDate||workspaceTimelineLookup.segment!==workspaceTimelineSegmentSeconds||workspaceTimelineLookup.length!==records.length){
     const starts=records.map(timelineSeconds),ends=[];let maximum=-Infinity;
-    for(let i=0;i<records.length;i++){const explicit=Number(records[i].duration),expected=Math.max(1,Number(workspaceTimelineSegmentSeconds)||30),delta=i+1<records.length?starts[i+1]-starts[i]:0,duration=Number.isFinite(explicit)&&explicit>0?explicit:delta>0?Math.min(expected,delta):expected;maximum=Math.max(maximum,starts[i]+duration);ends.push(maximum)}
+    for(let i=0;i<records.length;i++){const explicit=Number(records[i].duration),expected=Math.max(1,Number(workspaceTimelineSegmentSeconds)||30),delta=i+1<records.length?starts[i+1]-starts[i]:0,duration=Number.isFinite(explicit)&&explicit>0?explicit:delta>0?Math.min(expected,delta):expected;let end=starts[i]+duration;const gap=i+1<records.length?starts[i+1]-end:Infinity;if(Number.isFinite(explicit)&&explicit>0&&gap>0&&gap<=0.1)end=starts[i+1];maximum=Math.max(maximum,end);ends.push(maximum)}
     workspaceTimelineLookup={records,date:workspaceTimelineDate,segment:workspaceTimelineSegmentSeconds,length:records.length,starts,ends};
   }
   const {starts,ends}=workspaceTimelineLookup;let left=0,right=starts.length;

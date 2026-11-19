@@ -16,6 +16,11 @@ function checkWheelSensitivity() {
 
 function checkRecordedDuration() {
   const source = fs.readFileSync(path.join(__dirname, '..', 'cctv', 'timeline-enhancements.js'), 'utf8');
+  const engine = fs.readFileSync(path.join(__dirname, '..', 'cctv', 'playback-engine.js'), 'utf8');
+  const offset = engine.slice(engine.indexOf('  function recordingOffset('), engine.indexOf('\n  function setTarget('));
+  const seek = {timelineSeconds: record => record.startSeconds}; vm.createContext(seek); vm.runInContext(offset, seek);
+  assert.ok(seek.recordingOffset({startSeconds: 0, duration: 29.978333}, 29.99) < 29.978333, 'boundary seeks stay within the actual segment');
+
   const duration = source.slice(source.indexOf('function workspaceRecordDuration('), source.indexOf('\nfunction mergeWorkspaceCoverage('));
   const lookup = source.slice(source.indexOf('let workspaceTimelineLookup='), source.indexOf('\nupdateTimelinePlayhead='));
   const record = { startSeconds: 0, duration: 45 };
@@ -35,6 +40,13 @@ function checkRecordedDuration() {
     const expected = mixed.find(item => value >= item.startSeconds && value < item.startSeconds + item.duration);
     assert.equal(context.timelineRecordAt(value), expected, `overlap and gap lookup at ${value}`);
   }
+  const adjacent = [{startSeconds: 0, duration: 29.978333}, {startSeconds: 30, duration: 29.9518}, {startSeconds: 60, duration: 30}];
+  context.workspaceTimelineRecords = adjacent;
+  assert.equal(context.timelineRecordAt(29.99), adjacent[0], 'a 22ms boundary gap resolves to the preceding segment');
+  assert.equal(context.timelineRecordAt(59.98), adjacent[1], 'a 48ms boundary gap remains browsable');
+  assert.equal(context.timelineRecordAt(30), adjacent[1], 'the next segment starts at its exact timestamp');
+  context.workspaceTimelineRecords = [{startSeconds: 0, duration: 29.8}, {startSeconds: 30, duration: 30}];
+  assert.equal(context.timelineRecordAt(29.9), undefined, 'larger gaps must remain visible');
   let lookups = 0;
   context.timelineSeconds = item => { lookups++; return item.startSeconds; };
   context.workspaceTimelineRecords = Array.from({length: 2880}, (_, i) => ({startSeconds: i * 30, duration: 30}));

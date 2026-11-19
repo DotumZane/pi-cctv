@@ -660,6 +660,12 @@
     }, 220);
   }
 
+  function recordingOffset(record, selected) {
+    const offset = Math.max(0, selected - timelineSeconds(record));
+    const duration = Number(record.duration);
+    return Number.isFinite(duration) && duration > 0 ? Math.min(offset, Math.max(0, duration - 0.04)) : offset;
+  }
+
   function setTarget(value, velocity, confirmedGap = false) {
     const selected = Math.max(0, Math.min(timelineDayLength(workspaceTimelineDate) - 1, Number(value) || 0));
     const record = timelineRecordAt(selected);
@@ -690,7 +696,7 @@
     state.target = selected;
     state.targetAbsolute = absolute;
     state.targetRecord = record;
-    state.targetOffset = record ? Math.max(0, selected - timelineSeconds(record)) : 0;
+    state.targetOffset = record ? recordingOffset(record, selected) : 0;
     const playing = mainVideo();
     if (playing?.dataset.playback === 'recording' && !playing.paused) playing.pause();
     showPreview();
@@ -779,7 +785,7 @@
       setTarget(selected, 0, true);
       return;
     }
-    const offset = Math.max(0, selected - timelineSeconds(record));
+    const offset = recordingOffset(record, selected);
     const url = sourceFor(record);
     clearTimeout(state.preloadTimer);
     state.preloadPath = null;
