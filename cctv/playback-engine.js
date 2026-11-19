@@ -660,7 +660,7 @@
     }, 220);
   }
 
-  function setTarget(value, velocity) {
+  function setTarget(value, velocity, confirmedGap = false) {
     const selected = Math.max(0, Math.min(timelineDayLength(workspaceTimelineDate) - 1, Number(value) || 0));
     const record = timelineRecordAt(selected);
     const wasGap = state.target !== null && !state.targetRecord;
@@ -722,8 +722,13 @@
       state.lastFrameTime = null;
       state.hasFrame = true;
       state.canvas.classList.add('visible');
-      scrubMessage(`No recording · ${date} ${formatTimelineTime(selected)}${hadFrame ? ' · last frame shown' : ''}`);
-      updateStatus('No recording is available at the selected time.');
+      if (confirmedGap) {
+        scrubMessage(`No recording · ${date} ${formatTimelineTime(selected)}${hadFrame ? ' · last frame shown' : ''}`);
+        updateStatus('No recording is available at the selected time.');
+      } else {
+        scrubMessage('');
+        updateStatus('Scrolling · last available frame shown.');
+      }
       return;
     }
     scrubMessage('');
@@ -771,7 +776,7 @@
       // Keep the gap overlay visible after release so an earlier recording or
       // the live stream cannot be mistaken for footage at the selected time.
       if (video && !video.paused) video.pause();
-      setTarget(selected, 0);
+      setTarget(selected, 0, true);
       return;
     }
     const offset = Math.max(0, selected - timelineSeconds(record));

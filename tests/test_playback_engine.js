@@ -80,7 +80,7 @@ async function main() {
   assert.equal(committed, 0);
   const clearsBeforeGap = clears;
   window.previewWorkspaceTimelineScrub(40, 20);
-  assert.match(status.innerHTML, /No recording/);
+  assert.doesNotMatch(status.innerHTML, /No recording/, 'brief gaps do not interrupt scrolling');
   assert.equal(visible.has('visible'), true, 'a gap keeps the preview visible');
   assert.equal(clears, clearsBeforeGap, 'a gap does not erase the last decoded picture');
   await window.scrubWorkspaceTimeline(40);
