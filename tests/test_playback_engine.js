@@ -245,6 +245,8 @@ async function seekResumesPlayback() {
   let plays = 0;
   let loads = 0;
   let nextStart = 30;
+  let clock = 1000;
+  let position = 0;
   const video = { dataset: { playback: 'live' }, clientWidth: 640, clientHeight: 360,
     readyState: 2, duration: 30, paused: false, seeking: false, currentTime: 0,
     closest() { return { appendChild() {} }; }, setAttribute() {}, removeAttribute() {},
@@ -262,12 +264,12 @@ async function seekResumesPlayback() {
   const record = { path: 'test.mp4', url: '/test.mp4' };
   const nextRecord = { path: 'next.mp4', url: '/next.mp4' };
   const globals = { document, window: { workspaceCamera: 'cam', returnWorkspaceToLive: async () => {}, addEventListener() {} },
-    URLSearchParams, location: { search: '' }, devicePixelRatio: 1, performance: { now: () => 1000 },
+    URLSearchParams, location: { search: '' }, devicePixelRatio: 1, performance: { now: () => clock },
     requestAnimationFrame() { return 1; }, cancelAnimationFrame() {}, MutationObserver: class { observe() {} },
     timelineDayLength: () => 86400, timelineRecordAt: value => value >= nextStart ? nextRecord : value < 30 ? record : undefined,
     timelineSeconds: item => item === nextRecord ? nextStart : 0, workspaceTimelineRecords: [record, nextRecord],
     workspaceTimelineDate: '2026-11-17', workspacePlaybackUrl: '', workspacePlaybackStartSeconds: 0,
-    workspaceTimelineLastValue: 0, verticalTimelineUserScrolling: true, updateTimelinePlayhead() {},
+    workspaceTimelineLastValue: 0, verticalTimelineUserScrolling: true, updateTimelinePlayhead(value) { position = value; },
     setWorkspaceMode(mode) { video.dataset.playback = mode; }, esc: value => value, formatTimelineTime: value => String(value),
     async api() { return { ok: true, async json() { return { ready: false }; } }; },
     setTimeout, clearTimeout, console };
@@ -289,13 +291,25 @@ async function seekResumesPlayback() {
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(video.src, nextRecord.url, 'playback advances to the adjacent segment');
   assert.equal(plays, 3, 'playback continues after a segment ends');
-  nextStart = 45;
+  nextStart = 36;
   globals.workspaceUserPaused = true;
   await globals.window.scrubWorkspaceTimeline(35);
-  assert.equal(video.src, nextRecord.url, 'paused playback does not skip the gap');
-  globals.workspaceUserPaused = false;
-  await globals.window.scrubWorkspaceTimeline(35);
-  assert.equal(video.currentTime, 0, 'playing skips to the next available recording');
+  clock += 1000;
+  await new Promise(resolve => setTimeout(resolve, 300));
+  assert.equal(position, 35, 'paused playback remains at the selected gap');
+  assert.equal(globals.window.toggleWorkspaceGap(), true);
+  clock += 500;
+  await new Promise(resolve => setTimeout(resolve, 300));
+  assert.equal(position, 35.5, 'the timeline advances through the gap at playback speed');
+  assert.equal(plays, 3, 'the next recording does not start early');
+  assert.equal(globals.window.toggleWorkspaceGap(), true);
+  clock += 2000;
+  await new Promise(resolve => setTimeout(resolve, 300));
+  assert.equal(position, 35.5, 'pausing freezes the gap clock');
+  globals.window.toggleWorkspaceGap();
+  clock += 500;
+  await new Promise(resolve => setTimeout(resolve, 300));
+  assert.equal(plays, 4, 'playback resumes when the timeline reaches the next recording');
   nextStart = 30;
   globals.workspaceUserPaused = true;
   await globals.window.scrubWorkspaceTimeline(8);
