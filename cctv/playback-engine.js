@@ -269,6 +269,18 @@
     return `${request.record.path}:${Math.round(request.offset * 4)}`;
   }
 
+  function usablePreviewPosition(absolute, direction) {
+    if (state.targetAbsolute === null || !state.targetRecord) return false;
+    // Permit a bounded amount of time for decoding while fast scrolling
+    // crosses short files. Require progress in the current direction and
+    // never let an older completion replace a newer displayed frame.
+    const tolerance = Math.max(0.5, Math.min(90, state.scrubSpeed * 0.75));
+    const delta = absolute - state.targetAbsolute;
+    if (Math.abs(delta) > tolerance || (direction && delta * direction > 0.25)) return false;
+    return !(state.lastFrameTime !== null && direction &&
+      (absolute - state.lastFrameTime) * direction < -0.001);
+  }
+
   function absoluteTimelineSeconds(date, value) {
     return new Date(`${date}T00:00:00`).getTime() / 1000 + Number(value);
   }
@@ -614,7 +626,13 @@
               if (state.active && state.proxyReady && !state.atlasManifest && state.targetRecord?.path === state.proxyPath) {
                 // A seek may complete after the cursor has moved. Keep the
                 // prior frame unless this decode is still near the target.
-                if (Math.abs(proxy.currentTime - state.targetOffset) <= 0.15) drawImage(proxy);
+                const absolute = absoluteTimelineSeconds(workspaceTimelineDate, timelineSeconds(state.targetRecord) + proxy.currentTime);
+                if (usablePreviewPosition(absolute, state.motionDirection) && drawImage(proxy)) {
+                  state.lastFrameTime = absolute;
+                  if (Math.abs(absolute - state.targetAbsolute) > 0.5) {
+                    scrubMessage(`Preview · ${formatTimelineTime(timelineSeconds(state.targetRecord) + proxy.currentTime)}`);
+                  }
+                }
                 seekProxy();
               }
             });
@@ -724,12 +742,8 @@
       }
       // A frame can trail the cursor during a fast move, but cannot replace a
       // newer frame or a frame from the opposite side after direction changes.
-      const alreadyPassed = state.lastFrameTime !== null && request.direction &&
-        Math.sign(request.absolute - state.lastFrameTime) === -request.direction;
-      const tooFarBehind = state.targetAbsolute !== null &&
-        Math.abs(state.targetAbsolute - request.absolute) > Math.max(0.5, state.scrubSpeed * 0.25);
-      if (state.active && request.epoch === state.motionEpoch && !alreadyPassed && state.targetRecord?.path === request.record.path &&
-          !tooFarBehind && request.camera === state.camera) drawExtractedFrame(bitmap, request);
+      if (state.active && request.epoch === state.motionEpoch && request.camera === state.camera &&
+          usablePreviewPosition(request.absolute, state.motionDirection)) drawExtractedFrame(bitmap, request);
     } catch (error) { log('scrub:frame-error', error.message); }
     finally {
       state.inFlight -= 1;

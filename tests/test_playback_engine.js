@@ -350,6 +350,7 @@ async function seekResumesPlayback() {
 
 async function previewAcrossSegments() {
   const frames = [], requests = [];
+  let clock = 1000;
   const raf = [];
   const proxyListeners = new Map();
   const proxy = { duration: 30, readyState: 1, currentTime: 0,
@@ -364,7 +365,7 @@ async function previewAcrossSegments() {
     querySelector(selector) { return selector === '#workspace-live' ? video : null; }, addEventListener() {} };
   const first = { path: 'first.mp4', url: '/first.mp4' }, second = { path: 'second.mp4', url: '/second.mp4' };
   const globals = { document, window: { workspaceCamera: 'cam', returnWorkspaceToLive: async () => {}, addEventListener() {} },
-    URLSearchParams, location: { search: '' }, devicePixelRatio: 1, performance: { now: () => 1000 },
+    URLSearchParams, location: { search: '' }, devicePixelRatio: 1, performance: { now: () => clock },
     requestAnimationFrame(fn) { raf.push(fn); return raf.length; }, cancelAnimationFrame() {}, MutationObserver: class { observe() {} },
     timelineDayLength: () => 86400, timelineRecordAt: value => value < 30 ? first : second,
     timelineSeconds: record => record === first ? 0 : 30, workspaceTimelineDate: '2026-11-17',
@@ -382,10 +383,19 @@ async function previewAcrossSegments() {
   while (raf.length) raf.shift()();
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(requests.length, 1);
-  globals.window.previewWorkspaceTimelineScrub(40, 10);
-  requests[0]({ ok: true, blob: async () => ({ id: 'first segment' }) });
+  clock += 200;
+  globals.window.previewWorkspaceTimelineScrub(20, 10);
+  while (raf.length) raf.shift()();
   await new Promise(resolve => setImmediate(resolve));
-  assert.deepEqual(frames, [], 'a late frame from an older segment cannot replace the current selection');
+  assert.equal(requests.length, 2);
+  clock += 200;
+  globals.window.previewWorkspaceTimelineScrub(40, 10);
+  requests[1]({ ok: true, blob: async () => ({ id: 'recent frame' }) });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(frames, ['recent frame'], 'a recent frame can still be displayed while crossing a segment');
+  requests[0]({ ok: true, blob: async () => ({ id: 'older frame' }) });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(frames, ['recent frame'], 'an older completion cannot overwrite a newer frame');
 }
 
 async function decoderRequiresPlayback() {
