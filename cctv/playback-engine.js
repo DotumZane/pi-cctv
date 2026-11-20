@@ -94,6 +94,7 @@
     atlasWarmPath: null,
     atlasWarmRetry: new Map(),
     atlasFrame: 0,
+    atlasTransitionAt: 0,
   };
 
   function log(event, details) {
@@ -448,10 +449,31 @@
       const manifest = state.atlasManifest;
       if (!state.active || !manifest || videoPreviewCurrent() || state.targetRecord?.path !== state.atlasPath) return;
       const perSheet = manifest.columns * manifest.rows;
-      const index = Math.min(manifest.frames - 1, Math.max(0, Math.floor(state.targetOffset * manifest.fps)));
-      const sheet = Math.floor(index / perSheet);
-      const key = atlasKey(state.atlasPath, sheet);
-      const bitmap = state.atlasCache.get(key);
+      const targetIndex = Math.min(manifest.frames - 1, Math.max(0, Math.floor(state.targetOffset * manifest.fps)));
+      let index = targetIndex;
+      const recordStart = absoluteTimelineSeconds(workspaceTimelineDate, timelineSeconds(state.targetRecord));
+      const distance = state.lastFrameTime === null ? Infinity : state.targetAbsolute - state.lastFrameTime;
+      if (state.scrubSpeed > 4 && Math.abs(distance) > 1 && Math.abs(distance) <= 30 &&
+          Math.sign(distance) === state.motionDirection) {
+        if (!state.atlasTransitionAt) state.atlasTransitionAt = performance.now();
+        if (performance.now() - state.atlasTransitionAt < 120) {
+          const from = Math.max(0, Math.min(manifest.frames - 1, Math.floor((state.lastFrameTime - recordStart) * manifest.fps)));
+          const difference = targetIndex - from;
+          index = from + Math.sign(difference) * Math.max(1, Math.ceil(Math.abs(difference) * 0.3));
+        }
+      }
+      let sheet = Math.floor(index / perSheet);
+      let key = atlasKey(state.atlasPath, sheet);
+      let bitmap = state.atlasCache.get(key);
+      if (!bitmap && index !== targetIndex) {
+        // Never delay the current target waiting for optional in-between
+        // sheets. Warm them, but use the target immediately if it is ready.
+        loadAtlasSheet(sheet);
+        index = targetIndex;
+        sheet = Math.floor(index / perSheet);
+        key = atlasKey(state.atlasPath, sheet);
+        bitmap = state.atlasCache.get(key);
+      }
       if (!bitmap) { loadAtlasSheet(sheet); return; }
       state.atlasCache.delete(key);
       state.atlasCache.set(key, bitmap);
@@ -468,11 +490,13 @@
       state.hasFrame = true;
       state.hasPicture = true;
       state.canvas.classList.add('visible');
-      scrubMessage('');
-      state.lastFrameTime = state.targetAbsolute;
+      const displayed = recordStart + index / manifest.fps;
+      scrubMessage(Math.abs(state.targetAbsolute - displayed) > 1 ? `Preview · ${formatTimelineTime(timelineSeconds(state.targetRecord) + index / manifest.fps)}` : '');
       state.lastPreviewAt = performance.now();
-      measureFrame(`${state.atlasPath}:${index}`, absoluteTimelineSeconds(workspaceTimelineDate, timelineSeconds(state.targetRecord) + index / manifest.fps), 'atlas');
+      measureFrame(`${state.atlasPath}:${index}`, displayed, 'atlas');
       loadAtlasSheet(sheet + (state.motionDirection >= 0 ? 1 : -1));
+      if (index !== targetIndex) scheduleAtlasFrame();
+      else state.atlasTransitionAt = 0;
     });
   }
 
@@ -785,6 +809,7 @@
   function hidePreview() {
     state.sequential = false;
     state.reverseVideo = false;
+    state.atlasTransitionAt = 0;
     clearTimeout(state.videoFallbackTimer);
     state.videoFallbackTimer = 0;
     state.proxy?.pause?.();
@@ -880,6 +905,7 @@
     if (direction && state.motionDirection && direction !== state.motionDirection) {
       state.motionEpoch += 1;
       state.lastProxyTime = null;
+      state.atlasTransitionAt = 0;
     }
     if (direction) state.motionDirection = direction;
     state.lastInputAt = performance.now();

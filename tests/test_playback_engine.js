@@ -197,7 +197,7 @@ async function atlasScrubbing() {
     timelineDayLength: () => 86400, timelineRecordAt: value => value >= 30 ? nextRecord : record,
     timelineSeconds: item => item === nextRecord ? 30 : 0, workspaceTimelineRecords: [record, nextRecord],
     workspaceTimelineDate: '2026-11-12', workspaceTimelineLastValue: 0,
-    verticalTimelineSetPosition() {}, updateTimelinePlayhead() {},
+    verticalTimelineSetPosition() {}, updateTimelinePlayhead() {}, formatTimelineTime: value => String(value),
     async api(url) {
       if (url.includes('/scrub-frames?')) return { ok: true, async json() { return {
         ready: true, urlBase: `/recordings/.scrub-frames/cam-1/${url.includes('06-00-30') ? '06-00-30' : '06-00-00'}/`,
@@ -232,10 +232,11 @@ async function atlasScrubbing() {
   while (animationFrames.length) animationFrames.shift()();
   await new Promise(resolve => setImmediate(resolve));
   assert.ok(sheetRequests >= originalSheetRequests, 'next recording uses its own atlas sheet');
-  const nextSheetRequests = sheetRequests;
+  const cachedTargetRequests = requestedSheets.filter(url => url.includes('06-00-00/005.jpg')).length;
   globals.window.previewWorkspaceTimelineScrub(8, -20);
   while (animationFrames.length) animationFrames.shift()();
-  assert.equal(sheetRequests, nextSheetRequests, 'reversing across a recording boundary reuses the decoded sheet');
+  assert.equal(requestedSheets.filter(url => url.includes('06-00-00/005.jpg')).length, cachedTargetRequests,
+    'reversing across a recording boundary reuses the decoded target sheet');
   assert.equal(mainSeeks, 0, 'preview never seeks the main video');
   assert.equal(proxyRequests, 0, 'ready atlas needs no proxy requests');
 }
@@ -527,6 +528,48 @@ async function warmBeforeScrolling() {
   assert.ok(requested.some(url => url.endsWith('.jpg')), 'preview sheets are decoded in advance');
 }
 
+async function cachedAtlasMovesBetweenTargets() {
+  const raf = [], cells = [];
+  let clock = 1000;
+  const video = {dataset: {playback: 'live'}, clientWidth: 100, clientHeight: 100, readyState: 0, paused: true,
+    closest: () => ({appendChild() {}}), setAttribute() {}, removeAttribute() {}, addEventListener() {}, pause() {}};
+  const canvas = {width: 0, height: 0, classList: {add() {}, remove() {}}, setAttribute() {},
+    getContext: () => ({fillRect() {}, drawImage(...args) {if (args.length === 9) cells.push(args[2] / 10 * 6 + args[1] / 10);}, set fillStyle(_) {}})};
+  const document = {body: {}, head: {appendChild() {}}, documentElement: {dataset: {}},
+    createElement(tag) {return tag === 'canvas' ? canvas : {setAttribute() {}, classList: {toggle() {}}};},
+    querySelector(selector) {return selector === '#workspace-live' ? video : null;}, addEventListener() {}};
+  const record = {path: 'test.mp4', url: '/test.mp4'};
+  const globals = {document, window: {workspaceCamera: 'cam', returnWorkspaceToLive: async () => {}, addEventListener() {}},
+    URLSearchParams, location: {search: ''}, devicePixelRatio: 1, performance: {now: () => clock},
+    requestAnimationFrame(fn) {raf.push(fn); return raf.length;}, cancelAnimationFrame() {}, MutationObserver: class {observe() {}},
+    timelineDayLength: () => 86400, timelineRecordAt: () => record, timelineSeconds: () => 0,
+    workspaceTimelineRecords: [record], workspaceTimelineDate: '2026-11-17', workspaceTimelineLastValue: 0,
+    verticalTimelineSetPosition() {}, updateTimelinePlayhead() {}, formatTimelineTime: String,
+    api: async url => url.includes('scrub-frames?')
+      ? {ok: true, json: async () => ({ready: true, urlBase: '/atlas/', manifest: {fps: 1, frames: 24, columns: 6, rows: 4, width: 10, height: 10, sheets: 1}})}
+      : {ok: true, blob: async () => ({})},
+    createImageBitmap: async () => ({width: 60, height: 40, close() {}}),
+    setTimeout(fn, ms) {return ms === 220 ? 0 : setTimeout(fn, ms);}, clearTimeout, console};
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', 'cctv', 'playback-engine.js'), 'utf8'), globals);
+  globals.window.previewWorkspaceTimelineScrub(2, 0);
+  for (let i = 0; i < 5; i++) {await new Promise(resolve => setImmediate(resolve)); while (raf.length) raf.shift()();}
+  assert.equal(cells.at(-1), 2);
+  cells.length = 0;
+  clock += 50;
+  globals.window.previewWorkspaceTimelineScrub(20, 1);
+  while (raf.length) raf.shift()();
+  assert.ok(cells.length > 2, 'cached intermediate frames appear between large movements');
+  assert.equal(cells.at(-1), 20);
+  assert.ok(cells.every((value, i) => i === 0 || value >= cells[i - 1]), 'intermediate frames stay in order');
+  cells.length = 0;
+  clock += 50;
+  globals.window.previewWorkspaceTimelineScrub(2, -1);
+  while (raf.length) raf.shift()();
+  assert.ok(cells.length > 2);
+  assert.equal(cells.at(-1), 2);
+  assert.ok(cells.every((value, i) => i === 0 || value <= cells[i - 1]), 'reverse frames stay in order');
+}
+
 async function decodedScrubbingKeepsFramesOrdered() {
   const listeners = new Map(), raf = [], drawn = [];
   let clock = 1000, position = 0, frameCallback, atlasAvailable = false, atlasPaints = 0;
@@ -596,6 +639,6 @@ async function decodedScrubbingKeepsFramesOrdered() {
   assert.ok(atlasPaints > before, 'a ready decoder without video frames does not freeze atlas previews');
 }
 
-Promise.resolve().then(main).then(proxyScrubbing).then(atlasScrubbing).then(seekResumesPlayback).then(decoderRequiresPlayback).then(previewAcrossSegments).then(deduplicatePreviewRequests).then(warmBeforeScrolling).then(decodedScrubbingKeepsFramesOrdered)
+Promise.resolve().then(main).then(proxyScrubbing).then(atlasScrubbing).then(seekResumesPlayback).then(decoderRequiresPlayback).then(previewAcrossSegments).then(deduplicatePreviewRequests).then(warmBeforeScrolling).then(cachedAtlasMovesBetweenTargets).then(decodedScrubbingKeepsFramesOrdered)
   .then(() => process.exit(0))
   .catch(error => { console.error(error); process.exit(1); });
