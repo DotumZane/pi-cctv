@@ -519,7 +519,7 @@ async function warmBeforeScrolling() {
 
 async function decodedScrubbingKeepsFramesOrdered() {
   const listeners = new Map(), raf = [], drawn = [];
-  let clock = 1000, position = 0, frameCallback;
+  let clock = 1000, position = 0, frameCallback, atlasAvailable = false, atlasPaints = 0;
   const proxy = {duration: 30, readyState: 2, paused: true, videoWidth: 100, videoHeight: 100,
     addEventListener(type, fn) {listeners.set(type, fn);}, setAttribute() {}, removeAttribute() {}, load() {},
     requestVideoFrameCallback(fn) {frameCallback = fn; return 1;},
@@ -528,18 +528,21 @@ async function decodedScrubbingKeepsFramesOrdered() {
   const video = {dataset: {playback: 'live'}, clientWidth: 100, clientHeight: 100, readyState: 0, paused: true,
     closest: () => ({appendChild() {}}), setAttribute() {}, removeAttribute() {}, addEventListener() {}, pause() {}};
   const canvas = {width: 0, height: 0, classList: {add() {}, remove() {}}, setAttribute() {},
-    getContext: () => ({fillRect() {}, drawImage(source) {if (source === proxy) drawn.push(position);}, set fillStyle(_) {}})};
+    getContext: () => ({fillRect() {}, drawImage(source) {if (source === proxy) drawn.push(position); else atlasPaints++;}, set fillStyle(_) {}})};
   const document = {body: {}, head: {appendChild() {}}, documentElement: {dataset: {}},
     createElement(tag) {return tag === 'canvas' ? canvas : tag === 'video' ? proxy : {setAttribute() {}, classList: {toggle() {}}};},
     querySelector(selector) {return selector === '#workspace-live' ? video : null;}, addEventListener() {}};
-  const record = {path: 'test.mp4', url: '/test.mp4'};
+  let record = {path: 'test.mp4', url: '/test.mp4'};
   const globals = {document, window: {workspaceCamera: 'cam', returnWorkspaceToLive: async () => {}, addEventListener() {}},
     HTMLVideoElement: function Video() {}, URLSearchParams, location: {search: ''}, devicePixelRatio: 1,
     performance: {now: () => clock}, requestAnimationFrame(fn) {raf.push(fn); return raf.length;}, cancelAnimationFrame() {},
     MutationObserver: class {observe() {}}, timelineDayLength: () => 86400, timelineRecordAt: () => record,
     timelineSeconds: () => 0, workspaceTimelineDate: '2026-11-17', workspaceTimelineLastValue: 0,
     verticalTimelineSetPosition() {}, updateTimelinePlayhead() {}, formatTimelineTime: value => String(value),
-    api: async () => ({ok: false}), createImageBitmap: async () => ({width: 100, height: 100}),
+    api: async url => atlasAvailable && url.includes('scrub-frames?')
+      ? {ok: true, json: async () => ({ready: true, urlBase: '/atlas/', manifest: {fps: 8, frames: 240, columns: 6, rows: 4, sheets: 10}})}
+      : atlasAvailable && url.startsWith('/atlas/') ? {ok: true, blob: async () => ({})} : {ok: false},
+    createImageBitmap: async () => ({width: 100, height: 100, close() {}}),
     setTimeout(fn, ms) {return ms === 220 ? 0 : setTimeout(fn, ms);}, clearTimeout, console};
   globals.HTMLVideoElement.prototype.requestVideoFrameCallback = () => {};
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', 'cctv', 'playback-engine.js'), 'utf8'), globals);
@@ -560,6 +563,27 @@ async function decodedScrubbingKeepsFramesOrdered() {
   position = 8.0; frameCallback(0, {mediaTime: 8.0});
   assert.equal(drawn.length, 2, 'a decoded frame is shown after reversing direction');
   assert.equal(globals.window.cctvScrubMetrics.snapshot().sources.video, 2);
+  // The next browser decoder loads metadata but never invokes its frame
+  // callback. Cached atlas frames must continue to update during the scrub.
+  record = {path: 'next.mp4', url: '/next.mp4'};
+  atlasAvailable = true;
+  clock += 33;
+  globals.window.previewWorkspaceTimelineScrub(8.033, 1);
+  await new Promise(resolve => setImmediate(resolve));
+  await new Promise(resolve => setTimeout(resolve, 140));
+  listeners.get('loadedmetadata')();
+  for (let i = 0; i < 4; i++) {
+    while (raf.length) raf.shift()();
+    await new Promise(resolve => setImmediate(resolve));
+  }
+  const before = atlasPaints;
+  clock += 250;
+  globals.window.previewWorkspaceTimelineScrub(8.16, 1);
+  for (let i = 0; i < 4; i++) {
+    while (raf.length) raf.shift()();
+    await new Promise(resolve => setImmediate(resolve));
+  }
+  assert.ok(atlasPaints > before, 'a ready decoder without video frames does not freeze atlas previews');
 }
 
 Promise.resolve().then(main).then(proxyScrubbing).then(atlasScrubbing).then(seekResumesPlayback).then(decoderRequiresPlayback).then(previewAcrossSegments).then(deduplicatePreviewRequests).then(warmBeforeScrolling).then(decodedScrubbingKeepsFramesOrdered)

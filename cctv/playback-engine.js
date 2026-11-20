@@ -68,6 +68,10 @@
     proxyVideoFrame: 0,
     proxyEpoch: 0,
     lastProxyTime: null,
+    lastVideoAt: 0,
+    lastVideoPosition: null,
+    lastVideoPath: null,
+    videoFallbackTimer: 0,
     measurements: [],
     snapshotRequests: 0,
     atlasPath: null,
@@ -98,9 +102,14 @@
 
   function measureFrame(id, position, source) {
     const now = performance.now();
+    if (source === 'video') {
+      state.lastVideoAt = now;
+      state.lastVideoPosition = position;
+      state.lastVideoPath = state.proxyPath;
+    }
     const rows = state.measurements;
-    if (rows.length && rows[rows.length - 1].id === id) return;
     state.lastFrameTime = position;
+    if (rows.length && rows[rows.length - 1].id === id) return;
     rows.push({ id, source, at: now, latencyMs: Math.max(0, now - state.lastInputAt),
       errorSeconds: state.targetAbsolute === null ? null : Math.abs(state.targetAbsolute - position) });
     while (rows.length && rows[0].at < now - 10000) rows.shift();
@@ -413,12 +422,19 @@
     state.atlasLoads.set(key, job);
   }
 
+  function videoPreviewCurrent() {
+    return Boolean((state.sequential || state.reverseVideo) && state.proxyReady &&
+      state.lastVideoPath === state.targetRecord?.path && state.lastVideoPosition !== null &&
+      state.targetAbsolute !== null && performance.now() - state.lastVideoAt < 200 &&
+      Math.abs(state.targetAbsolute - state.lastVideoPosition) <= 0.3);
+  }
+
   function scheduleAtlasFrame() {
-    if (state.atlasFrame || !state.active || !state.atlasManifest || ((state.sequential || state.reverseVideo) && state.proxyReady)) return;
+    if (state.atlasFrame || !state.active || !state.atlasManifest || videoPreviewCurrent()) return;
     state.atlasFrame = requestAnimationFrame(() => {
       state.atlasFrame = 0;
       const manifest = state.atlasManifest;
-      if (!state.active || !manifest || ((state.sequential || state.reverseVideo) && state.proxyReady) || state.targetRecord?.path !== state.atlasPath) return;
+      if (!state.active || !manifest || videoPreviewCurrent() || state.targetRecord?.path !== state.atlasPath) return;
       const perSheet = manifest.columns * manifest.rows;
       const index = Math.min(manifest.frames - 1, Math.max(0, Math.floor(state.targetOffset * manifest.fps)));
       const sheet = Math.floor(index / perSheet);
@@ -614,23 +630,28 @@
                 subscribe();
                 if (epoch !== state.proxyEpoch) return;
                 const position = Number(metadata.mediaTime);
+                const absolute = Number.isFinite(position) && state.targetRecord
+                  ? absoluteTimelineSeconds(workspaceTimelineDate, timelineSeconds(state.targetRecord) + position) : null;
+                const passed = absolute !== null && state.lastFrameTime !== null && state.motionDirection &&
+                  Math.sign(absolute - state.lastFrameTime) === -state.motionDirection;
                 if (state.sequential && Number.isFinite(position) && position > state.targetOffset + 0.08) proxy.pause();
                 if (state.reverseVideo && state.active && state.proxyReady && !state.proxySeeking && Number.isFinite(position) &&
                     state.targetRecord?.path === state.proxyPath && Math.abs(position - state.targetOffset) <= 0.15 &&
-                    (state.lastProxyTime === null || position < state.lastProxyTime)) {
+                    !passed && (state.lastProxyTime === null || position < state.lastProxyTime)) {
                   if (drawImage(proxy)) {
                     state.lastProxyTime = position;
-                    measureFrame(`${state.proxyPath}:${position.toFixed(3)}`, absoluteTimelineSeconds(workspaceTimelineDate, timelineSeconds(state.targetRecord) + position), 'video');
+                    measureFrame(`${state.proxyPath}:${position.toFixed(3)}`, absolute, 'video');
                   }
                   return;
                 }
                 if (!state.active || !state.sequential || !state.proxyReady || state.proxySeeking || !Number.isFinite(position) ||
                     state.targetRecord?.path !== state.proxyPath || position > state.targetOffset + 0.08 ||
                     position < state.targetOffset - 0.3 ||
+                    passed ||
                     (state.lastProxyTime !== null && position <= state.lastProxyTime)) return;
                 if (drawImage(proxy)) {
                   state.lastProxyTime = position;
-                  measureFrame(`${state.proxyPath}:${position.toFixed(3)}`, absoluteTimelineSeconds(workspaceTimelineDate, timelineSeconds(state.targetRecord) + position), 'video');
+                  measureFrame(`${state.proxyPath}:${position.toFixed(3)}`, absolute, 'video');
                 }
                 });
               };
@@ -750,6 +771,8 @@
   function hidePreview() {
     state.sequential = false;
     state.reverseVideo = false;
+    clearTimeout(state.videoFallbackTimer);
+    state.videoFallbackTimer = 0;
     state.proxy?.pause?.();
     state.active = false;
     window.workspaceScrubActive = false;
@@ -908,6 +931,15 @@
     prefetchNearbyAtlas(record, state.motionDirection);
     if (atlasReady) {
       scheduleAtlasFrame();
+      if ((state.sequential || state.reverseVideo) && !state.videoFallbackTimer) {
+        // Some browsers report metadata but never deliver frames from the
+        // hidden decoder. Recheck after a short grace period rather than
+        // leaving the last displayed picture frozen indefinitely.
+        state.videoFallbackTimer = setTimeout(() => {
+          state.videoFallbackTimer = 0;
+          if (state.active && !videoPreviewCurrent()) scheduleAtlasFrame();
+        }, 220);
+      }
     }
     // Seek the original MP4 while the atlas builds. Older MKV recordings use
     // snapshots until a compatible proxy is available.
@@ -924,7 +956,7 @@
     const difference = state.targetOffset - offset;
     const request = { selected: selected - difference, record, offset,
       absolute: absolute - difference, camera: state.camera, direction: state.motionDirection, epoch: state.motionEpoch };
-    if (!atlasReady && !proxyReady && (state.frameCache.has(frameKey(request)) || !state.lastPreviewAt || performance.now() - state.lastPreviewAt >= 200)) {
+    if (!atlasReady && (!proxyReady || !videoPreviewCurrent()) && (state.frameCache.has(frameKey(request)) || !state.lastPreviewAt || performance.now() - state.lastPreviewAt >= 200)) {
       state.pending = request;
       scheduleFrame();
     }
