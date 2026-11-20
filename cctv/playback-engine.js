@@ -62,6 +62,14 @@
     proxyFrame: 0,
     proxyOpenTimer: 0,
     proxyOpenPath: null,
+    sequential: false,
+    reverseVideo: false,
+    scrubSpeed: 0,
+    proxyVideoFrame: 0,
+    proxyEpoch: 0,
+    lastProxyTime: null,
+    measurements: [],
+    snapshotRequests: 0,
     atlasPath: null,
     atlasManifest: null,
     atlasBase: null,
@@ -87,6 +95,32 @@
   function log(event, details) {
     if (debug) console.debug('[playback]', event, details || '');
   }
+
+  function measureFrame(id, position, source) {
+    const now = performance.now();
+    const rows = state.measurements;
+    if (rows.length && rows[rows.length - 1].id === id) return;
+    state.lastFrameTime = position;
+    rows.push({ id, source, at: now, latencyMs: Math.max(0, now - state.lastInputAt),
+      errorSeconds: state.targetAbsolute === null ? null : Math.abs(state.targetAbsolute - position) });
+    while (rows.length && rows[0].at < now - 10000) rows.shift();
+  }
+  window.cctvScrubMetrics = {
+    reset() { state.measurements.length = 0; state.snapshotRequests = 0; },
+    snapshot() {
+      const rows = state.measurements;
+      const elapsed = rows.length > 1 ? (rows[rows.length - 1].at - rows[0].at) / 1000 : 0;
+      const latencies = rows.map(row => row.latencyMs).sort((a, b) => a - b);
+      const unique = new Set(rows.map(row => row.id)).size;
+      return { uniqueFrames: unique, displayedChanges: rows.length, seconds: elapsed,
+        fps: elapsed ? Math.max(0, unique - 1) / elapsed : 0,
+        snapshotRequests: state.snapshotRequests,
+        decoder: {active: state.active, sequential: state.sequential, ready: state.proxyReady, seeking: state.proxySeeking, desired: state.proxyDesired},
+        medianLatencyMs: latencies.length ? latencies[Math.floor(latencies.length / 2)] : null,
+        maxPositionErrorSeconds: rows.reduce((max, row) => Math.max(max, row.errorSeconds || 0), 0),
+        sources: rows.reduce((counts, row) => { counts[row.source] = (counts[row.source] || 0) + 1; return counts; }, {}) };
+    },
+  };
 
   function mainVideo() { return document.querySelector('#workspace-live'); }
   function shell() { return mainVideo()?.closest('.workspace-video-shell'); }
@@ -249,6 +283,10 @@
       const next = workspaceTimelineRecords[index + Math.sign(direction) * step];
       if (next) prefetchAtlas(next, direction, Number(state.target) + Math.sign(direction) * 24 * step);
     }
+    for (let step = 1; step <= 2; step++) {
+      const previous = workspaceTimelineRecords[index - Math.sign(direction) * step];
+      if (previous) prefetchAtlas(previous, -direction, Number(state.target) - Math.sign(direction) * 24 * step);
+    }
   }
 
   function prefetchAtlas(next, direction, predictedSeconds) {
@@ -376,11 +414,11 @@
   }
 
   function scheduleAtlasFrame() {
-    if (state.atlasFrame || !state.active || !state.atlasManifest) return;
+    if (state.atlasFrame || !state.active || !state.atlasManifest || ((state.sequential || state.reverseVideo) && state.proxyReady)) return;
     state.atlasFrame = requestAnimationFrame(() => {
       state.atlasFrame = 0;
       const manifest = state.atlasManifest;
-      if (!state.active || !manifest || state.targetRecord?.path !== state.atlasPath) return;
+      if (!state.active || !manifest || ((state.sequential || state.reverseVideo) && state.proxyReady) || state.targetRecord?.path !== state.atlasPath) return;
       const perSheet = manifest.columns * manifest.rows;
       const index = Math.min(manifest.frames - 1, Math.max(0, Math.floor(state.targetOffset * manifest.fps)));
       const sheet = Math.floor(index / perSheet);
@@ -405,6 +443,7 @@
       scrubMessage('');
       state.lastFrameTime = state.targetAbsolute;
       state.lastPreviewAt = performance.now();
+      measureFrame(`${state.atlasPath}:${index}`, absoluteTimelineSeconds(workspaceTimelineDate, timelineSeconds(state.targetRecord) + index / manifest.fps), 'atlas');
       loadAtlasSheet(sheet + (state.motionDirection >= 0 ? 1 : -1));
     });
   }
@@ -466,15 +505,27 @@
   }
 
   function seekProxy() {
-    if (state.proxyFrame || !state.proxyReady || state.proxySeeking || !state.proxy || !state.active || state.atlasManifest) return;
+    if (state.proxyFrame || !state.proxyReady || state.proxySeeking || !state.proxy || !state.active || (state.atlasManifest && !state.sequential && !state.reverseVideo)) return;
     state.proxyFrame = requestAnimationFrame(() => {
       state.proxyFrame = 0;
       const desired = state.proxyDesired;
       if (desired === null || !state.proxyReady || state.proxySeeking || !state.active) return;
       const proxy = state.proxy;
       const target = Math.max(0, Math.min(desired, Math.max(0, proxy.duration - 0.125)));
-      if (Math.abs(proxy.currentTime - target) < 0.07 && proxy.readyState >= 2) {
-        drawImage(proxy);
+      if (state.sequential && typeof proxy.requestVideoFrameCallback === 'function' && typeof proxy.play === 'function') {
+        if (Math.abs(proxy.currentTime - target) > 0.3) {
+          proxy.pause();
+          state.lastProxyTime = null;
+          state.proxySeeking = true;
+          try { proxy.currentTime = target; } catch { state.proxySeeking = false; }
+          return;
+        }
+        proxy.playbackRate = Math.max(0.25, Math.min(4, state.scrubSpeed || 1));
+        if (proxy.paused) Promise.resolve(proxy.play()).catch(() => { state.sequential = false; scheduleAtlasFrame(); });
+        return;
+      }
+      if (Math.abs(proxy.currentTime - target) < (state.reverseVideo ? 0.015 : 0.07) && proxy.readyState >= 2) {
+        if (!state.reverseVideo) drawImage(proxy);
         return;
       }
       state.proxySeeking = true;
@@ -487,6 +538,9 @@
     if (!record || !ensurePreview()) return false;
     if (!state.proxy && !document.createElement('video').addEventListener) return false;
     if (state.proxyPath !== record.path) {
+      state.proxy?.pause?.();
+      state.proxyEpoch += 1;
+      state.lastProxyTime = null;
       state.proxyPath = record.path;
       state.proxyReady = false;
       state.proxyLoading = false;
@@ -526,21 +580,62 @@
             proxy.setAttribute('playsinline', '');
             shell().appendChild(proxy);
             proxy.addEventListener('loadedmetadata', () => {
+              if (proxy.currentSrc && proxy.src && proxy.currentSrc !== proxy.src) return;
               state.proxyReady = true;
               state.proxyLoading = false;
               state.proxyDesired = state.targetOffset;
               seekProxy();
             });
             proxy.addEventListener('seeked', () => {
+              if (proxy.currentSrc && proxy.src && proxy.currentSrc !== proxy.src) return;
               state.proxySeeking = false;
+              if ((state.sequential || state.reverseVideo) && state.active && state.targetRecord?.path === state.proxyPath) {
+                // The frame callback identifies what was actually decoded;
+                // currentTime alone can name the same frame repeatedly.
+                if (state.sequential || Math.abs(proxy.currentTime - state.targetOffset) > 0.08) seekProxy();
+                return;
+              }
               if (state.active && state.proxyReady && !state.atlasManifest && state.targetRecord?.path === state.proxyPath) {
-                // Show every decoded intermediate frame during movement. A
-                // direction change starts seeking toward the newest target.
-                drawImage(proxy);
+                // A seek may complete after the cursor has moved. Keep the
+                // prior frame unless this decode is still near the target.
+                if (Math.abs(proxy.currentTime - state.targetOffset) <= 0.15) drawImage(proxy);
                 seekProxy();
               }
             });
-            proxy.addEventListener('error', () => { state.proxyReady = false; state.proxyLoading = false; state.proxySeeking = false; state.proxyFailed = true; if (state.active && state.pending) scheduleFrame(); });
+            proxy.addEventListener('error', () => {
+              state.proxyReady = false; state.proxyLoading = false; state.proxySeeking = false; state.proxyFailed = true;
+              if (state.active && state.atlasManifest) scheduleAtlasFrame();
+              else if (state.active && state.pending) scheduleFrame();
+            });
+            if (typeof proxy.requestVideoFrameCallback === 'function') {
+              const subscribe = () => {
+                const epoch = state.proxyEpoch;
+                state.proxyVideoFrame = proxy.requestVideoFrameCallback((_, metadata) => {
+                subscribe();
+                if (epoch !== state.proxyEpoch) return;
+                const position = Number(metadata.mediaTime);
+                if (state.sequential && Number.isFinite(position) && position > state.targetOffset + 0.08) proxy.pause();
+                if (state.reverseVideo && state.active && state.proxyReady && !state.proxySeeking && Number.isFinite(position) &&
+                    state.targetRecord?.path === state.proxyPath && Math.abs(position - state.targetOffset) <= 0.15 &&
+                    (state.lastProxyTime === null || position < state.lastProxyTime)) {
+                  if (drawImage(proxy)) {
+                    state.lastProxyTime = position;
+                    measureFrame(`${state.proxyPath}:${position.toFixed(3)}`, absoluteTimelineSeconds(workspaceTimelineDate, timelineSeconds(state.targetRecord) + position), 'video');
+                  }
+                  return;
+                }
+                if (!state.active || !state.sequential || !state.proxyReady || state.proxySeeking || !Number.isFinite(position) ||
+                    state.targetRecord?.path !== state.proxyPath || position > state.targetOffset + 0.08 ||
+                    position < state.targetOffset - 0.3 ||
+                    (state.lastProxyTime !== null && position <= state.lastProxyTime)) return;
+                if (drawImage(proxy)) {
+                  state.lastProxyTime = position;
+                  measureFrame(`${state.proxyPath}:${position.toFixed(3)}`, absoluteTimelineSeconds(workspaceTimelineDate, timelineSeconds(state.targetRecord) + position), 'video');
+                }
+                });
+              };
+              subscribe();
+            }
             state.proxy = proxy;
           }
           state.proxyLoading = true;
@@ -567,7 +662,7 @@
     state.proxyOpenPath = record.path;
     state.proxyOpenTimer = setTimeout(() => {
       state.proxyOpenPath = null;
-      if (!state.active || state.targetRecord?.path !== record.path || state.atlasManifest) return;
+      if (!state.active || state.targetRecord?.path !== record.path || (state.atlasManifest && !state.sequential && !state.reverseVideo)) return;
       if (ensureProxy(record, direct)) {
         state.proxyDesired = state.targetOffset;
         seekProxy();
@@ -585,6 +680,7 @@
       if (!bitmap) {
         let pending = state.frameLoads.get(key);
         if (!pending) {
+          state.snapshotRequests += 1;
           const url = `/api/recordings/snapshot?preview=1&path=${encodeURIComponent(request.record.path)}&at=${request.offset.toFixed(2)}`;
           pending = api(url, { credentials: 'same-origin' })
             .then(response => { if (!response.ok) throw new Error(`frame request ${response.status}`); return response.blob(); })
@@ -609,8 +705,10 @@
       // newer frame or a frame from the opposite side after direction changes.
       const alreadyPassed = state.lastFrameTime !== null && request.direction &&
         Math.sign(request.absolute - state.lastFrameTime) === -request.direction;
-      if (state.active && request.epoch === state.motionEpoch && !alreadyPassed && state.targetRecord &&
-          request.camera === state.camera) drawExtractedFrame(bitmap, request);
+      const tooFarBehind = state.targetAbsolute !== null &&
+        Math.abs(state.targetAbsolute - request.absolute) > Math.max(0.5, state.scrubSpeed * 0.25);
+      if (state.active && request.epoch === state.motionEpoch && !alreadyPassed && state.targetRecord?.path === request.record.path &&
+          !tooFarBehind && request.camera === state.camera) drawExtractedFrame(bitmap, request);
     } catch (error) { log('scrub:frame-error', error.message); }
     finally {
       state.inFlight -= 1;
@@ -650,6 +748,9 @@
   }
 
   function hidePreview() {
+    state.sequential = false;
+    state.reverseVideo = false;
+    state.proxy?.pause?.();
     state.active = false;
     window.workspaceScrubActive = false;
     clearTimeout(state.commitScheduleTimer);
@@ -739,7 +840,10 @@
     const elapsed = state.lastInputAt ? Math.max(16, performance.now() - state.lastInputAt) : 0;
     const speed = elapsed && state.targetAbsolute !== null ? Math.abs(absolute - state.targetAbsolute) * 1000 / elapsed : 0;
     const direction = state.targetAbsolute === null ? 0 : Math.sign(absolute - state.targetAbsolute);
-    if (direction && state.motionDirection && direction !== state.motionDirection) state.motionEpoch += 1;
+    if (direction && state.motionDirection && direction !== state.motionDirection) {
+      state.motionEpoch += 1;
+      state.lastProxyTime = null;
+    }
     if (direction) state.motionDirection = direction;
     state.lastInputAt = performance.now();
     state.lastValue = selected;
@@ -747,6 +851,15 @@
     state.targetAbsolute = absolute;
     state.targetRecord = record;
     state.targetOffset = record ? recordingOffset(record, selected) : 0;
+    const sequential = Boolean(record && direction > 0 && speed > 0 && speed <= 4 &&
+      /\.mp4(?:[?#]|$)/i.test(record.url || '') &&
+      typeof HTMLVideoElement !== 'undefined' && typeof HTMLVideoElement.prototype.requestVideoFrameCallback === 'function');
+    if (!sequential && state.sequential) state.proxy?.pause?.();
+    state.sequential = sequential;
+    state.reverseVideo = Boolean(record && direction < 0 && speed > 0 && speed <= 4 &&
+      /\.mp4(?:[?#]|$)/i.test(record.url || '') &&
+      typeof HTMLVideoElement !== 'undefined' && typeof HTMLVideoElement.prototype.requestVideoFrameCallback === 'function');
+    state.scrubSpeed = speed;
     const playing = mainVideo();
     if (playing?.dataset.playback === 'recording' && !playing.paused) playing.pause();
     showPreview();
@@ -799,7 +912,7 @@
     // Seek the original MP4 while the atlas builds. Older MKV recordings use
     // snapshots until a compatible proxy is available.
     const direct = /\.mp4(?:[?#]|$)/i.test(record.url || '');
-    const proxyReady = !atlasReady && (state.atlasFailed ? requestProxy(record, false) : (direct && requestProxy(record, true)));
+    const proxyReady = (state.sequential || state.reverseVideo || !atlasReady) && (state.atlasFailed && !state.sequential && !state.reverseVideo ? requestProxy(record, false) : (direct && requestProxy(record, true)));
     state.proxyDesired = state.targetOffset;
     if (proxyReady) {
       seekProxy();
@@ -811,7 +924,7 @@
     const difference = state.targetOffset - offset;
     const request = { selected: selected - difference, record, offset,
       absolute: absolute - difference, camera: state.camera, direction: state.motionDirection, epoch: state.motionEpoch };
-    if (state.frameCache.has(frameKey(request)) || !state.lastPreviewAt || performance.now() - state.lastPreviewAt >= 200) {
+    if (!atlasReady && !proxyReady && (state.frameCache.has(frameKey(request)) || !state.lastPreviewAt || performance.now() - state.lastPreviewAt >= 200)) {
       state.pending = request;
       scheduleFrame();
     }

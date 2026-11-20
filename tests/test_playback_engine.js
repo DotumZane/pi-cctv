@@ -385,7 +385,7 @@ async function previewAcrossSegments() {
   globals.window.previewWorkspaceTimelineScrub(40, 10);
   requests[0]({ ok: true, blob: async () => ({ id: 'first segment' }) });
   await new Promise(resolve => setImmediate(resolve));
-  assert.deepEqual(frames, ['first segment'], 'a decoded frame remains visible when scrolling crosses a segment');
+  assert.deepEqual(frames, [], 'a late frame from an older segment cannot replace the current selection');
 }
 
 async function decoderRequiresPlayback() {
@@ -517,6 +517,51 @@ async function warmBeforeScrolling() {
   assert.ok(requested.some(url => url.endsWith('.jpg')), 'preview sheets are decoded in advance');
 }
 
-Promise.resolve().then(main).then(proxyScrubbing).then(atlasScrubbing).then(seekResumesPlayback).then(decoderRequiresPlayback).then(previewAcrossSegments).then(deduplicatePreviewRequests).then(warmBeforeScrolling)
+async function decodedScrubbingKeepsFramesOrdered() {
+  const listeners = new Map(), raf = [], drawn = [];
+  let clock = 1000, position = 0, frameCallback;
+  const proxy = {duration: 30, readyState: 2, paused: true, videoWidth: 100, videoHeight: 100,
+    addEventListener(type, fn) {listeners.set(type, fn);}, setAttribute() {}, removeAttribute() {}, load() {},
+    requestVideoFrameCallback(fn) {frameCallback = fn; return 1;},
+    get currentTime() {return position;}, set currentTime(value) {position = value; listeners.get('seeked')?.();},
+    play() {this.paused = false; return Promise.resolve();}, pause() {this.paused = true;}};
+  const video = {dataset: {playback: 'live'}, clientWidth: 100, clientHeight: 100, readyState: 0, paused: true,
+    closest: () => ({appendChild() {}}), setAttribute() {}, removeAttribute() {}, addEventListener() {}, pause() {}};
+  const canvas = {width: 0, height: 0, classList: {add() {}, remove() {}}, setAttribute() {},
+    getContext: () => ({fillRect() {}, drawImage(source) {if (source === proxy) drawn.push(position);}, set fillStyle(_) {}})};
+  const document = {body: {}, head: {appendChild() {}}, documentElement: {dataset: {}},
+    createElement(tag) {return tag === 'canvas' ? canvas : tag === 'video' ? proxy : {setAttribute() {}, classList: {toggle() {}}};},
+    querySelector(selector) {return selector === '#workspace-live' ? video : null;}, addEventListener() {}};
+  const record = {path: 'test.mp4', url: '/test.mp4'};
+  const globals = {document, window: {workspaceCamera: 'cam', returnWorkspaceToLive: async () => {}, addEventListener() {}},
+    HTMLVideoElement: function Video() {}, URLSearchParams, location: {search: ''}, devicePixelRatio: 1,
+    performance: {now: () => clock}, requestAnimationFrame(fn) {raf.push(fn); return raf.length;}, cancelAnimationFrame() {},
+    MutationObserver: class {observe() {}}, timelineDayLength: () => 86400, timelineRecordAt: () => record,
+    timelineSeconds: () => 0, workspaceTimelineDate: '2026-11-17', workspaceTimelineLastValue: 0,
+    verticalTimelineSetPosition() {}, updateTimelinePlayhead() {}, formatTimelineTime: value => String(value),
+    api: async () => ({ok: false}), createImageBitmap: async () => ({width: 100, height: 100}),
+    setTimeout(fn, ms) {return ms === 220 ? 0 : setTimeout(fn, ms);}, clearTimeout, console};
+  globals.HTMLVideoElement.prototype.requestVideoFrameCallback = () => {};
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', 'cctv', 'playback-engine.js'), 'utf8'), globals);
+  globals.window.previewWorkspaceTimelineScrub(8, 0);
+  clock += 33;
+  globals.window.previewWorkspaceTimelineScrub(8.033, 1);
+  await new Promise(resolve => setTimeout(resolve, 140));
+  await new Promise(resolve => setImmediate(resolve));
+  listeners.get('loadedmetadata')();
+  while (raf.length) raf.shift()();
+  position = 8.033; frameCallback(0, {mediaTime: 8.033});
+  assert.equal(drawn.length, 1, 'a decoded video frame is shown');
+  position = 8.01; frameCallback(0, {mediaTime: 8.01});
+  assert.equal(drawn.length, 1, 'an older forward frame cannot replace it');
+  clock += 33;
+  globals.window.previewWorkspaceTimelineScrub(8.0, -1);
+  while (raf.length) raf.shift()();
+  position = 8.0; frameCallback(0, {mediaTime: 8.0});
+  assert.equal(drawn.length, 2, 'a decoded frame is shown after reversing direction');
+  assert.equal(globals.window.cctvScrubMetrics.snapshot().sources.video, 2);
+}
+
+Promise.resolve().then(main).then(proxyScrubbing).then(atlasScrubbing).then(seekResumesPlayback).then(decoderRequiresPlayback).then(previewAcrossSegments).then(deduplicatePreviewRequests).then(warmBeforeScrolling).then(decodedScrubbingKeepsFramesOrdered)
   .then(() => process.exit(0))
   .catch(error => { console.error(error); process.exit(1); });
