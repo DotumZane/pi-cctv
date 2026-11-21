@@ -81,6 +81,7 @@
     atlasFailed: false,
     atlasCache: new Map(),
     atlasLoads: new Map(),
+    atlasDemands: new Map(),
     atlasManifests: new Map(),
     atlasChecks: new Map(),
     atlasPrefetching: new Set(),
@@ -414,8 +415,10 @@
   function loadAtlasSheet(index, pendingFrame = null) {
     const manifest = state.atlasManifest, path = state.atlasPath, base = state.atlasBase;
     const key = atlasKey(path, index);
-    if (!manifest || index < 0 || index >= manifest.sheets || state.atlasCache.has(key) || state.atlasLoads.has(key)) return;
-    const job = api(base + atlasSheetName(index), { credentials: 'same-origin' })
+    if (!manifest || index < 0 || index >= manifest.sheets || state.atlasCache.has(key)) return;
+    let job = state.atlasLoads.get(key);
+    if (!job) {
+      job = api(base + atlasSheetName(index), { credentials: 'same-origin' })
       .then(response => { if (!response.ok) throw new Error(`atlas ${response.status}`); return response.blob(); })
       .then(blob => createImageBitmap(blob))
       .then(bitmap => {
@@ -427,20 +430,26 @@
           state.atlasCache.get(oldest)?.close?.();
           state.atlasCache.delete(oldest);
         }
-        if (pendingFrame && state.active && state.motionDirection &&
-                 pendingFrame.epoch === state.motionEpoch && pendingFrame.camera === state.camera &&
-                 pendingFrame.date === workspaceTimelineDate && performance.now() - state.lastInputAt < 500 &&
-                 (state.atlasPath !== path || Math.floor(state.targetOffset * manifest.fps / (manifest.columns * manifest.rows)) !== index) &&
-                 usablePreviewPosition(pendingFrame.absolute, state.motionDirection, 900)) {
-          // A sheet can finish after the cursor has crossed into another
-          // recording. Show it while it is still progressing toward the
-          // cursor instead of leaving an old picture frozen over the player.
-          paintAtlasFrame(bitmap, manifest, path, pendingFrame.index, pendingFrame.absolute, pendingFrame.seconds);
-        }
         if (state.atlasPath === path && state.atlasBase === base) scheduleAtlasFrame();
       }).catch(error => log('scrub:atlas-sheet-error', error.message))
       .finally(() => state.atlasLoads.delete(key));
-    state.atlasLoads.set(key, job);
+      state.atlasLoads.set(key, job);
+    }
+    if (!pendingFrame) return;
+    const existing = state.atlasDemands.get(key);
+    if (existing) { existing.frame = pendingFrame; return; }
+    const demand = {frame: pendingFrame};
+    state.atlasDemands.set(key, demand);
+    job.then(() => {
+      const frame = demand.frame, bitmap = state.atlasCache.get(key);
+      if (bitmap && state.active && state.motionDirection &&
+          frame.epoch === state.motionEpoch && frame.camera === state.camera &&
+          frame.date === workspaceTimelineDate && performance.now() - state.lastInputAt < 500 &&
+          (state.atlasPath !== path || Math.floor(state.targetOffset * manifest.fps / (manifest.columns * manifest.rows)) !== index) &&
+          usablePreviewPosition(frame.absolute, state.motionDirection, 900)) {
+        paintAtlasFrame(bitmap, manifest, path, frame.index, frame.absolute, frame.seconds);
+      }
+    }).finally(() => { if (state.atlasDemands.get(key) === demand) state.atlasDemands.delete(key); });
   }
 
   function videoPreviewCurrent() {

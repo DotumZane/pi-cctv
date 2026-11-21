@@ -417,7 +417,7 @@ async function delayedAtlasFramesContinueAcrossSegments() {
     URLSearchParams, location: {search: ''}, devicePixelRatio: 1, performance: {now: () => clock},
     requestAnimationFrame(fn) {raf.push(fn); return raf.length;}, cancelAnimationFrame() {}, MutationObserver: class {observe() {}},
     timelineDayLength: () => 86400, timelineRecordAt: value => records[Math.min(2, Math.floor(value / 30))],
-    timelineSeconds: record => record.start, workspaceTimelineDate: '2026-11-17', workspaceTimelineLastValue: 0,
+    timelineSeconds: record => record.start, workspaceTimelineRecords: records, workspaceTimelineDate: '2026-11-17', workspaceTimelineLastValue: 0,
     verticalTimelineSetPosition() {}, updateTimelinePlayhead() {}, formatTimelineTime: String,
     api(url) {
       if (url.includes('scrub-frames?')) {
@@ -436,7 +436,9 @@ async function delayedAtlasFramesContinueAcrossSegments() {
     for (let i = 0; i < 3; i++) {await new Promise(resolve => setImmediate(resolve)); while (raf.length) raf.shift()();}
     clock += 100;
   }
-  await target(10); await target(40); await target(70);
+  await target(10); await target(11); // Prefetch the next segment before visiting it.
+  assert.ok(loads.has('/30/000.jpg'), 'the next segment is already loading');
+  await target(40); await target(70);
   loads.get('/30/000.jpg')({ok: true, blob: async () => ({id: 'second'})});
   await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(paints, ['second'], 'a trailing sheet advances the preview while crossing segments');
