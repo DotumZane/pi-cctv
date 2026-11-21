@@ -268,12 +268,12 @@
     return `${request.record.path}:${Math.round(request.offset * 4)}`;
   }
 
-  function usablePreviewPosition(absolute, direction) {
+  function usablePreviewPosition(absolute, direction, maxLag = 90) {
     if (state.targetAbsolute === null || !state.targetRecord) return false;
     // Permit a bounded amount of time for decoding while fast scrolling
     // crosses short files. Require progress in the current direction and
     // never let an older completion replace a newer displayed frame.
-    const tolerance = Math.max(0.5, Math.min(90, state.scrubSpeed * 0.75));
+    const tolerance = Math.max(0.5, Math.min(maxLag, state.scrubSpeed * (maxLag > 90 ? 1.5 : 0.75)));
     const delta = absolute - state.targetAbsolute;
     if (Math.abs(delta) > tolerance || (direction && delta * direction > 0.25)) return false;
     return !(state.lastFrameTime !== null && direction &&
@@ -411,7 +411,7 @@
     }, 150);
   }
 
-  function loadAtlasSheet(index) {
+  function loadAtlasSheet(index, pendingFrame = null) {
     const manifest = state.atlasManifest, path = state.atlasPath, base = state.atlasBase;
     const key = atlasKey(path, index);
     if (!manifest || index < 0 || index >= manifest.sheets || state.atlasCache.has(key) || state.atlasLoads.has(key)) return;
@@ -427,6 +427,16 @@
           state.atlasCache.get(oldest)?.close?.();
           state.atlasCache.delete(oldest);
         }
+        if (pendingFrame && state.active && state.motionDirection &&
+                 pendingFrame.epoch === state.motionEpoch && pendingFrame.camera === state.camera &&
+                 pendingFrame.date === workspaceTimelineDate && performance.now() - state.lastInputAt < 500 &&
+                 (state.atlasPath !== path || Math.floor(state.targetOffset * manifest.fps / (manifest.columns * manifest.rows)) !== index) &&
+                 usablePreviewPosition(pendingFrame.absolute, state.motionDirection, 900)) {
+          // A sheet can finish after the cursor has crossed into another
+          // recording. Show it while it is still progressing toward the
+          // cursor instead of leaving an old picture frozen over the player.
+          paintAtlasFrame(bitmap, manifest, path, pendingFrame.index, pendingFrame.absolute, pendingFrame.seconds);
+        }
         if (state.atlasPath === path && state.atlasBase === base) scheduleAtlasFrame();
       }).catch(error => log('scrub:atlas-sheet-error', error.message))
       .finally(() => state.atlasLoads.delete(key));
@@ -438,6 +448,25 @@
       state.lastVideoPath === state.targetRecord?.path && state.lastVideoPosition !== null &&
       state.targetAbsolute !== null && performance.now() - state.lastVideoAt < 200 &&
       Math.abs(state.targetAbsolute - state.lastVideoPosition) <= 0.3);
+  }
+
+  function paintAtlasFrame(bitmap, manifest, path, index, displayed, seconds) {
+    const perSheet = manifest.columns * manifest.rows, cell = index % perSheet;
+    fitCanvas();
+    const cw = state.canvas.width, ch = state.canvas.height;
+    const scale = Math.min(cw / manifest.width, ch / manifest.height);
+    const dw = manifest.width * scale, dh = manifest.height * scale;
+    state.ctx.fillStyle = '#030507';
+    state.ctx.fillRect(0, 0, cw, ch);
+    state.ctx.drawImage(bitmap, (cell % manifest.columns) * manifest.width,
+      Math.floor(cell / manifest.columns) * manifest.height, manifest.width, manifest.height,
+      (cw - dw) / 2, (ch - dh) / 2, dw, dh);
+    state.hasFrame = true;
+    state.hasPicture = true;
+    state.canvas.classList.add('visible');
+    scrubMessage(Math.abs(state.targetAbsolute - displayed) > 1 ? `Preview · ${formatTimelineTime(seconds)}` : '');
+    state.lastPreviewAt = performance.now();
+    measureFrame(`${path}:${index}`, displayed, 'atlas');
   }
 
   function scheduleAtlasFrame() {
@@ -472,26 +501,16 @@
         key = atlasKey(state.atlasPath, sheet);
         bitmap = state.atlasCache.get(key);
       }
-      if (!bitmap) { loadAtlasSheet(sheet); return; }
+      if (!bitmap) {
+        loadAtlasSheet(sheet, { index, absolute: recordStart + index / manifest.fps,
+          seconds: timelineSeconds(state.targetRecord) + index / manifest.fps,
+          date: workspaceTimelineDate, epoch: state.motionEpoch, camera: state.camera });
+        return;
+      }
       state.atlasCache.delete(key);
       state.atlasCache.set(key, bitmap);
-      const cell = index % perSheet;
-      fitCanvas();
-      const cw = state.canvas.width, ch = state.canvas.height;
-      const scale = Math.min(cw / manifest.width, ch / manifest.height);
-      const dw = manifest.width * scale, dh = manifest.height * scale;
-      state.ctx.fillStyle = '#030507';
-      state.ctx.fillRect(0, 0, cw, ch);
-      state.ctx.drawImage(bitmap, (cell % manifest.columns) * manifest.width,
-        Math.floor(cell / manifest.columns) * manifest.height, manifest.width, manifest.height,
-        (cw - dw) / 2, (ch - dh) / 2, dw, dh);
-      state.hasFrame = true;
-      state.hasPicture = true;
-      state.canvas.classList.add('visible');
       const displayed = recordStart + index / manifest.fps;
-      scrubMessage(Math.abs(state.targetAbsolute - displayed) > 1 ? `Preview · ${formatTimelineTime(timelineSeconds(state.targetRecord) + index / manifest.fps)}` : '');
-      state.lastPreviewAt = performance.now();
-      measureFrame(`${state.atlasPath}:${index}`, displayed, 'atlas');
+      paintAtlasFrame(bitmap, manifest, state.atlasPath, index, displayed, timelineSeconds(state.targetRecord) + index / manifest.fps);
       loadAtlasSheet(sheet + (state.motionDirection >= 0 ? 1 : -1));
       if (index !== targetIndex) scheduleAtlasFrame();
       else state.atlasTransitionAt = 0;

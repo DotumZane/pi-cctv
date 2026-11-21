@@ -402,6 +402,53 @@ async function previewAcrossSegments() {
   assert.deepEqual(frames, ['recent frame'], 'an older completion cannot overwrite a newer frame');
 }
 
+async function delayedAtlasFramesContinueAcrossSegments() {
+  const raf = [], loads = new Map(), paints = [];
+  let clock = 1000;
+  const records = [0, 30, 60].map(start => ({path: `${start}.mp4`, url: `/${start}.mp4`, start}));
+  const video = {dataset: {playback: 'live'}, clientWidth: 100, clientHeight: 100, readyState: 0, paused: true,
+    closest: () => ({appendChild() {}}), setAttribute() {}, removeAttribute() {}, addEventListener() {}, pause() {}};
+  const canvas = {width: 0, height: 0, classList: {add() {}, remove() {}}, setAttribute() {},
+    getContext: () => ({fillRect() {}, drawImage(bitmap) {paints.push(bitmap.id);}, set fillStyle(_) {}})};
+  const document = {body: {}, head: {appendChild() {}}, documentElement: {dataset: {}},
+    createElement: tag => tag === 'canvas' ? canvas : {setAttribute() {}, classList: {toggle() {}}},
+    querySelector: selector => selector === '#workspace-live' ? video : null, addEventListener() {}};
+  const globals = {document, window: {workspaceCamera: 'cam', returnWorkspaceToLive: async () => {}, addEventListener() {}},
+    URLSearchParams, location: {search: ''}, devicePixelRatio: 1, performance: {now: () => clock},
+    requestAnimationFrame(fn) {raf.push(fn); return raf.length;}, cancelAnimationFrame() {}, MutationObserver: class {observe() {}},
+    timelineDayLength: () => 86400, timelineRecordAt: value => records[Math.min(2, Math.floor(value / 30))],
+    timelineSeconds: record => record.start, workspaceTimelineDate: '2026-11-17', workspaceTimelineLastValue: 0,
+    verticalTimelineSetPosition() {}, updateTimelinePlayhead() {}, formatTimelineTime: String,
+    api(url) {
+      if (url.includes('scrub-frames?')) {
+        const record = records.find(item => url.endsWith(`path=${encodeURIComponent(item.path)}`));
+        return Promise.resolve({ok: true, json: async () => ({ready: true, urlBase: `/${record.start}/`,
+          manifest: {fps: 1, frames: 30, columns: 6, rows: 4, sheets: 2, width: 10, height: 10}})});
+      }
+      if (url.includes('/snapshot?')) return Promise.resolve({ok: false});
+      return new Promise(resolve => loads.set(url, resolve));
+    },
+    createImageBitmap: async blob => ({id: blob.id, width: 60, height: 40, close() {}}),
+    setTimeout(fn, ms) {return ms === 220 ? 0 : setTimeout(fn, ms);}, clearTimeout, console};
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', 'cctv', 'playback-engine.js'), 'utf8'), globals);
+  async function target(value) {
+    globals.window.previewWorkspaceTimelineScrub(value, 1);
+    for (let i = 0; i < 3; i++) {await new Promise(resolve => setImmediate(resolve)); while (raf.length) raf.shift()();}
+    clock += 100;
+  }
+  await target(10); await target(40); await target(70);
+  loads.get('/30/000.jpg')({ok: true, blob: async () => ({id: 'second'})});
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(paints, ['second'], 'a trailing sheet advances the preview while crossing segments');
+  loads.get('/0/000.jpg')({ok: true, blob: async () => ({id: 'first'})});
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(paints, ['second'], 'a slower older sheet cannot rewind the displayed preview');
+  await target(40);
+  loads.get('/60/000.jpg')({ok: true, blob: async () => ({id: 'third'})});
+  await new Promise(resolve => setImmediate(resolve));
+  assert.ok(!paints.includes('third'), 'an old direction cannot paint after reversal');
+}
+
 async function decoderRequiresPlayback() {
   const listeners = new Map();
   let plays = 0;
@@ -650,6 +697,6 @@ async function decodedScrubbingKeepsFramesOrdered() {
   assert.ok(atlasPaints > before, 'a ready decoder without video frames does not freeze atlas previews');
 }
 
-Promise.resolve().then(main).then(proxyScrubbing).then(atlasScrubbing).then(seekResumesPlayback).then(decoderRequiresPlayback).then(previewAcrossSegments).then(deduplicatePreviewRequests).then(warmBeforeScrolling).then(cachedAtlasMovesBetweenTargets).then(decodedScrubbingKeepsFramesOrdered)
+Promise.resolve().then(main).then(proxyScrubbing).then(atlasScrubbing).then(seekResumesPlayback).then(decoderRequiresPlayback).then(previewAcrossSegments).then(delayedAtlasFramesContinueAcrossSegments).then(deduplicatePreviewRequests).then(warmBeforeScrolling).then(cachedAtlasMovesBetweenTargets).then(decodedScrubbingKeepsFramesOrdered)
   .then(() => process.exit(0))
   .catch(error => { console.error(error); process.exit(1); });
