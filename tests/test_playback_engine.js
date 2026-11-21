@@ -318,14 +318,17 @@ async function seekResumesPlayback() {
   assert.equal(video.paused, true, 'a paused user stays paused after seeking');
   globals.workspaceUserPaused = false;
 
+  video.dataset.playback = 'live';
+  globals.workspacePlaybackUrl = '';
+  const loadsBeforeScroll = loads;
   documentListeners.get('scroll')({ target: { closest: () => true } });
   globals.window.previewWorkspaceTimelineScrub(8, -1);
   await new Promise(resolve => setTimeout(resolve, 260));
-  assert.equal(video.src, record.url, 'the selected recording starts loading while scrolling');
-  const preloaded = loads;
+  assert.equal(loads, loadsBeforeScroll, 'scrolling does not start a competing full recording load');
   await new Promise(resolve => setTimeout(resolve, 200));
-  assert.equal(loads, preloaded, 'committing reuses the recording load');
-  assert.equal(plays, 6, 'the preloaded recording resumes playback');
+  assert.equal(video.src, record.url, 'the settled recording is selected for playback');
+  assert.equal(loads, loadsBeforeScroll + 1, 'the recording is loaded after scrolling settles');
+  assert.equal(plays, 6, 'the settled recording resumes playback');
   documentListeners.get('pointerdown')({ target: { closest: () => true } });
   globals.window.previewWorkspaceTimelineScrub(10, 1);
   await globals.window.returnWorkspaceToLive();
@@ -504,6 +507,7 @@ async function deduplicatePreviewRequests() {
 
 async function warmBeforeScrolling() {
   const requested = [];
+  let activeChecks = 0, maxChecks = 0;
   const video = {dataset: {playback: 'live'}, clientWidth: 100, clientHeight: 100, readyState: 0, paused: true,
     closest: () => ({appendChild() {}}), setAttribute() {}, removeAttribute() {}, addEventListener() {}, pause() {}};
   const canvas = {width: 0, height: 0, classList: {add() {}, remove() {}}, setAttribute() {},
@@ -517,14 +521,21 @@ async function warmBeforeScrolling() {
     requestAnimationFrame() {return 1;}, cancelAnimationFrame() {}, MutationObserver: class {observe() {}},
     timelineDayLength: () => 86400, timelineSeconds: item => item.startSeconds,
     workspaceTimelineRecords: records, workspaceTimelineDate: '2026-11-17',
-    api: async url => {requested.push(url); return url.includes('scrub-frames?')
-      ? {ok: true, json: async () => ({ready: true, urlBase: '/atlas/', manifest: {fps: 1, frames: 30, columns: 6, rows: 4, sheets: 2}})}
-      : {ok: true, blob: async () => ({})};},
+    api: async url => {
+      requested.push(url);
+      if (!url.includes('scrub-frames?')) return {ok: true, blob: async () => ({})};
+      activeChecks++;
+      maxChecks = Math.max(maxChecks, activeChecks);
+      await new Promise(resolve => setImmediate(resolve));
+      activeChecks--;
+      return {ok: true, json: async () => ({ready: true, urlBase: '/atlas/', manifest: {fps: 1, frames: 30, columns: 6, rows: 4, sheets: 2}})};
+    },
     createImageBitmap: async () => ({close() {}}), setTimeout, clearTimeout, console};
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', 'cctv', 'playback-engine.js'), 'utf8'), globals);
   await globals.window.openLiveWorkspace('cam');
-  for (let i = 0; i < 6; i++) await new Promise(resolve => setImmediate(resolve));
+  for (let i = 0; i < 12; i++) await new Promise(resolve => setImmediate(resolve));
   assert.equal(requested.filter(url => url.includes('scrub-frames?')).length, 10, 'five minutes of 30-second segments are warmed before the first scroll');
+  assert.equal(maxChecks, 2, 'at most two nearby recordings compete for preview bandwidth');
   assert.ok(requested.some(url => url.endsWith('.jpg')), 'preview sheets are decoded in advance');
 }
 

@@ -43,8 +43,6 @@
     gapTicking: false,
     commitTimer: 0,
     commitScheduleTimer: 0,
-    preloadTimer: 0,
-    preloadPath: null,
     pointerDown: false,
     active: false,
     hasFrame: false,
@@ -314,7 +312,7 @@
   function prefetchAtlas(next, direction, predictedSeconds) {
     if (!next || state.atlasPrefetching.has(next.path) ||
         (state.atlasPrefetchRetry.get(next.path) || 0) > performance.now()) return;
-    if (state.atlasPrefetching.size >= 4) {
+    if (state.atlasPrefetching.size >= 2) {
       state.atlasPrefetchQueue.set(next.path, {next, direction, predictedSeconds});
       return;
     }
@@ -361,7 +359,7 @@
       return job;
     }).catch(() => {}).finally(() => {
       state.atlasPrefetching.delete(next.path);
-      while (state.atlasPrefetching.size < 4 && state.atlasPrefetchQueue.size) {
+      while (state.atlasPrefetching.size < 2 && state.atlasPrefetchQueue.size) {
         const [path, queued] = state.atlasPrefetchQueue.entries().next().value;
         state.atlasPrefetchQueue.delete(path);
         prefetchAtlas(queued.next, queued.direction, queued.predictedSeconds);
@@ -817,10 +815,8 @@
     window.workspaceScrubActive = false;
     clearTimeout(state.commitScheduleTimer);
     clearTimeout(state.commitTimer);
-    clearTimeout(state.preloadTimer);
     clearTimeout(state.atlasWarmTimer);
     state.atlasWarmPath = null;
-    state.preloadPath = null;
     state.pending = null;
     state.lastFrameTime = null;
     state.motionDirection = 0;
@@ -841,35 +837,6 @@
     state.frame = 0;
     clearTimeout(state.frameDelay);
     state.frameDelay = 0;
-  }
-
-  function preparePlayback(record) {
-    if (!record || !/\.mp4(?:[?#]|$)/i.test(record.url || '')) return;
-    const video = mainVideo();
-    if (!video) return;
-    if (video.dataset.playback === 'recording' && workspacePlaybackUrl === record.url) {
-      clearTimeout(state.preloadTimer);
-      state.preloadPath = null;
-      return;
-    }
-    if (state.preloadPath === record.path) return;
-    clearTimeout(state.preloadTimer);
-    state.preloadPath = record.path;
-    state.preloadTimer = setTimeout(() => {
-      state.preloadTimer = 0;
-      if (!state.active || state.targetRecord?.path !== record.path) return;
-      // Keep the preview canvas visible while the normal player opens the
-      // recording. Commit can reuse this load instead of starting it again.
-      video.dataset.playback = 'recording';
-      if (typeof stopLivePlayback === 'function') stopLivePlayback(video);
-      video.pause();
-      video.onerror = null;
-      workspacePlaybackUrl = record.url;
-      workspacePlaybackStartSeconds = timelineSeconds(record);
-      video.src = sourceFor(record);
-      video.load();
-      if (typeof setWorkspaceMode === 'function') setWorkspaceMode('recording');
-    }, 220);
   }
 
   function recordingOffset(record, selected) {
@@ -930,8 +897,6 @@
     if (typeof verticalTimelineSetPosition === 'function') verticalTimelineSetPosition(selected, false);
     if (typeof updateTimelinePlayhead === 'function') updateTimelinePlayhead(selected);
     if (!record) {
-      clearTimeout(state.preloadTimer);
-      state.preloadPath = null;
       log('scrub:gap', { selected });
       state.pending = null;
       if (state.frame) cancelAnimationFrame(state.frame);
@@ -964,7 +929,6 @@
       return;
     }
     scrubMessage('');
-    preparePlayback(record);
     if (wasGap) updateStatus('Loading recording preview…');
     const atlasReady = ensureAtlas(record);
     if (!atlasReady) prepareVisitedAtlas(record);
@@ -1122,8 +1086,6 @@
     }
     const offset = recordingOffset(record, selected);
     const url = converted ? `${record.url}${record.url.includes('?') ? '&' : '?'}format=mp4` : sourceFor(record);
-    clearTimeout(state.preloadTimer);
-    state.preloadPath = null;
     const sameSource = video && workspacePlaybackUrl === record.url && video.dataset.playback === 'recording' && !converted;
     const same = sameSource && video.readyState >= 1 && !video.error;
     // Keep the last decoded preview frame over the player while the main
@@ -1273,12 +1235,10 @@
       state.requestToken += 1;
       clearTimeout(state.commitScheduleTimer);
       clearTimeout(state.commitTimer);
-      clearTimeout(state.preloadTimer);
       clearTimeout(state.atlasWarmTimer);
       clearTimeout(state.proxyOpenTimer);
       state.proxyOpenPath = null;
       state.atlasWarmPath = null;
-      state.preloadPath = null;
       state.active = false;
       state.pointerDown = false;
       state.lastValue = null;
