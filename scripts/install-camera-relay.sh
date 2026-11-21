@@ -1,6 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# The updater already runs this script from the newly pulled checkout. This
+# also provisions timestamp support on the first update to a version that
+# introduced it (the updater process itself was loaded before the pull).
+if [[ ! -r /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf ]]; then
+  apt-get update
+  apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core
+fi
+timestamp_filters="$(ffmpeg -hide_banner -filters 2>/dev/null)"
+timestamp_encoders="$(ffmpeg -hide_banner -encoders 2>/dev/null)"
+if [[ "$timestamp_filters" != *drawtext* || "$timestamp_encoders" != *libx264* ]]; then
+  echo "FFmpeg must provide drawtext and libx264 for camera timestamps." >&2
+  exit 1
+fi
+
 # Pinned official MediaMTX release; verify the archive before installing it.
 version=1.21.3
 case "$(uname -m)" in

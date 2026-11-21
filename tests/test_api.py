@@ -242,6 +242,12 @@ class ApiTests(unittest.TestCase):
         status, _ = self.call("PUT", "/api/cameras/cam-1/settings", {"bitrate_mode": "vbr"})
         self.assertEqual(status, 400)
 
+    def test_camera_timestamp_setting_requires_boolean(self):
+        self.call("POST", "/api/devices", {"id": "cam-1", "kind": "camera", "name": "Saw 1"})
+        self.assertEqual(self.call("PUT", "/api/cameras/cam-1/settings", {"burn_timestamp": True})[0], 200)
+        self.assertTrue(json.loads(self.call("GET", "/api/devices/cam-1")[1]["metadata"])["settings"]["burn_timestamp"])
+        self.assertEqual(self.call("PUT", "/api/cameras/cam-1/settings", {"burn_timestamp": "true"})[0], 400)
+
     def test_heartbeat_metrics_do_not_overwrite_camera_settings(self):
         self.call("POST", "/api/devices", {"id": "cam-1", "kind": "camera", "name": "Saw 1"})
         self.call("PUT", "/api/cameras/cam-1/settings", {"width": 1280})

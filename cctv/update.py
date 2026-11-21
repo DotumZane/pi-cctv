@@ -184,6 +184,28 @@ def ensure_camera_dependencies(refresh_relay: bool = False) -> bool:
     return changed
 
 
+def ensure_timestamp_dependencies() -> bool:
+    """Prepare the optional burned-in camera timestamp on camera Pis."""
+    try:
+        if json.loads(DEVICE_STATE.read_text()).get("kind") != "camera":
+            return False
+    except (OSError, ValueError):
+        return False
+    font = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+    changed = False
+    if run(["test", "-r", font], timeout=15).returncode:
+        refreshed = run(["apt-get", "update"], timeout=180)
+        installed = run(["apt-get", "install", "-y", "--no-install-recommends", "fonts-dejavu-core", "ffmpeg"], timeout=180) if not refreshed.returncode else refreshed
+        if installed.returncode:
+            raise RuntimeError("Timestamp dependencies could not be installed: " + (installed.stderr or installed.stdout).strip()[-1000:])
+        changed = True
+    filters = run(["ffmpeg", "-hide_banner", "-filters"], timeout=15)
+    encoders = run(["ffmpeg", "-hide_banner", "-encoders"], timeout=15)
+    if filters.returncode or encoders.returncode or "drawtext" not in filters.stdout or "libx264" not in encoders.stdout:
+        raise RuntimeError("Timestamp support requires FFmpeg with drawtext and libx264; the installed FFmpeg lacks them")
+    return changed
+
+
 def main() -> int:
     report_status("running", "Downloading the approved CCTV software update.")
     try:
@@ -200,6 +222,7 @@ def main() -> int:
         updated_commit = current_commit()
         install_monitor_stats_dependencies()
         dependencies_changed = ensure_camera_dependencies(updated_commit != previous_commit)
+        dependencies_changed = ensure_timestamp_dependencies() or dependencies_changed
         if updated_commit == previous_commit and not dependencies_changed:
             report_status("succeeded", "Pi CCTV software is already current; no restart was needed.")
             return 0

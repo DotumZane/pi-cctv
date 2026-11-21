@@ -53,6 +53,7 @@ class CameraMedia:
     white_balance: str = "auto"
     keyframe_interval: int = 30
     h264_profile: str = "main"
+    burn_timestamp: bool = False
 
     def pipeline(self) -> str:
         camera_args = [
@@ -60,6 +61,8 @@ class CameraMedia:
             "--width", str(self.width), "--height", str(self.height),
             "--framerate", str(self.fps), "--bitrate", str(self.bitrate),
         ]
+        if self.burn_timestamp:
+            camera_args[camera_args.index("h264")] = "yuv420"
         if self.flip_horizontal:
             camera_args.append("--hflip")
         if self.flip_vertical:
@@ -83,8 +86,18 @@ class CameraMedia:
         if self.h264_profile != "main":
             camera_args.extend(["--profile", self.h264_profile])
         camera_command = " ".join(quote(arg) for arg in camera_args)
+        overlay = ""
+        if self.burn_timestamp:
+            font = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+            draw = f"drawtext=fontfile={font}:text=%{{localtime}}:fontcolor=white:fontsize={max(16, self.height // 30)}:box=1:boxcolor=black@0.55:boxborderw=6:x=12:y=12"
+            overlay_args = ["ffmpeg", "-hide_banner", "-loglevel", "warning", "-f", "rawvideo", "-pixel_format", "yuv420p",
+                            "-video_size", f"{self.width}x{self.height}", "-framerate", str(self.fps), "-i", "pipe:0",
+                            "-vf", draw, "-an", "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
+                            "-profile:v", self.h264_profile, "-b:v", str(self.bitrate), "-g", str(self.keyframe_interval),
+                            "-f", "h264", "pipe:1"]
+            overlay = " | " + " ".join(quote(arg) for arg in overlay_args)
         return (
-            f"{camera_command} | gst-launch-1.0 -e "
+            f"{camera_command}{overlay} | gst-launch-1.0 -e "
             "fdsrc fd=0 do-timestamp=true ! h264parse config-interval=1 ! "
             f"rtspclientsink location={quote(self.publish_url)} protocols=tcp latency=0"
         )

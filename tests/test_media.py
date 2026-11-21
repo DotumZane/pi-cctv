@@ -31,6 +31,15 @@ class MediaTests(unittest.TestCase):
         self.assertNotIn("--shutter", command)
         self.assertNotIn("--gain", command)
 
+    def test_camera_timestamp_is_burned_before_encoding_when_enabled(self):
+        command = CameraMedia("rtsp://media:8554/cam-1", burn_timestamp=True).pipeline()
+        self.assertIn("--codec yuv420", command)
+        self.assertIn("drawtext=", command)
+        self.assertIn("%{localtime}", command)
+        self.assertIn("libx264", command)
+        self.assertIn("-b:v 6000000", command)
+        self.assertNotIn("drawtext=", CameraMedia("rtsp://media:8554/cam-1").pipeline())
+
     def test_monitor_pipeline_uses_hardware_decode(self):
         command = MonitorMedia("rtsp://media:8554/cam-1").pipeline()
         self.assertIn("v4l2h264dec", command)

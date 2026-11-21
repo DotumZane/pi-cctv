@@ -13,6 +13,7 @@ class UpdateTests(unittest.TestCase):
         missing = Mock(returncode=1, stdout="", stderr="")
         with patch.object(update, "DEVICE_STATE") as state, \
                 patch.object(update, "mark_setup_ap_checked_this_boot"), \
+                patch.object(update, "ensure_timestamp_dependencies", return_value=False), \
                 patch.object(update, "run", side_effect=[ok, ok, missing, ok, ok, missing, ok, ok, ok, ok]) as run, \
                 patch.object(update, "current_commit", return_value=old), \
                 patch.object(update, "wait_for_healthy_service", return_value=True), \
@@ -23,6 +24,16 @@ class UpdateTests(unittest.TestCase):
         self.assertIn(["apt-get", "install", "-y", "--no-install-recommends", "ffmpeg"], commands)
         self.assertIn(["systemctl", "enable", "--now", "pi-cctv-relay.service"], commands)
         self.assertIn(["systemctl", "restart", update.SERVICE], commands)
+
+    def test_timestamp_dependencies_install_font_and_check_ffmpeg(self):
+        ok = subprocess.CompletedProcess([], 0, "drawtext libx264", "")
+        missing = subprocess.CompletedProcess([], 1, "", "")
+        with patch.object(update, "DEVICE_STATE") as state, patch.object(update, "run", side_effect=[missing, ok, ok, ok, ok]) as run:
+            state.read_text.return_value = '{"kind":"camera"}'
+            self.assertTrue(update.ensure_timestamp_dependencies())
+        self.assertIn("fonts-dejavu-core", run.call_args_list[2].args[0])
+        self.assertEqual(run.call_args_list[3].args[0][-1], "-filters")
+        self.assertEqual(run.call_args_list[4].args[0][-1], "-encoders")
 
     def test_monitor_stats_dependencies_are_installed_only_for_monitor_pi(self):
         with patch.object(update, "DEVICE_STATE", Path("/nonexistent")), patch.object(update, "run") as run:

@@ -1076,6 +1076,7 @@ class DeviceRuntime:
                 shutter_us=settings.get("shutter_us", 10_000), gain=gain, exposure_profile=exposure_profile,
                 white_balance=settings.get("white_balance", "auto"),
                 keyframe_interval=settings.get("keyframe_interval", settings.get("fps", 30)),
+                burn_timestamp=settings.get("burn_timestamp", False),
                 h264_profile=settings.get("live_profile", "main"),
             ).pipeline()]
         settings = self._device_settings().copy()

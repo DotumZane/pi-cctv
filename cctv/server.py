@@ -1859,7 +1859,7 @@ class Handler(BaseHTTPRequestHandler):
             allowed = {
                 "width", "height", "fps", "bitrate", "exposure_mode", "shutter_us", "gain", "exposure_profile",
                 "white_balance", "brightness", "contrast", "saturation", "sharpness",
-                "flip_horizontal", "flip_vertical", "keyframe_interval", "live_profile",
+                "flip_horizontal", "flip_vertical", "keyframe_interval", "live_profile", "burn_timestamp",
             }
             if not camera or camera["kind"] != "camera":
                 self.send_json({"error": "camera not found"}, HTTPStatus.NOT_FOUND)
@@ -1883,7 +1883,7 @@ class Handler(BaseHTTPRequestHandler):
                 }.items():
                     if key in settings and settings[key] not in values:
                         invalid = True
-                for key in ("flip_horizontal", "flip_vertical"):
+                for key in ("flip_horizontal", "flip_vertical", "burn_timestamp"):
                     if key in settings and not isinstance(settings[key], bool):
                         invalid = True
                 if invalid:
