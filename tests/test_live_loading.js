@@ -8,7 +8,7 @@ const stalled = new Promise(resolve => { releaseAdmin = resolve; });
 const elements = new Map();
 const context = {authUi:{user:{role:'admin'}},state:{devices:[]},liveSignature:'',Date,console,
   document:{querySelector(selector){if(selector==='#view-nvr.active'||selector.includes('data-routing-dirty'))return null;if(!elements.has(selector))elements.set(selector,{textContent:'',innerHTML:''});return elements.get(selector)}},
-  api: path => path==='/api/health' ? Promise.resolve({ok:true,json:async()=>({devices:{online:1,offline:0,cameras:1,monitors:0}})}) : path==='/api/devices' ? Promise.resolve({ok:true,json:async()=>({devices:[{id:'cam',kind:'camera',status:'online'}]})}) : stalled,
+  api: path => path==='/api/health' ? Promise.resolve({ok:true,json:async()=>({devices:{online:1,offline:0,cameras:1,monitors:0}})}) : path==='/api/devices?summary=1' ? Promise.resolve({ok:true,json:async()=>({devices:[{id:'cam',kind:'camera',status:'online'}]})}) : stalled,
   renderLive(){rendered++},renderPending(){},renderRouting(){},renderDevices(){devicesRendered++},renderFleetUpdate(){},renderSettings(){settingsRendered++},formatServerHealth(){return ''}};
 vm.createContext(context);vm.runInContext(code,context);
 (async()=>{

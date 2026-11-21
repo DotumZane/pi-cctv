@@ -260,6 +260,18 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(result["retention"], "7d")
         self.assertEqual(result["logs"], ["2026-11-13T20:00:00+00:00 first", "same", "2026-11-13T20:01:00+00:00 second"])
 
+    def test_device_summary_omits_history_but_retains_settings_and_logs(self):
+        self.call("POST", "/api/devices", {"id": "cam-1", "kind": "camera", "name": "Saw 1"})
+        self.call("PUT", "/api/cameras/cam-1/settings", {"width": 1280})
+        self.call("POST", "/api/devices/cam-1/heartbeat", {"recent_logs": ["a log entry"]})
+        _, summary = self.call("GET", "/api/devices?summary=1")
+        metadata = json.loads(summary["devices"][0]["metadata"])
+        self.assertNotIn("server_log_history", metadata)
+        self.assertEqual(metadata["settings"]["width"], 1280)
+        _, full = self.call("GET", "/api/devices")
+        self.assertIn("server_log_history", json.loads(full["devices"][0]["metadata"]))
+        self.assertEqual(self.call("GET", "/api/devices/cam-1/logs?history=7d")[1]["logs"], ["a log entry"])
+
     def test_mutations_create_audit_entries(self):
         self.call("POST", "/api/devices", {"id": "cam-1", "kind": "camera", "name": "Saw 1"})
         status, entries = self.call("GET", "/api/audit")

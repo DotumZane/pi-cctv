@@ -472,10 +472,21 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/devices":
             if not self.require_read_auth():
                 return
-            kind = parse_qs(parsed.query).get("kind", [None])[0]
+            params = parse_qs(parsed.query)
+            kind = params.get("kind", [None])[0]
             if self.session_user() and self.session_user().get("role") == "viewer":
                 kind = "camera"
-            self.send_json({"devices": self.store.devices(kind)})
+            devices = self.store.devices(kind)
+            if params.get("summary") == ["1"]:
+                for device in devices:
+                    try:
+                        metadata = json.loads(device.get("metadata") or "{}")
+                        if isinstance(metadata, dict):
+                            metadata.pop("server_log_history", None)
+                            device["metadata"] = json.dumps(metadata)
+                    except (TypeError, ValueError):
+                        pass
+            self.send_json({"devices": devices})
             return
         if parsed.path == "/api/pending":
             if not self.require_auth():
