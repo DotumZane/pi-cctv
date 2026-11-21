@@ -89,7 +89,7 @@ class CameraMedia:
         overlay = ""
         if self.burn_timestamp:
             font = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
-            draw = f"drawtext=fontfile={font}:text=%{{localtime}}:fontcolor=white:fontsize={max(16, self.height // 30)}:box=1:boxcolor=black@0.55:boxborderw=6:x=12:y=12"
+            draw = f"drawtext=fontfile={font}:text='%{{localtime\\:%T}}':fontcolor=white:fontsize={max(12, self.height // 45)}:box=1:boxcolor=black@0.55:boxborderw=4:x=12:y=12"
             overlay_args = ["ffmpeg", "-hide_banner", "-loglevel", "warning", "-f", "rawvideo", "-pixel_format", "yuv420p",
                             "-video_size", f"{self.width}x{self.height}", "-framerate", str(self.fps), "-i", "pipe:0",
                             "-vf", draw, "-an", "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
