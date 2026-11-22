@@ -108,7 +108,7 @@ async function checkLiveEdge(initialDate) {
 async function checkHistoryRetry() {
   const source = fs.readFileSync(path.join(__dirname, '..', 'cctv', 'dashboard.html'), 'utf8');
   const paging = source.slice(source.indexOf('let verticalTimelineDayPaging='), source.indexOf('\nconst verticalTimelineDayStyle='));
-  const layers = new Map(), scroll = {scrollTop: 100};
+  const layers = new Map(), scroll = {scrollTop: 100, dataset: {continuousDaysReady: 'true'}};
   const content = {style: {}, querySelector(selector) { return layers.get(selector.match(/"([^"]+)"/)?.[1]) || null; }, appendChild() {}};
   const document = {querySelector(selector) {
     if (selector === '.vertical-timeline-scroll') return scroll;
@@ -137,6 +137,9 @@ async function checkHistoryRetry() {
   assert.equal(vm.runInContext('verticalTimelineLoadedDays.length', globals), 3, 'retry reuses the failed days');
   assert.equal(vm.runInContext('verticalTimelineLoadedDays[1].records.length', globals), 1, 'retry restores the older recordings');
   assert.equal(layers.get('2026-11-21').dataset.loading, 'false');
+  vm.runInContext('buildVerticalTimeline()', globals);
+  assert.equal(vm.runInContext('verticalTimelineLoadedDays.length', globals), 3, 'refresh preserves already loaded days');
+  assert.equal(vm.runInContext('verticalTimelineLoadedDays[1].records.length', globals), 1, 'refresh keeps older recording metadata');
 }
 
 const yesterday = new Date(); yesterday.setDate(yesterday.getDate() - 1);

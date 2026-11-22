@@ -647,6 +647,9 @@ function appendVerticalTimelineDay(date,records,index){
 }
 const buildVerticalTimelineWithContinuousDays=buildVerticalTimeline;
 buildVerticalTimeline=function(){
+  // Repeated workspace refreshes can call this while the existing scroll
+  // surface is still in use. Keep its loaded days and scroll position.
+  if(document.querySelector('.vertical-timeline-scroll')?.dataset.continuousDaysReady)return;
   verticalTimelineGeneration++;verticalTimelineDayPaging=false;
   verticalTimelineLoadedDays=[{date:workspaceTimelineDate,records:[...workspaceTimelineRecords]}];
   verticalTimelineSelectionDate=workspaceTimelineDate;
