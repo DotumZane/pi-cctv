@@ -32,11 +32,12 @@ class ScrubOverviewTests(unittest.TestCase):
                                 '-frames:v', '1', '-y', str(atlas / '000.jpg')], check=True)
             result = build_overview(root, 'cam-1', hour)
             self.assertEqual(result['times'], [hour, hour + 120])
+            self.assertEqual((result['width'], result['height']), (384, 216))
             image = base64.b64decode(result['image'])
             self.assertTrue(image.startswith(b'\xff\xd8'))
             sheet = root / 'sheet.jpg'
             sheet.write_bytes(image)
-            for x, expected in [(0, 0), (160, 2)]:
+            for x, expected in [(0, 0), (384, 2)]:
                 decoded = subprocess.run(['ffmpeg', '-v', 'error', '-i', str(sheet), '-vf', f'format=rgb24,crop=2:2:{x}:0',
                                           '-frames:v', '1', '-f', 'rawvideo', '-'], capture_output=True, check=True).stdout
                 self.assertGreater(decoded[expected], decoded[2 - expected] + 100)

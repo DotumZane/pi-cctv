@@ -51,14 +51,14 @@ def build_overview(root: Path, camera: str, hour: int) -> dict:
         listing.write_text(''.join("file '" + str(path).replace("'", "'\\''") + "'\n" for _, path in items))
         result = subprocess.run(
             ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-nostdin', '-f', 'concat', '-safe', '0',
-             '-i', str(listing), '-vf', 'crop=384:216:0:0,scale=160:90,tile=6x5',
+             '-i', str(listing), '-vf', 'crop=384:216:0:0,tile=6x5',
              '-frames:v', '1', '-q:v', '9', '-f', 'image2pipe', '-vcodec', 'mjpeg', 'pipe:1'],
             capture_output=True, timeout=45,
         )
     if result.returncode or not result.stdout.startswith(b'\xff\xd8'):
         raise RuntimeError('overview image generation failed')
     return {'ready': True, 'times': [item[0] for item in items], 'image': base64.b64encode(result.stdout).decode('ascii'),
-            'width': 160, 'height': 90, 'columns': 6, '_sources': [item[1] for item in items]}
+            'width': 384, 'height': 216, 'columns': 6, '_sources': [item[1] for item in items]}
 
 
 def overview(root: Path, camera: str, hour: int) -> dict:

@@ -333,7 +333,7 @@
           const bitmap = await createImageBitmap(new Blob([bytes], {type: 'image/jpeg'}));
           state.overviewCache.set(key, {bitmap, times: result.times, width: result.width,
             height: result.height, columns: result.columns, loadedAt: performance.now()});
-          while (state.overviewCache.size > 16) {
+          while (state.overviewCache.size > 8) {
             const oldest = state.overviewCache.keys().next().value;
             state.overviewCache.get(oldest)?.bitmap?.close?.();
             state.overviewCache.delete(oldest);
@@ -367,6 +367,9 @@
     }
     if (!best) return false;
     const {entry, stamp, index} = best;
+    const key = `${state.camera}:${best.hour}`;
+    state.overviewCache.delete(key);
+    state.overviewCache.set(key, entry);
     fitCanvas();
     const cw = state.canvas.width, ch = state.canvas.height;
     const scale = Math.min(cw / entry.width, ch / entry.height);
