@@ -692,21 +692,24 @@ buildVerticalTimeline=function(){
 window.loadPreviousTimelineDay=async function(){
   if(verticalTimelineDayPaging||!verticalTimelineLoadedDays.length||!window.workspaceCamera)return;
   verticalTimelineDayPaging=true;
-  const generation=verticalTimelineGeneration;
+  const generation=verticalTimelineGeneration,pending=[];
   try{
-    const newest=verticalTimelineLoadedDays[0].date,index=verticalTimelineLoadedDays.length,pending=[];
+    const newest=verticalTimelineLoadedDays[0].date,index=verticalTimelineLoadedDays.length;
+    pending.push(...verticalTimelineLoadedDays.filter(day=>day.failed).slice(0,2));
     // Reserve two complete days immediately. This keeps a generous scroll
     // buffer available even when the recordings request is slow.
-    for(let offset=index;offset<index+2;offset++){
+    if(!pending.length)for(let offset=index;offset<index+2;offset++){
       const date=timelineDateFromOffset(newest,offset);
       if(verticalTimelineLoadedDays.some(item=>item.date===date))continue;
       const day={date,records:[]};verticalTimelineLoadedDays.push(day);pending.push(day);appendVerticalTimelineDay(date,day.records,verticalTimelineLoadedDays.length-1);
     }
     if(!pending.length)return;
     const oldest=pending[pending.length-1].date,newestPending=pending[0].date;
-    const response=await api(`/api/recordings?camera_id=${encodeURIComponent(window.workspaceCamera)}&start=${encodeURIComponent(workspaceDayStart(oldest).toISOString())}&end=${encodeURIComponent(workspaceNextDate(newestPending).toISOString())}`),data=response.ok?await response.json():{recordings:[]};
+    const response=await api(`/api/recordings?camera_id=${encodeURIComponent(window.workspaceCamera)}&start=${encodeURIComponent(workspaceDayStart(oldest).toISOString())}&end=${encodeURIComponent(workspaceNextDate(newestPending).toISOString())}`);
+    if(!response.ok)throw new Error('recording history unavailable');
+    const data=await response.json();
     if(generation!==verticalTimelineGeneration)return;
-    pending.forEach(day=>{day.records=(data.recordings||[]).filter(record=>record.start&&localDateKey(record.start)===day.date).sort((a,b)=>new Date(a.start)-new Date(b.start));const layer=document.querySelector(`.vertical-timeline-day-layer[data-timeline-day="${day.date}"]`);if(layer){layer.dataset.loading='false';layer.querySelectorAll('.vertical-timeline-range').forEach(range=>range.remove());const dayLength=timelineDayLength(day.date);day.records.forEach((record,recordIndex)=>{const start=verticalDayRecordStart(record,day.date),duration=verticalDayRecordDuration(record,recordIndex,day.records),range=document.createElement('span');range.className='vertical-timeline-range';range.style.top=`${Math.max(0,(1-(start+duration)/dayLength)*verticalTimelineHeight)}px`;range.style.height=`${Math.max(3,duration/dayLength*verticalTimelineHeight)}px`;range.title=formatTimelineTime(start);layer.appendChild(range)})}})
+    pending.forEach(day=>{day.failed=false;day.records=(data.recordings||[]).filter(record=>record.start&&localDateKey(record.start)===day.date).sort((a,b)=>new Date(a.start)-new Date(b.start));const layer=document.querySelector(`.vertical-timeline-day-layer[data-timeline-day="${day.date}"]`);if(layer){layer.dataset.loading='false';layer.querySelectorAll('.vertical-timeline-range').forEach(range=>range.remove());const dayLength=timelineDayLength(day.date);day.records.forEach((record,recordIndex)=>{const start=verticalDayRecordStart(record,day.date),duration=verticalDayRecordDuration(record,recordIndex,day.records),range=document.createElement('span');range.className='vertical-timeline-range';range.style.top=`${Math.max(0,(1-(start+duration)/dayLength)*verticalTimelineHeight)}px`;range.style.height=`${Math.max(3,duration/dayLength*verticalTimelineHeight)}px`;range.title=formatTimelineTime(start);layer.appendChild(range)})}})
     // A user may have stopped on this day while its metadata was loading.
     // Re-evaluate that selected time so Loading becomes No recording or a frame.
     const selected=verticalTimelineSelection();
@@ -720,6 +723,11 @@ window.loadPreviousTimelineDay=async function(){
         const current=verticalTimelineSelection();
         if(current.date===selected.date&&Math.abs(current.seconds-selected.seconds)<1)void scrubWorkspaceTimeline(current.seconds);
       },550);
+    }
+  }catch(error){
+    if(generation===verticalTimelineGeneration){
+      pending.forEach(day=>{day.failed=true});
+      setTimeout(()=>{if(generation===verticalTimelineGeneration)void loadPreviousTimelineDay()},3000);
     }
   }finally{if(generation===verticalTimelineGeneration)verticalTimelineDayPaging=false}
 };

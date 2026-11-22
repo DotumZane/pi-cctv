@@ -46,6 +46,30 @@ class ScrubOverviewTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             self.assertEqual(build_overview(Path(temp), 'missing', 0), {'ready': True, 'times': [], 'image': None})
 
+    def test_detailed_index_decodes_the_original_recording(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            hour = int(time.time() // 3600) * 3600 - 7200
+            stamp = datetime.fromtimestamp(hour).astimezone()
+            source = root / 'cam-1' / stamp.strftime('%Y-%m-%d') / (stamp.strftime('%H-%M-%S') + '.mp4')
+            source.parent.mkdir(parents=True)
+            subprocess.run(['ffmpeg', '-v', 'error', '-f', 'lavfi', '-i', 'color=blue:s=640x360:r=1:d=1',
+                            '-c:v', 'mpeg4', '-y', str(source)], check=True)
+            os.utime(source, (time.time() - 30, time.time() - 30))
+            atlas = scrub_frames_dir(root, source)
+            atlas.mkdir(parents=True)
+            (atlas / 'manifest.json').write_text(json.dumps({'width': 384, 'height': 216}))
+            subprocess.run(['ffmpeg', '-v', 'error', '-f', 'lavfi', '-i', 'color=red:s=2304x864',
+                            '-frames:v', '1', '-y', str(atlas / '000.jpg')], check=True)
+            result = build_overview(root, 'cam-1', hour, detail=True)
+            self.assertEqual(result['times'], [hour])
+            self.assertEqual((result['width'], result['height']), (512, 288))
+            sheet = root / 'sheet.jpg'
+            sheet.write_bytes(base64.b64decode(result['image']))
+            pixel = subprocess.run(['ffmpeg', '-v', 'error', '-i', str(sheet), '-vf', 'format=rgb24,crop=2:2:0:0',
+                                    '-frames:v', '1', '-f', 'rawvideo', '-'], capture_output=True, check=True).stdout
+            self.assertGreater(pixel[2], pixel[0] + 100, 'detailed preview comes from the blue recording, not the red atlas')
+
 
 if __name__ == '__main__':
     unittest.main()

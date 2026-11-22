@@ -66,6 +66,10 @@ class ApiTests(unittest.TestCase):
         with patch('cctv.server.overview', return_value={'ready': False}) as build:
             self.assertEqual(self.call('GET', path, token='read-secret'), (200, {'ready': False}))
             build.assert_called_once()
+            self.assertEqual(self.call('GET', path + '&detail=high', token='read-secret')[0], 200)
+            self.assertEqual(build.call_args.args[-1], 'high')
+            self.assertEqual(self.call('GET', path + '&detail=compact', token='read-secret')[0], 200)
+            self.assertEqual(build.call_args.args[-1], 'compact')
             for invalid in ('camera_id=..%2Fsecret&hour=0', 'camera_id=cam&hour=1', 'camera_id=cam&hour=bad'):
                 self.assertEqual(self.call('GET', '/api/recordings/overview?' + invalid, token='read-secret')[0], 400)
 

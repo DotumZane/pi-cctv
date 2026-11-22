@@ -105,7 +105,41 @@ async function checkLiveEdge(initialDate) {
   }
 }
 
+async function checkHistoryRetry() {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'cctv', 'dashboard.html'), 'utf8');
+  const paging = source.slice(source.indexOf('let verticalTimelineDayPaging='), source.indexOf('\nconst verticalTimelineDayStyle='));
+  const layers = new Map(), scroll = {scrollTop: 100};
+  const content = {style: {}, querySelector(selector) { return layers.get(selector.match(/"([^"]+)"/)?.[1]) || null; }, appendChild() {}};
+  const document = {querySelector(selector) {
+    if (selector === '.vertical-timeline-scroll') return scroll;
+    if (selector === '.vertical-timeline-content') return content;
+    const date = selector.match(/data-timeline-day="([^"]+)"/)?.[1];
+    return date ? layers.get(date) : null;
+  }, createElement() {return {style: {}, dataset: {}, appendChild() {}, querySelectorAll() {return [];}};}};
+  let calls = 0;
+  const globals = {document, window: {workspaceCamera: 'cam'}, workspaceTimelineDate: '2026-11-22',
+    workspaceTimelineRecords: [], workspaceTimelineLastValue: 0, workspaceTimelineSegmentSeconds: 30,
+    verticalTimelineHeight: 3600, buildVerticalTimeline() {}, timelineDayLength: () => 86400,
+    workspaceDayStart: day => new Date(`${day}T00:00:00Z`),
+    workspaceNextDate: day => new Date(new Date(`${day}T00:00:00Z`).getTime() + 86400000),
+    localDateKey: date => date.slice(0, 10), formatTimelineTime: () => '00:00:00',
+    api: async () => ++calls === 1 ? {ok: false} : {ok: true, json: async () => ({recordings: [
+      {start: '2026-11-21T12:00:00Z', duration: 30}]})},
+    setTimeout() {return 0;}, clearTimeout, requestAnimationFrame() {}, console};
+  vm.createContext(globals); vm.runInContext(paging, globals);
+  vm.runInContext(`verticalTimelineLoadedDays=[{date:'2026-11-22',records:[]}];
+    appendVerticalTimelineDay=(date)=>{document._layers.set(date,{dataset:{loading:'true'},querySelectorAll:()=>[],appendChild(){}})};`,
+    Object.assign(globals, {document: Object.assign(document, {_layers: layers})}));
+  await globals.window.loadPreviousTimelineDay();
+  assert.equal(vm.runInContext('verticalTimelineLoadedDays.length', globals), 3, 'two days remain reserved after a failed request');
+  assert.equal(vm.runInContext('verticalTimelineLoadedDays[1].failed', globals), true);
+  await globals.window.loadPreviousTimelineDay();
+  assert.equal(vm.runInContext('verticalTimelineLoadedDays.length', globals), 3, 'retry reuses the failed days');
+  assert.equal(vm.runInContext('verticalTimelineLoadedDays[1].records.length', globals), 1, 'retry restores the older recordings');
+  assert.equal(layers.get('2026-11-21').dataset.loading, 'false');
+}
+
 const yesterday = new Date(); yesterday.setDate(yesterday.getDate() - 1);
 const key = date => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-Promise.resolve().then(checkWheelSensitivity).then(checkRecordedDuration).then(() => checkLiveEdge(key(new Date()))).then(() => checkLiveEdge(key(yesterday)))
+Promise.resolve().then(checkWheelSensitivity).then(checkRecordedDuration).then(() => checkLiveEdge(key(new Date()))).then(() => checkLiveEdge(key(yesterday))).then(checkHistoryRetry)
   .catch(error => { console.error(error); process.exitCode = 1; });

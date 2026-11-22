@@ -700,12 +700,12 @@ async function decodedScrubbingKeepsFramesOrdered() {
 }
 
 async function coarseOverviewDuringFastScrolling() {
-  const paints = [], raf = [];
+  const paints = [], widths = [], raf = [], detailTimers = [], overviewRequests = [];
   let clock = 1000;
   const date = '2026-11-17';
   const midnight = new Date(`${date}T00:00:00`).getTime() / 1000;
   const canvas = {width: 0, height: 0, classList: {add() {}, remove() {}}, setAttribute() {},
-    getContext: () => ({fillRect() {}, drawImage(bitmap) {paints.push(bitmap.id);}, set fillStyle(_) {}})};
+    getContext: () => ({fillRect() {}, drawImage(bitmap, x, y, width) {paints.push(bitmap.id); widths.push(width);}, set fillStyle(_) {}})};
   const video = {dataset: {playback: 'live'}, clientWidth: 100, clientHeight: 100, readyState: 0, paused: true,
     closest: () => ({appendChild() {}}), setAttribute() {}, removeAttribute() {}, addEventListener() {}, pause() {}};
   const document = {body: {}, head: {appendChild() {}}, documentElement: {dataset: {}},
@@ -720,13 +720,17 @@ async function coarseOverviewDuringFastScrolling() {
     verticalTimelineSetPosition() {}, updateTimelinePlayhead() {}, formatTimelineTime: String,
     atob: value => Buffer.from(value, 'base64').toString('binary'), Blob,
     api(url) {
-      if (url.includes('/overview?')) return Promise.resolve({ok: true, json: async () => ({ready: true,
-        image: 'eA==', times: [midnight + 10750], width: 160, height: 90, columns: 6})});
+      if (url.includes('/overview?')) {
+        overviewRequests.push(url);
+        const width = url.includes('detail=high') ? 512 : url.includes('detail=compact') ? 160 : 384;
+        return Promise.resolve({ok: true, json: async () => ({ready: true,
+          image: 'eA==', times: [midnight + 10750], width, height: width * 9 / 16, columns: 6})});
+      }
       if (url.includes('/scrub-frames?')) return Promise.resolve({ok: true, json: async () => ({ready: false})});
       return Promise.resolve({ok: false});
     },
     createImageBitmap: async () => ({id: 'overview', close() {}}),
-    setTimeout(fn, ms) {return ms === 220 || ms === 3100 ? 0 : setTimeout(fn, ms);}, clearTimeout, console};
+    setTimeout(fn, ms) {if (ms === 10000) {detailTimers.push(fn); return 0;} return ms === 220 || ms === 3100 ? 0 : setTimeout(fn, ms);}, clearTimeout, console};
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', 'cctv', 'playback-engine.js'), 'utf8'), globals);
   globals.window.previewWorkspaceTimelineScrub(10800, -1);
   await new Promise(resolve => setImmediate(resolve));
@@ -735,6 +739,11 @@ async function coarseOverviewDuringFastScrolling() {
   await new Promise(resolve => setImmediate(resolve));
   assert.ok(paints.includes('overview'), 'fast scrolling displays the cached coarse frame');
   assert.equal(globals.window.cctvScrubMetrics.snapshot().sources.overview, 1);
+  for (let i = 0; i < 20; i++) await new Promise(resolve => setImmediate(resolve));
+  assert.ok(overviewRequests.some(url => url.includes('detail=compact')), 'older hours use smaller sheets');
+  detailTimers.splice(0).forEach(fn => fn());
+  for (let i = 0; i < 20; i++) await new Promise(resolve => setImmediate(resolve));
+  assert.ok(widths.includes(512), 'the preview upgrades to the detailed recording frame');
   const before = paints.length;
   globals.window.previewWorkspaceTimelineScrub(10600, -1);
   assert.equal(paints.length, before, 'a gap retains the last frame without showing an overview as footage');

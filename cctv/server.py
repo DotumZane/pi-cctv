@@ -832,7 +832,8 @@ class Handler(BaseHTTPRequestHandler):
             if (root / camera).resolve().parent != root:
                 self.send_json({'error': 'invalid camera'}, HTTPStatus.BAD_REQUEST)
                 return
-            self.send_json(overview(root, camera, hour))
+            quality = params.get('detail', [''])[0]
+            self.send_json(overview(root, camera, hour, quality) if quality in ('high', 'compact') else overview(root, camera, hour))
             return
         if parsed.path in {"/api/recordings/trickplay", "/api/recordings/scrub-frames"}:
             if not self.require_read_auth():

@@ -98,6 +98,10 @@
     overviewLoading: new Set(),
     overviewQueue: new Map(),
     overviewRetry: new Map(),
+    overviewTiles: new Map(),
+    overviewTileLoading: new Set(),
+    overviewHighTargets: new Set(),
+    overviewHighTimers: new Set(),
   };
 
   function log(event, details) {
@@ -296,19 +300,39 @@
 
   // A small sheet covers an entire hour. It is used only while moving fast;
   // the ordinary per-recording atlas remains the precise preview.
-  function requestOverview(camera, hour) {
-    const key = `${camera}:${hour}`;
+  function requestOverview(camera, hour, compact = false) {
+    const base = `${camera}:${hour}`, key = `${base}:${compact ? 'compact' : 'standard'}`;
     if (hour < 0 || hour > 4102444800) return;
-    const cached = state.overviewCache.get(key);
+    const cached = state.overviewCache.get(base);
     const maxAge = !cached?.times.length || hour + 3600 > Date.now() / 1000 ? 30000 : 300000;
     if (cached && performance.now() - cached.loadedAt > maxAge) {
-      cached.bitmap?.close?.();
-      state.overviewCache.delete(key);
+      state.overviewCache.delete(base);
     }
-    if (state.overviewCache.has(key) || state.overviewLoading.has(key) ||
+    const current = state.overviewCache.get(base);
+    if ((current && (!current.times.length || compact || current.width >= 384)) || state.overviewLoading.has(key) ||
         (state.overviewRetry.get(key) || 0) > performance.now()) return;
-    state.overviewQueue.set(key, {camera, hour});
+    state.overviewQueue.set(key, {camera, hour, compact, base});
     pumpOverviews();
+  }
+
+  function requestDetailedOverview(camera, hour) {
+    const base = `${camera}:${hour}`, key = `${base}:high`;
+    const cached = state.overviewCache.get(base);
+    if (!state.overviewHighTargets.has(base) || !cached?.blob || cached.width >= 512 ||
+        state.overviewLoading.has(key) || state.overviewQueue.has(key) ||
+        (state.overviewRetry.get(key) || 0) > performance.now()) return;
+    state.overviewQueue.set(key, {camera, hour, detail: true, base});
+    pumpOverviews();
+  }
+
+  function scheduleDetailedOverview(camera, hour) {
+    const key = `${camera}:${hour}`;
+    if (!state.overviewHighTargets.has(key) || state.overviewHighTimers.has(key)) return;
+    state.overviewHighTimers.add(key);
+    setTimeout(() => {
+      state.overviewHighTimers.delete(key);
+      if (window.workspaceCamera === camera) requestDetailedOverview(camera, hour);
+    }, 10000);
   }
 
   function pumpOverviews() {
@@ -316,28 +340,34 @@
       const [key, item] = state.overviewQueue.entries().next().value;
       state.overviewQueue.delete(key);
       state.overviewLoading.add(key);
-      api(`/api/recordings/overview?camera_id=${encodeURIComponent(item.camera)}&hour=${item.hour}`)
+      const base = item.base || key;
+      api(`/api/recordings/overview?camera_id=${encodeURIComponent(item.camera)}&hour=${item.hour}${item.detail ? '&detail=high' : item.compact ? '&detail=compact' : ''}`)
         .then(response => response.ok ? response.json() : null)
         .then(async result => {
           if (!result?.ready) {
             state.overviewRetry.set(key, performance.now() + 3000);
-            setTimeout(() => { if (window.workspaceCamera === item.camera) requestOverview(item.camera, item.hour); }, 3100);
+            setTimeout(() => { if (window.workspaceCamera === item.camera) {
+              if (item.detail) requestDetailedOverview(item.camera, item.hour);
+              else requestOverview(item.camera, item.hour, item.compact);
+            } }, 3100);
             return;
           }
           if (!result.image || !result.times?.length) {
-            state.overviewCache.set(key, {bitmap: null, times: [], loadedAt: performance.now()});
+            if (!item.detail && !state.overviewCache.has(base)) state.overviewCache.set(base, {blob: null, times: [], loadedAt: performance.now()});
             return;
           }
           const binary = atob(result.image), bytes = new Uint8Array(binary.length);
           for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-          const bitmap = await createImageBitmap(new Blob([bytes], {type: 'image/jpeg'}));
-          state.overviewCache.set(key, {bitmap, times: result.times, width: result.width,
+          const previous = state.overviewCache.get(base);
+          if (!item.detail && previous?.width > result.width) return;
+          if (item.detail && !previous) return;
+          state.overviewCache.set(base, {blob: new Blob([bytes], {type: 'image/jpeg'}), times: result.times, width: result.width,
             height: result.height, columns: result.columns, loadedAt: performance.now()});
-          while (state.overviewCache.size > 8) {
+          while (state.overviewCache.size > 24) {
             const oldest = state.overviewCache.keys().next().value;
-            state.overviewCache.get(oldest)?.bitmap?.close?.();
             state.overviewCache.delete(oldest);
           }
+          if (!item.detail) scheduleDetailedOverview(item.camera, item.hour);
           if (state.active && state.camera === item.camera && state.scrubSpeed > 4) paintOverview();
         }).catch(() => { state.overviewRetry.set(key, performance.now() + 3000); })
         .finally(() => { state.overviewLoading.delete(key); pumpOverviews(); });
@@ -348,7 +378,13 @@
     if (!state.camera || !Number.isFinite(absolute) || typeof atob !== 'function' || typeof Blob === 'undefined') return;
     const hour = Math.floor(absolute / 3600) * 3600;
     state.overviewQueue.clear();
-    for (let i = 0; i < 8; i++) requestOverview(state.camera, hour + Math.sign(direction || -1) * i * 3600);
+    state.overviewHighTargets = new Set();
+    for (let i = 0; i < 24; i++) {
+      const targetHour = hour + Math.sign(direction || -1) * i * 3600;
+      if (i < 8) state.overviewHighTargets.add(`${state.camera}:${targetHour}`);
+      requestOverview(state.camera, targetHour, i >= 8);
+      if (i < 8 && state.overviewCache.has(`${state.camera}:${targetHour}`)) scheduleDetailedOverview(state.camera, targetHour);
+    }
   }
 
   function paintOverview() {
@@ -370,14 +406,34 @@
     const key = `${state.camera}:${best.hour}`;
     state.overviewCache.delete(key);
     state.overviewCache.set(key, entry);
+    const tileKey = `${key}:${entry.loadedAt}:${index}`;
+    const tile = state.overviewTiles.get(tileKey);
+    if (!tile) {
+      if (!state.overviewTileLoading.has(tileKey) && state.overviewTileLoading.size < 2) {
+        state.overviewTileLoading.add(tileKey);
+        createImageBitmap(entry.blob, (index % entry.columns) * entry.width,
+          Math.floor(index / entry.columns) * entry.height, entry.width, entry.height)
+          .then(bitmap => {
+            state.overviewTiles.set(tileKey, bitmap);
+            while (state.overviewTiles.size > 8) {
+              const oldest = state.overviewTiles.keys().next().value;
+              state.overviewTiles.get(oldest)?.close?.();
+              state.overviewTiles.delete(oldest);
+            }
+            if (state.overviewCache.get(key) === entry && state.active && state.scrubSpeed > 4) paintOverview();
+          }).catch(() => {}).finally(() => state.overviewTileLoading.delete(tileKey));
+      }
+      return false;
+    }
+    state.overviewTiles.delete(tileKey);
+    state.overviewTiles.set(tileKey, tile);
     fitCanvas();
     const cw = state.canvas.width, ch = state.canvas.height;
     const scale = Math.min(cw / entry.width, ch / entry.height);
     const dw = entry.width * scale, dh = entry.height * scale;
     state.ctx.fillStyle = '#030507';
     state.ctx.fillRect(0, 0, cw, ch);
-    state.ctx.drawImage(entry.bitmap, (index % entry.columns) * entry.width,
-      Math.floor(index / entry.columns) * entry.height, entry.width, entry.height,
+    state.ctx.drawImage(tile, 0, 0, entry.width, entry.height,
       (cw - dw) / 2, (ch - dh) / 2, dw, dh);
     state.hasFrame = state.hasPicture = true;
     state.canvas.classList.add('visible');
