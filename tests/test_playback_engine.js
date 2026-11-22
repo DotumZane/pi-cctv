@@ -699,6 +699,47 @@ async function decodedScrubbingKeepsFramesOrdered() {
   assert.ok(atlasPaints > before, 'a ready decoder without video frames does not freeze atlas previews');
 }
 
-Promise.resolve().then(main).then(proxyScrubbing).then(atlasScrubbing).then(seekResumesPlayback).then(decoderRequiresPlayback).then(previewAcrossSegments).then(delayedAtlasFramesContinueAcrossSegments).then(deduplicatePreviewRequests).then(warmBeforeScrolling).then(cachedAtlasMovesBetweenTargets).then(decodedScrubbingKeepsFramesOrdered)
+async function coarseOverviewDuringFastScrolling() {
+  const paints = [], raf = [];
+  let clock = 1000;
+  const date = '2026-11-17';
+  const midnight = new Date(`${date}T00:00:00`).getTime() / 1000;
+  const canvas = {width: 0, height: 0, classList: {add() {}, remove() {}}, setAttribute() {},
+    getContext: () => ({fillRect() {}, drawImage(bitmap) {paints.push(bitmap.id);}, set fillStyle(_) {}})};
+  const video = {dataset: {playback: 'live'}, clientWidth: 100, clientHeight: 100, readyState: 0, paused: true,
+    closest: () => ({appendChild() {}}), setAttribute() {}, removeAttribute() {}, addEventListener() {}, pause() {}};
+  const document = {body: {}, head: {appendChild() {}}, documentElement: {dataset: {}},
+    createElement: tag => tag === 'canvas' ? canvas : {setAttribute() {}, classList: {toggle() {}}},
+    querySelector: selector => selector === '#workspace-live' ? video : null, addEventListener() {}};
+  const record = {path: 'test.mp4', url: '/test.mp4'};
+  const globals = {document, window: {workspaceCamera: 'cam', returnWorkspaceToLive: async () => {}, addEventListener() {}},
+    URLSearchParams, location: {search: ''}, devicePixelRatio: 1, performance: {now: () => clock},
+    requestAnimationFrame(fn) {raf.push(fn); return raf.length;}, cancelAnimationFrame() {}, MutationObserver: class {observe() {}},
+    timelineDayLength: () => 86400, timelineRecordAt: value => value === 10600 ? null : record,
+    timelineSeconds: () => 0, workspaceTimelineDate: date, workspaceTimelineLastValue: 0,
+    verticalTimelineSetPosition() {}, updateTimelinePlayhead() {}, formatTimelineTime: String,
+    atob: value => Buffer.from(value, 'base64').toString('binary'), Blob,
+    api(url) {
+      if (url.includes('/overview?')) return Promise.resolve({ok: true, json: async () => ({ready: true,
+        image: 'eA==', times: [midnight + 10750], width: 160, height: 90, columns: 6})});
+      if (url.includes('/scrub-frames?')) return Promise.resolve({ok: true, json: async () => ({ready: false})});
+      return Promise.resolve({ok: false});
+    },
+    createImageBitmap: async () => ({id: 'overview', close() {}}),
+    setTimeout(fn, ms) {return ms === 220 || ms === 3100 ? 0 : setTimeout(fn, ms);}, clearTimeout, console};
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', 'cctv', 'playback-engine.js'), 'utf8'), globals);
+  globals.window.previewWorkspaceTimelineScrub(10800, -1);
+  await new Promise(resolve => setImmediate(resolve));
+  clock += 100;
+  globals.window.previewWorkspaceTimelineScrub(10700, -1);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.ok(paints.includes('overview'), 'fast scrolling displays the cached coarse frame');
+  assert.equal(globals.window.cctvScrubMetrics.snapshot().sources.overview, 1);
+  const before = paints.length;
+  globals.window.previewWorkspaceTimelineScrub(10600, -1);
+  assert.equal(paints.length, before, 'a gap retains the last frame without showing an overview as footage');
+}
+
+Promise.resolve().then(main).then(proxyScrubbing).then(atlasScrubbing).then(seekResumesPlayback).then(decoderRequiresPlayback).then(previewAcrossSegments).then(delayedAtlasFramesContinueAcrossSegments).then(deduplicatePreviewRequests).then(warmBeforeScrolling).then(cachedAtlasMovesBetweenTargets).then(decodedScrubbingKeepsFramesOrdered).then(coarseOverviewDuringFastScrolling)
   .then(() => process.exit(0))
   .catch(error => { console.error(error); process.exit(1); });

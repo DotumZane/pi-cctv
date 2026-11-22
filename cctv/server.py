@@ -30,6 +30,7 @@ from .recording import (RecorderSupervisor, mp4_duration, prepare_scrub_frames, 
                         scrub_frames_dir, scrub_frames_ready, trickplay_path, recording_schedule_active)
 from .store import Store
 from .server_logs import capture_server_output, read_server_logs
+from .scrub_overview import overview
 
 
 ROOT = Path(__file__).parent
@@ -814,6 +815,24 @@ class Handler(BaseHTTPRequestHandler):
                 entries.append({"path": str(relative), "camera_id": relative.parts[0] if relative.parts else "", "bytes": stat.st_size, "modified": modified_at.isoformat(), "start": start.isoformat() if start else None, "duration": duration, "url": "/recordings/" + str(relative)})
             entries.sort(key=lambda entry: entry["modified"], reverse=True)
             self.send_json({"recordings": entries})
+            return
+        if parsed.path == "/api/recordings/overview":
+            if not self.require_read_auth():
+                return
+            params = parse_qs(parsed.query)
+            camera = params.get('camera_id', [''])[0]
+            try:
+                hour = int(params.get('hour', [''])[0])
+                if not camera or camera.startswith('.') or '/' in camera or '\\' in camera or hour < 0 or hour > 4102444800 or hour % 3600:
+                    raise ValueError('invalid overview')
+            except ValueError:
+                self.send_json({'error': 'invalid overview request'}, HTTPStatus.BAD_REQUEST)
+                return
+            root = Path(getattr(self.server, 'recordings_dir', 'recordings')).resolve()
+            if (root / camera).resolve().parent != root:
+                self.send_json({'error': 'invalid camera'}, HTTPStatus.BAD_REQUEST)
+                return
+            self.send_json(overview(root, camera, hour))
             return
         if parsed.path in {"/api/recordings/trickplay", "/api/recordings/scrub-frames"}:
             if not self.require_read_auth():

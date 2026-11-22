@@ -94,6 +94,10 @@
     atlasWarmRetry: new Map(),
     atlasFrame: 0,
     atlasTransitionAt: 0,
+    overviewCache: new Map(),
+    overviewLoading: new Set(),
+    overviewQueue: new Map(),
+    overviewRetry: new Map(),
   };
 
   function log(event, details) {
@@ -260,6 +264,7 @@
     state.lastFrameTime = request.absolute;
     state.lastPreviewAt = performance.now();
     state.canvas.classList.add('visible');
+    measureFrame(frameKey(request), request.absolute, 'snapshot');
     scrubMessage(request.absolute === state.targetAbsolute ? '' : `Preview · ${formatTimelineTime(request.selected)}`);
     log('scrub:frame', { requested: request.selected, displayed: state.lastFrameTime,
       latencyMs: Math.round(performance.now() - request.startedAt) });
@@ -288,6 +293,95 @@
   function atlasSheetName(index) { return `${String(index).padStart(3, '0')}.jpg`; }
 
   function atlasKey(path, index) { return `${path}:${index}`; }
+
+  // A small sheet covers an entire hour. It is used only while moving fast;
+  // the ordinary per-recording atlas remains the precise preview.
+  function requestOverview(camera, hour) {
+    const key = `${camera}:${hour}`;
+    if (hour < 0 || hour > 4102444800) return;
+    const cached = state.overviewCache.get(key);
+    if (cached && (!cached.times.length || hour + 3600 > Date.now() / 1000) && performance.now() - cached.loadedAt > 30000) {
+      cached.bitmap?.close?.();
+      state.overviewCache.delete(key);
+    }
+    if (state.overviewCache.has(key) || state.overviewLoading.has(key) ||
+        (state.overviewRetry.get(key) || 0) > performance.now()) return;
+    state.overviewQueue.set(key, {camera, hour});
+    pumpOverviews();
+  }
+
+  function pumpOverviews() {
+    while (state.overviewLoading.size < 2 && state.overviewQueue.size) {
+      const [key, item] = state.overviewQueue.entries().next().value;
+      state.overviewQueue.delete(key);
+      state.overviewLoading.add(key);
+      api(`/api/recordings/overview?camera_id=${encodeURIComponent(item.camera)}&hour=${item.hour}`)
+        .then(response => response.ok ? response.json() : null)
+        .then(async result => {
+          if (!result?.ready) {
+            state.overviewRetry.set(key, performance.now() + 3000);
+            setTimeout(() => { if (window.workspaceCamera === item.camera) requestOverview(item.camera, item.hour); }, 3100);
+            return;
+          }
+          if (!result.image || !result.times?.length) {
+            state.overviewCache.set(key, {bitmap: null, times: [], loadedAt: performance.now()});
+            return;
+          }
+          const binary = atob(result.image), bytes = new Uint8Array(binary.length);
+          for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+          const bitmap = await createImageBitmap(new Blob([bytes], {type: 'image/jpeg'}));
+          state.overviewCache.set(key, {bitmap, times: result.times, width: result.width,
+            height: result.height, columns: result.columns, loadedAt: performance.now()});
+          while (state.overviewCache.size > 16) {
+            const oldest = state.overviewCache.keys().next().value;
+            state.overviewCache.get(oldest)?.bitmap?.close?.();
+            state.overviewCache.delete(oldest);
+          }
+          if (state.active && state.camera === item.camera && state.scrubSpeed > 4) paintOverview();
+        }).catch(() => { state.overviewRetry.set(key, performance.now() + 3000); })
+        .finally(() => { state.overviewLoading.delete(key); pumpOverviews(); });
+    }
+  }
+
+  function warmOverview(absolute, direction = -1) {
+    if (!state.camera || !Number.isFinite(absolute) || typeof atob !== 'function' || typeof Blob === 'undefined') return;
+    const hour = Math.floor(absolute / 3600) * 3600;
+    for (let i = 0; i < 8; i++) requestOverview(state.camera, hour + Math.sign(direction || -1) * i * 3600);
+  }
+
+  function paintOverview() {
+    if (!state.active || !state.targetRecord || state.targetAbsolute === null || !state.motionDirection) return false;
+    const hour = Math.floor(state.targetAbsolute / 3600) * 3600;
+    let best = null;
+    for (const h of [hour, hour - 3600, hour + 3600]) {
+      const entry = state.overviewCache.get(`${state.camera}:${h}`);
+      if (!entry) continue;
+      entry.times.forEach((stamp, index) => {
+        const delta = (state.targetAbsolute - stamp) * state.motionDirection;
+        if (delta < -0.001 || delta > 120 || (state.lastFrameTime !== null &&
+            (stamp - state.lastFrameTime) * state.motionDirection < -0.001)) return;
+        if (!best || delta < best.delta) best = {entry, stamp, index, delta, hour: h};
+      });
+    }
+    if (!best) return false;
+    const {entry, stamp, index} = best;
+    fitCanvas();
+    const cw = state.canvas.width, ch = state.canvas.height;
+    const scale = Math.min(cw / entry.width, ch / entry.height);
+    const dw = entry.width * scale, dh = entry.height * scale;
+    state.ctx.fillStyle = '#030507';
+    state.ctx.fillRect(0, 0, cw, ch);
+    state.ctx.drawImage(entry.bitmap, (index % entry.columns) * entry.width,
+      Math.floor(index / entry.columns) * entry.height, entry.width, entry.height,
+      (cw - dw) / 2, (ch - dh) / 2, dw, dh);
+    state.hasFrame = state.hasPicture = true;
+    state.canvas.classList.add('visible');
+    const when = new Date(stamp * 1000);
+    scrubMessage(`Preview · ${formatTimelineTime(when.getHours() * 3600 + when.getMinutes() * 60 + when.getSeconds())}`);
+    state.lastPreviewAt = performance.now();
+    measureFrame(`overview:${best.hour}:${index}`, stamp, 'overview');
+    return true;
+  }
 
   function prefetchNearbyAtlas(record, direction) {
     if (!direction || typeof workspaceTimelineRecords === 'undefined') return;
@@ -921,6 +1015,10 @@
     const playing = mainVideo();
     if (playing?.dataset.playback === 'recording' && !playing.paused) playing.pause();
     showPreview();
+    if (state.scrubSpeed > 4) {
+      warmOverview(absolute, state.motionDirection);
+      paintOverview();
+    }
     if (typeof workspaceTimelineLastValue !== 'undefined') workspaceTimelineLastValue = selected;
     if (typeof verticalTimelineSetPosition === 'function') verticalTimelineSetPosition(selected, false);
     if (typeof updateTimelinePlayhead === 'function') updateTimelinePlayhead(selected);
@@ -1248,7 +1346,11 @@
     if (typeof openWorkspace === 'function') {
       window.openLiveWorkspace = async (...args) => {
         const result = await openWorkspace(...args);
-        if (window.workspaceCamera === args[0]) warmRecentAtlases();
+        if (window.workspaceCamera === args[0]) {
+          warmRecentAtlases();
+          state.camera = window.workspaceCamera;
+          warmOverview(Date.now() / 1000, -1);
+        }
         return result;
       };
     }

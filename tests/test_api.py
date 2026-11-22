@@ -59,6 +59,16 @@ class ApiTests(unittest.TestCase):
         connection.close()
         return response.status, body
 
+    def test_scrub_overview_requires_read_access_and_validates_parameters(self):
+        self.httpd.read_token = 'read-secret'
+        path = '/api/recordings/overview?camera_id=cam-01&hour=0'
+        self.assertEqual(self.call('GET', path)[0], 401)
+        with patch('cctv.server.overview', return_value={'ready': False}) as build:
+            self.assertEqual(self.call('GET', path, token='read-secret'), (200, {'ready': False}))
+            build.assert_called_once()
+            for invalid in ('camera_id=..%2Fsecret&hour=0', 'camera_id=cam&hour=1', 'camera_id=cam&hour=bad'):
+                self.assertEqual(self.call('GET', '/api/recordings/overview?' + invalid, token='read-secret')[0], 400)
+
     @unittest.skipUnless(shutil.which("openssl"), "openssl is required to test HTTPS")
     def test_dashboard_is_http_only_while_device_https_remains_available(self):
         root = Path(self.recordings.name)
