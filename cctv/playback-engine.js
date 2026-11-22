@@ -300,7 +300,8 @@
     const key = `${camera}:${hour}`;
     if (hour < 0 || hour > 4102444800) return;
     const cached = state.overviewCache.get(key);
-    if (cached && (!cached.times.length || hour + 3600 > Date.now() / 1000) && performance.now() - cached.loadedAt > 30000) {
+    const maxAge = !cached?.times.length || hour + 3600 > Date.now() / 1000 ? 30000 : 300000;
+    if (cached && performance.now() - cached.loadedAt > maxAge) {
       cached.bitmap?.close?.();
       state.overviewCache.delete(key);
     }
@@ -346,6 +347,7 @@
   function warmOverview(absolute, direction = -1) {
     if (!state.camera || !Number.isFinite(absolute) || typeof atob !== 'function' || typeof Blob === 'undefined') return;
     const hour = Math.floor(absolute / 3600) * 3600;
+    state.overviewQueue.clear();
     for (let i = 0; i < 8; i++) requestOverview(state.camera, hour + Math.sign(direction || -1) * i * 3600);
   }
 
