@@ -286,6 +286,11 @@ async function seekResumesPlayback() {
   documentListeners.get('scroll')({ target: { closest: () => true } });
   await Promise.resolve(); // Browsers can run microtasks between event listeners.
   globals.window.previewWorkspaceTimelineScrub(12, 1);
+  const end = performance.now();
+  documentListeners.get('scrollend')({ target: { closest: () => true } });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(video.currentTime, 12, 'scrollend starts playback without waiting for the fallback');
+  assert.ok(performance.now() - end < 350, 'scrollend avoids the 350 ms debounce');
   await new Promise(resolve => setTimeout(resolve, 450));
   assert.equal(video.currentTime, 12, 'scroll event commits the latest position');
   assert.equal(plays, 2, 'scrolling transitions from preview to playback');

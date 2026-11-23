@@ -998,6 +998,7 @@
     window.workspaceScrubActive = false;
     clearTimeout(state.commitScheduleTimer);
     clearTimeout(state.commitTimer);
+    state.commitScheduleTimer = state.commitTimer = 0;
     clearTimeout(state.atlasWarmTimer);
     state.atlasWarmPath = null;
     state.pending = null;
@@ -1466,24 +1467,40 @@
       // timer that was just created for this very scroll event.
       clearTimeout(state.commitScheduleTimer);
       state.commitScheduleTimer = setTimeout(() => {
+        state.commitScheduleTimer = 0;
         if (state.pointerDown) return;
         clearTimeout(state.commitTimer);
         state.commitTimer = setTimeout(() => {
+          state.commitTimer = 0;
           if (state.active && state.lastValue !== null) void commit(state.lastValue);
         }, 350);
       }, 0);
+    }, true);
+    // Browsers that report the end of momentum can start playback immediately
+    // instead of waiting for the fallback debounce after the final scroll.
+    document.addEventListener('scrollend', event => {
+      if (!event.target?.closest?.('.vertical-timeline-scroll')) return;
+      if (typeof verticalTimelineProgrammatic !== 'undefined' && verticalTimelineProgrammatic) return;
+      if (state.pointerDown || !state.active || state.lastValue === null) return;
+      if (!state.commitScheduleTimer && !state.commitTimer) return;
+      clearTimeout(state.commitScheduleTimer);
+      clearTimeout(state.commitTimer);
+      state.commitScheduleTimer = state.commitTimer = 0;
+      void commit(state.lastValue);
     }, true);
     document.addEventListener('pointerdown', event => {
       if (event.target?.closest?.('.vertical-timeline-scroll')) {
         state.pointerDown = true;
         clearTimeout(state.commitScheduleTimer);
         clearTimeout(state.commitTimer);
+        state.commitScheduleTimer = state.commitTimer = 0;
       }
     }, true);
     document.addEventListener('pointerup', event => {
       if (!state.pointerDown) return;
       state.pointerDown = false;
       clearTimeout(state.commitTimer);
+      state.commitTimer = 0;
       if (state.lastValue !== null) void commit(state.lastValue);
     }, true);
     document.addEventListener('pointercancel', () => { state.pointerDown = false; }, true);
