@@ -13,7 +13,10 @@ def encoder_options(args, hardware):
     options = ["-c:v", "h264_v4l2m2m" if hardware else "libx264"]
     if not hardware:
         options += ["-preset", "ultrafast", "-tune", "zerolatency"]
-    return options + ["-profile:v", args.profile, "-b:v", str(args.bitrate), "-g", str(args.gop)]
+    # FFmpeg's V4L2 encoder accepts numeric H.264 profile IDs, whereas
+    # libx264 accepts the named profiles used by camera settings.
+    profile = {"baseline": "66", "main": "77", "high": "100"}[args.profile] if hardware else args.profile
+    return options + ["-profile:v", profile, "-b:v", str(args.bitrate), "-g", str(args.gop)]
 
 
 def hardware_available(args):

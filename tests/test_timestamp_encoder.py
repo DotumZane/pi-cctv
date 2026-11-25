@@ -28,9 +28,15 @@ class TimestampEncoderTests(unittest.TestCase):
         for hardware, encoder in ((True, "h264_v4l2m2m"), (False, "libx264")):
             args = command(self.args, hardware)
             self.assertIn(encoder, args)
-            for value in ("1920x1080", "6000000", "30", "main", "null"):
+            for value in ("1920x1080", "6000000", "30", "77" if hardware else "main", "null"):
                 self.assertIn(value, args)
             self.assertEqual(args[-2:], ["h264", "pipe:1"])
+
+    def test_hardware_profiles_use_h264_numeric_ids(self):
+        for name, value in (("baseline", "66"), ("main", "77"), ("high", "100")):
+            self.args.profile = name
+            args = command(self.args, True)
+            self.assertEqual(args[args.index("-profile:v") + 1], value)
 
 
 if __name__ == "__main__":
