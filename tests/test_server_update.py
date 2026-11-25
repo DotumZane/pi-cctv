@@ -46,7 +46,8 @@ class ServerUpdaterTests(unittest.TestCase):
             (0, "b" * 40), (0, "__version__ = '0.1.1'"), (0, "__version__ = '0.1.2'"),
             (0, "Fast-forward"), (0, "Rebuilt"), (0, "b" * 12),
         ]
-        with patch.object(updater, "run", side_effect=responses) as run:
+        with patch.object(updater, "run", side_effect=responses) as run, \
+                patch.object(updater, "publish_software", return_value={"commit": "b" * 40}):
             self.assertEqual(updater.main(), 0)
         commands = [call.args[0] for call in run.call_args_list]
         self.assertIn(["git", "merge", "--ff-only", "origin/main"], commands)
@@ -56,6 +57,30 @@ class ServerUpdaterTests(unittest.TestCase):
         status = json.loads((self.state / "status.json").read_text())
         self.assertEqual(status["state"], "succeeded")
         self.assertEqual(status["updated_commit"], "b" * 12)
+
+    def test_update_follows_configured_release_branch_and_packages_pi_software(self):
+        self.config.write_text(json.dumps({"project_dir": str(self.repo), "branch": "stable"}))
+        responses = [
+            (0, ""), (0, "stable"), (0, "Fetched"), (0, "a" * 40),
+            (0, "b" * 40), (0, "__version__ = '0.1.1'"), (0, "__version__ = '0.1.2'"),
+            (0, "Fast-forward"), (0, "Rebuilt"), (0, "b" * 12),
+        ]
+        with patch.object(updater, "run", side_effect=responses) as run, \
+                patch.object(updater, "publish_software", return_value={"commit": "b" * 40}) as publish:
+            self.assertEqual(updater.main(), 0)
+        commands = [call.args[0] for call in run.call_args_list]
+        self.assertIn(["git", "fetch", "--prune", "origin", "stable"], commands)
+        self.assertIn(["git", "merge", "--ff-only", "origin/stable"], commands)
+        publish.assert_called_once_with(self.repo.resolve())
+        status = json.loads((self.state / "status.json").read_text())
+        self.assertEqual(status["branch"], "stable")
+        self.assertEqual(status["pi_software_commit"], "b" * 12)
+
+    def test_refuses_checkout_on_a_different_branch(self):
+        self.config.write_text(json.dumps({"project_dir": str(self.repo), "branch": "stable"}))
+        with patch.object(updater, "run", side_effect=[(0, ""), (0, "main")]):
+            self.assertEqual(updater.main(), 1)
+        self.assertIn("stable branch", json.loads((self.state / "status.json").read_text())["error"])
 
     def test_reports_running_before_git_work_starts(self):
         def run(command, **kwargs):

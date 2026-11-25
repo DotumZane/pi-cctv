@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import subprocess
+import hashlib
 import json
+import os
 import re
+import tempfile
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -17,6 +21,7 @@ SERVICE = "pi-cctv-agent.service"
 HEALTH_TIMEOUT_SECONDS = 60
 STABLE_SECONDS = 10
 POLL_SECONDS = 2
+MAX_BUNDLE_BYTES = 256 * 1024 * 1024
 
 
 def run(command: list[str], timeout: int = 120) -> subprocess.CompletedProcess:
@@ -114,6 +119,102 @@ def report_status(state: str, message: str) -> None:
         print(f"Unable to report CCTV update status: {exc}", flush=True)
 
 
+def git(*arguments: str, timeout: int = 60) -> subprocess.CompletedProcess:
+    return run(["git", "-c", f"safe.directory={INSTALL_DIR}", "-C", str(INSTALL_DIR), *arguments], timeout=timeout)
+
+
+def enrolled_server() -> str:
+    try:
+        server = str(json.loads(DEVICE_STATE.read_text()).get("server", "")).rstrip("/")
+    except (OSError, ValueError, AttributeError):
+        return ""
+    return server if urllib.parse.urlsplit(server).scheme in {"http", "https"} else ""
+
+
+def download_server_software(server: str) -> tuple[str, Path] | None:
+    """Download the exact software package this Pi's dashboard runs.
+
+    Returns None when the dashboard does not offer a package (older servers),
+    so the caller can fall back to GitHub.
+    """
+    try:
+        with urllib.request.urlopen(f"{server}/software/pi-cctv.json", timeout=15) as response:
+            manifest = json.loads(response.read(64 * 1024))
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            try:
+                detail = json.loads(exc.read(4096)).get("error", "")
+            except (ValueError, AttributeError):
+                detail = ""
+            print(f"Dashboard does not offer Pi software{': ' + detail if detail else ''}.", flush=True)
+            return None
+        raise RuntimeError(f"Dashboard software package check failed (HTTP {exc.code})") from exc
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        print(f"Dashboard software package unavailable: {exc}", flush=True)
+        return None
+    commit, digest, size = manifest.get("commit"), manifest.get("sha256"), manifest.get("size")
+    if (not isinstance(commit, str) or not re.fullmatch(r"[a-f0-9]{40}", commit)
+            or not isinstance(digest, str) or not re.fullmatch(r"[a-f0-9]{64}", digest)
+            or not isinstance(size, int) or not 0 < size <= MAX_BUNDLE_BYTES):
+        raise RuntimeError("Dashboard returned an invalid software package description")
+    fd, temporary = tempfile.mkstemp(prefix="pi-cctv-", suffix=".bundle")
+    path = Path(temporary)
+    try:
+        received = hashlib.sha256()
+        total = 0
+        with os.fdopen(fd, "wb") as output, \
+                urllib.request.urlopen(f"{server}/software/pi-cctv.bundle", timeout=60) as response:
+            while chunk := response.read(256 * 1024):
+                total += len(chunk)
+                if total > size:
+                    raise RuntimeError("Dashboard software package is larger than described")
+                received.update(chunk)
+                output.write(chunk)
+        if total != size or received.hexdigest() != digest:
+            raise RuntimeError("Downloaded software package failed its integrity check")
+    except Exception:
+        path.unlink(missing_ok=True)
+        raise
+    return commit, path
+
+
+def apply_server_software(commit: str, bundle: Path) -> None:
+    """Move the checkout to the dashboard's commit; never downgrade a newer Pi."""
+    try:
+        verified = git("bundle", "verify", str(bundle), timeout=60)
+        if verified.returncode:
+            raise RuntimeError(f"Software package is not usable: {(verified.stderr or verified.stdout).strip()[-1000:]}")
+        fetched = git("fetch", "--no-tags", str(bundle), "HEAD", timeout=180)
+        if fetched.returncode:
+            raise RuntimeError(f"Software package could not be read: {(fetched.stderr or fetched.stdout).strip()[-1000:]}")
+    finally:
+        bundle.unlink(missing_ok=True)
+    resolved = git("rev-parse", "FETCH_HEAD", timeout=15)
+    if resolved.returncode or resolved.stdout.strip() != commit:
+        raise RuntimeError("Software package did not contain the dashboard's version")
+    if git("merge-base", "--is-ancestor", commit, "HEAD", timeout=15).returncode == 0:
+        print("This Pi already has the dashboard's software version or newer.", flush=True)
+        return
+    merged = git("merge", "--ff-only", commit, timeout=60)
+    if merged.returncode:
+        raise RuntimeError("Dashboard software is not a direct upgrade of this Pi's version; SSH recovery is required: "
+                           + (merged.stderr or merged.stdout).strip()[-800:])
+
+
+def download_software() -> None:
+    """Update from the dashboard when it offers a package, else from GitHub."""
+    server = enrolled_server()
+    package = download_server_software(server) if server else None
+    if package:
+        print(f"Installing the dashboard's software version {package[0][:12]}.", flush=True)
+        apply_server_software(*package)
+        return
+    print("Warning: falling back to GitHub for this CCTV software update.", flush=True)
+    pull = git("pull", "--ff-only", "origin", "main", timeout=180)
+    if pull.returncode:
+        raise RuntimeError(f"Software download failed: {(pull.stderr or pull.stdout).strip()[-1000:]}")
+
+
 def mark_setup_ap_checked_this_boot() -> None:
     """Keep an agent update restart from reapplying the Wi-Fi bridge profile."""
     try:
@@ -207,18 +308,13 @@ def ensure_timestamp_dependencies() -> bool:
 
 
 def main() -> int:
-    report_status("running", "Downloading the approved CCTV software update.")
+    report_status("running", "Downloading the approved CCTV software update from the dashboard.")
     try:
         clean = run(["git", "-c", f"safe.directory={INSTALL_DIR}", "-C", str(INSTALL_DIR), "status", "--porcelain"], timeout=15)
         if clean.returncode or clean.stdout.strip():
             raise RuntimeError("Pi software checkout has local changes; update cancelled to protect them")
         previous_commit = current_commit()
-        pull = run([
-            "git", "-c", f"safe.directory={INSTALL_DIR}", "-C", str(INSTALL_DIR),
-            "pull", "--ff-only", "origin", "main",
-        ], timeout=180)
-        if pull.returncode:
-            raise RuntimeError(f"Software download failed: {(pull.stderr or pull.stdout).strip()[-1000:]}")
+        download_software()
         updated_commit = current_commit()
         install_monitor_stats_dependencies()
         dependencies_changed = ensure_camera_dependencies(updated_commit != previous_commit)

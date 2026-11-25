@@ -88,6 +88,28 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def pi_software_manifest(self) -> tuple[dict | None, Path | None, str]:
+        """Return the Pi software package published for this server's own version."""
+        software_dir = Path(getattr(self.server, "host_update_dir", "/host-update")) / "software"  # type: ignore[attr-defined]
+        try:
+            manifest = json.loads((software_dir / "pi-cctv.json").read_text())
+        except (OSError, json.JSONDecodeError):
+            return None, None, "this dashboard has not packaged Pi software yet; run a server software update"
+        if not isinstance(manifest, dict):
+            return None, None, "this dashboard's Pi software package is invalid"
+        bundle = manifest.get("bundle")
+        if (not isinstance(bundle, str) or not re.fullmatch(r"pi-cctv-[a-f0-9]{40}\.bundle", bundle)
+                or not re.fullmatch(r"[a-f0-9]{40}", str(manifest.get("commit", "")))
+                or not re.fullmatch(r"[a-f0-9]{64}", str(manifest.get("sha256", "")))):
+            return None, None, "this dashboard's Pi software package is invalid"
+        if manifest.get("version") != __version__:
+            return None, None, "this dashboard's Pi software package is out of date; run a server software update"
+        path = software_dir / bundle
+        if not path.is_file():
+            return None, None, "this dashboard's Pi software package is missing; run a server software update"
+        public = {key: manifest.get(key) for key in ("commit", "version", "agent_version", "sha256", "size", "created_at")}
+        return public, path, ""
+
     def body(self) -> dict:
         length = int(self.headers.get("Content-Length", "0"))
         return json.loads(self.rfile.read(length) or b"{}")
@@ -198,6 +220,30 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(content)
+            return
+        if parsed.path in {"/software/pi-cctv.json", "/software/pi-cctv.bundle"}:
+            # The project source is public; this only lets offline Pis fetch the
+            # exact version their dashboard runs instead of reaching GitHub.
+            manifest, bundle_path, problem = self.pi_software_manifest()
+            if manifest is None or bundle_path is None:
+                self.send_json({"error": problem}, HTTPStatus.NOT_FOUND)
+                return
+            if parsed.path.endswith(".json"):
+                self.send_json(manifest)
+                return
+            try:
+                bundle_file = bundle_path.open("rb")
+            except OSError:
+                self.send_json({"error": "this dashboard's Pi software package is missing"}, HTTPStatus.NOT_FOUND)
+                return
+            with bundle_file:
+                size = os.fstat(bundle_file.fileno()).st_size
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Content-Length", str(size))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                shutil.copyfileobj(bundle_file, self.wfile, 64 * 1024)
             return
         if parsed.path.startswith("/api/devices/") and parsed.path.endswith("/setup-ap"):
             device_id = unquote(parsed.path.split("/")[3])
