@@ -227,10 +227,12 @@ class RuntimeTests(unittest.TestCase):
             state_path = Path(directory) / "device.json"
             with patch.dict("os.environ", {"CCTV_AGENT_STATE_FILE": str(state_path)}), \
                     patch("cctv.runtime.http_json", return_value={"ok": True}) as request, \
-                    patch("cctv.runtime.apt_cache.configure", return_value=True) as package_cache:
+                    patch("cctv.runtime.apt_cache.configure", return_value=True) as package_cache, \
+                    patch("cctv.runtime.time_sync.configure", return_value=False) as time_source:
                 ok, message = runtime.change_server_address("https://new.example:8443", "192.168.10.10")
             self.assertTrue(ok, message)
             package_cache.assert_called_once_with("https://new.example:8443")
+            time_source.assert_called_once_with("https://new.example:8443")
             self.assertEqual(runtime.server, "https://new.example:8443")
             self.assertEqual(runtime.media_server, "192.168.10.10")
             saved = json.loads(state_path.read_text())

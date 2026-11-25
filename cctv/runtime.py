@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from .media import CameraMedia, MonitorMedia, idle_monitor_pipeline, quad_pipeline
-from . import apt_cache
+from . import apt_cache, time_sync
 
 
 LOCAL_DISCOVERY_PORT = 37981
@@ -776,6 +776,15 @@ class DeviceRuntime:
         except OSError as exc:
             print(f"Unable to configure the dashboard package cache: {exc}", flush=True)
 
+    def configure_time_source(self) -> None:
+        """Take the clock from the dashboard server, falling back to public time servers."""
+        try:
+            if time_sync.configure(self.server):
+                time_sync.apply()
+                print("Pi clock will sync from the dashboard server when it is reachable.", flush=True)
+        except (OSError, subprocess.SubprocessError) as exc:
+            print(f"Unable to configure the dashboard time source: {exc}", flush=True)
+
     def change_server_address(self, new_server: str, new_media_server: str | None = None) -> tuple[bool, str]:
         """Verify the new dashboard with this device credential, then persist endpoints."""
         try:
@@ -828,6 +837,7 @@ class DeviceRuntime:
             self.server = target
             self.media_server = target_media
             self.configure_package_cache()
+            self.configure_time_source()
             return True, f"Management and media addresses updated; authenticated heartbeat reached {target}."
         except Exception as exc:
             return False, f"The Pi stayed on its current server address: {exc}"
@@ -1383,6 +1393,7 @@ class DeviceRuntime:
             except Exception as exc:
                 print(f"Unable to apply setup Wi-Fi profile at startup: {exc}", flush=True)
             self.configure_package_cache()
+            self.configure_time_source()
             self.confirm_reboot_after_boot()
             while True:
                 # Keep local media responsive during dashboard/router outages;

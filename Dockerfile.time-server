@@ -1,0 +1,12 @@
+FROM debian:bookworm-slim
+
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends chrony \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY chrony.conf /etc/chrony/chrony.conf
+
+EXPOSE 123/udp
+# -x: serve time without adjusting the host clock, so the container needs no
+# extra privileges; the Ubuntu host keeps its own clock in sync.
+CMD ["/usr/sbin/chronyd", "-d", "-x", "-f", "/etc/chrony/chrony.conf"]
