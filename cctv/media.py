@@ -90,9 +90,11 @@ class CameraMedia:
         if self.burn_timestamp:
             font = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
             draw = f"drawtext=fontfile={font}:text='%{{localtime\\:%T}}':fontcolor=white:fontsize={max(12, self.height // 45)}:box=1:boxcolor=black@0.55:boxborderw=4:x=12:y=12"
-            overlay_args = ["python3", "-m", "cctv.timestamp_encoder", "--size", f"{self.width}x{self.height}",
-                            "--fps", str(self.fps), "--bitrate", str(self.bitrate), "--gop", str(self.keyframe_interval),
-                            "--profile", self.h264_profile, "--filter", draw]
+            overlay_args = ["ffmpeg", "-hide_banner", "-loglevel", "warning", "-f", "rawvideo", "-pixel_format", "yuv420p",
+                            "-video_size", f"{self.width}x{self.height}", "-framerate", str(self.fps), "-i", "pipe:0",
+                            "-vf", draw, "-an", "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
+                            "-profile:v", self.h264_profile, "-b:v", str(self.bitrate), "-g", str(self.keyframe_interval),
+                            "-f", "h264", "pipe:1"]
             overlay = " | " + " ".join(quote(arg) for arg in overlay_args)
         return (
             f"{camera_command}{overlay} | gst-launch-1.0 -e "

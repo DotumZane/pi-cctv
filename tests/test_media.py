@@ -37,8 +37,8 @@ class MediaTests(unittest.TestCase):
         self.assertIn("drawtext=", command)
         self.assertIn("%{localtime\\:%T}", command)
         self.assertIn("fontsize=24", command)
-        self.assertIn("cctv.timestamp_encoder", command)
-        self.assertIn("--bitrate 6000000", command)
+        self.assertIn("libx264", command)
+        self.assertIn("-b:v 6000000", command)
         self.assertNotIn("drawtext=", CameraMedia("rtsp://media:8554/cam-1").pipeline())
 
     def test_monitor_pipeline_uses_hardware_decode(self):
