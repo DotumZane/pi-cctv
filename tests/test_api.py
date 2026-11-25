@@ -509,6 +509,43 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(pending["commands"][0]["id"], command["id"])
         self.assertEqual(self.call("GET", "/api/devices/cam-1/commands")[1]["commands"], [])
 
+    def test_collect_logs_command_preserves_request_id_through_export_download(self):
+        self.httpd.store.register({"id": "cam-1", "kind": "camera", "name": "Saw 1"})
+        device_token = "camera-log-export-token"
+        self.httpd.store.db.execute(
+            "UPDATE devices SET token_hash=? WHERE id=?",
+            (self.httpd.store.hash_token(device_token), "cam-1"),
+        )
+        self.httpd.store.db.commit()
+        request_id = "log-request-42"
+        status, command = self.call("POST", "/api/devices/cam-1/commands", {
+            "command": "collect_logs",
+            "payload": {"since_hours": 48, "request_id": request_id},
+        })
+        self.assertEqual(status, 202)
+        self.assertEqual(command["command"], "collect_logs")
+        status, queued = self.call("GET", "/api/devices/cam-1/commands", token=device_token)
+        self.assertEqual(status, 200)
+        self.assertEqual(queued["commands"][0]["payload"], {"since_hours": 48, "request_id": request_id})
+
+        self.call("POST", "/api/devices/cam-1/heartbeat", {
+            "log_export": {"request_id": request_id, "since_hours": 48, "state": "succeeded", "logs": ["captured log"]}
+        }, device_token)
+        status, result = self.call(
+            "GET", f"/api/devices/cam-1/logs?hours=48&request_id={request_id}"
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(result["state"], "succeeded")
+        self.assertEqual(result["logs"], ["captured log"])
+
+    def test_collect_logs_rejects_missing_request_id(self):
+        self.call("POST", "/api/devices", {"id": "cam-1", "kind": "camera", "name": "Saw 1"})
+        status, result = self.call("POST", "/api/devices/cam-1/commands", {
+            "command": "collect_logs", "payload": {"since_hours": 48},
+        })
+        self.assertEqual(status, 400)
+        self.assertIn("request ID", result["error"])
+
     def test_stats_overlay_command_is_monitor_only(self):
         self.call("POST", "/api/devices", {"id": "cam-1", "kind": "camera", "name": "Camera"})
         self.call("POST", "/api/devices", {"id": "mon-1", "kind": "monitor", "name": "Monitor"})

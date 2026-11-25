@@ -1595,6 +1595,24 @@ class Handler(BaseHTTPRequestHandler):
                         return
                     command_payload = {"server": server_url.rstrip("/"), "media_server": media_server}
                     self.store.set_maintenance_run(device_id, "server_address", "queued", command_payload)
+                if command_name == "collect_logs":
+                    log_request = payload.get("payload", {})
+                    if not isinstance(log_request, dict):
+                        self.send_json({"error": "a log export request is required"}, HTTPStatus.BAD_REQUEST)
+                        return
+                    request_id = log_request.get("request_id")
+                    if not isinstance(request_id, str) or not request_id or len(request_id) > 100:
+                        self.send_json({"error": "a valid log export request ID is required"}, HTTPStatus.BAD_REQUEST)
+                        return
+                    try:
+                        hours = int(log_request.get("since_hours", 48))
+                    except (TypeError, ValueError):
+                        self.send_json({"error": "log export hours must be an integer"}, HTTPStatus.BAD_REQUEST)
+                        return
+                    command_payload = {
+                        "since_hours": max(1, min(hours, 168)),
+                        "request_id": request_id,
+                    }
                 if command_name == "set_hostname":
                     if not self.authorized(admin_only=True):
                         self.send_json({"error": "administrator access is required to change Pi hostnames"}, HTTPStatus.FORBIDDEN)
