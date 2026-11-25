@@ -143,6 +143,21 @@ def camera_module_detected(force: bool = False) -> bool | None:
     now = time.monotonic()
     if not force and now - _camera_probe_at < CAMERA_PROBE_INTERVAL:
         return _camera_probe_result
+    # Do not start a second libcamera client while the live encoder owns the
+    # sensor. Besides being unnecessary for health status, --list-cameras can
+    # race the encoder immediately after boot and report that the camera is
+    # already in use.
+    try:
+        capture = subprocess.run(
+            ["pgrep", "-x", "rpicam-vid"], capture_output=True, text=True,
+            timeout=2, check=False,
+        )
+        if capture.returncode == 0:
+            _camera_probe_at = now
+            _camera_probe_result = True
+            return True
+    except (OSError, subprocess.SubprocessError):
+        pass
     for utility in ("rpicam-hello", "libcamera-hello"):
         try:
             result = subprocess.run(
@@ -691,6 +706,13 @@ class DeviceRuntime:
         if self.forwarder and self.forwarder.poll() is None:
             return
         if time.monotonic() < self.next_forward_retry:
+            return
+        if not camera_relay_reachable(self.media_server, timeout=0.25):
+            self.next_forward_retry = time.monotonic() + 10
+            print(
+                f"Media server {self.media_server}:8554 is unreachable; keeping the local camera stream available for direct monitors",
+                flush=True,
+            )
             return
         local = f"rtsp://127.0.0.1:8554/{urllib.parse.quote(self.device_id, safe='')}"
         remote = f"rtsp://{self.media_server}:8554/{urllib.parse.quote(self.device_id, safe='')}"

@@ -23,7 +23,22 @@ class RuntimeTests(unittest.TestCase):
         self.addCleanup(setattr, runtime_module, "_camera_probe_result", old_probe_result)
         with patch("cctv.runtime.subprocess.run", return_value=Mock(returncode=1)) as run:
             self.assertFalse(camera_module_detected(force=True))
-        run.assert_called_once()
+        self.assertEqual(run.call_args_list[0].args[0], ["pgrep", "-x", "rpicam-vid"])
+        self.assertIn(run.call_args_list[1].args[0], (["rpicam-hello", "--list-cameras"], ["libcamera-hello", "--list-cameras"]))
+
+    def test_camera_module_probe_does_not_open_sensor_during_live_capture(self):
+        import cctv.runtime as runtime_module
+
+        old_probe_at = runtime_module._camera_probe_at
+        old_probe_result = runtime_module._camera_probe_result
+        self.addCleanup(setattr, runtime_module, "_camera_probe_at", old_probe_at)
+        self.addCleanup(setattr, runtime_module, "_camera_probe_result", old_probe_result)
+        with patch("cctv.runtime.subprocess.run", return_value=Mock(returncode=0)) as run:
+            self.assertTrue(camera_module_detected(force=True))
+        run.assert_called_once_with(
+            ["pgrep", "-x", "rpicam-vid"], capture_output=True, text=True,
+            timeout=2, check=False,
+        )
 
     def test_camera_module_probe_is_cached(self):
         import cctv.runtime as runtime_module
@@ -286,14 +301,25 @@ class RuntimeTests(unittest.TestCase):
         camera = DeviceRuntime("camera", "cam-1", "Camera", "", "https://server", "nvr")
         camera.processes = [Mock(poll=Mock(return_value=None))]
         camera.process_factory = Mock(return_value=Mock(poll=Mock(return_value=None)))
-        camera.reconcile_forwarder()
+        with patch("cctv.runtime.camera_relay_reachable", return_value=True):
+            camera.reconcile_forwarder()
         command = camera.process_factory.call_args.args[0]
         self.assertIn("-c:v copy", command)
         self.assertIn("rtsp://127.0.0.1:8554/cam-1", command)
         self.assertIn("rtsp://nvr:8554/cam-1", command)
         self.assertNotIn("rpicam-vid", command)
-        camera.reconcile_forwarder()
+        with patch("cctv.runtime.camera_relay_reachable", return_value=True):
+            camera.reconcile_forwarder()
         camera.process_factory.assert_called_once()
+
+    def test_camera_skips_nvr_forwarder_when_server_is_unreachable(self):
+        camera = DeviceRuntime("camera", "cam-1", "Camera", "", "https://server", "nvr")
+        camera.processes = [Mock(poll=Mock(return_value=None))]
+        camera.process_factory = Mock()
+        with patch("cctv.runtime.camera_relay_reachable", return_value=False):
+            camera.reconcile_forwarder()
+        camera.process_factory.assert_not_called()
+        self.assertGreater(camera.next_forward_retry, 0)
 
     def test_camera_keeps_local_capture_when_dashboard_is_unavailable(self):
         with TemporaryDirectory() as directory:
