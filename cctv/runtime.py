@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from .media import CameraMedia, MonitorMedia, idle_monitor_pipeline, quad_pipeline
+from . import apt_cache
 
 
 LOCAL_DISCOVERY_PORT = 37981
@@ -767,6 +768,14 @@ class DeviceRuntime:
         except Exception as exc:
             print(f"Unable to report {task} status to dashboard: {exc}", flush=True)
 
+    def configure_package_cache(self) -> None:
+        """Send OS package downloads through the dashboard's cache when it answers."""
+        try:
+            if apt_cache.configure(self.server):
+                print("Pi OS package downloads will use the dashboard's package cache when it is reachable.", flush=True)
+        except OSError as exc:
+            print(f"Unable to configure the dashboard package cache: {exc}", flush=True)
+
     def change_server_address(self, new_server: str, new_media_server: str | None = None) -> tuple[bool, str]:
         """Verify the new dashboard with this device credential, then persist endpoints."""
         try:
@@ -818,6 +827,7 @@ class DeviceRuntime:
                     os.unlink(temporary)
             self.server = target
             self.media_server = target_media
+            self.configure_package_cache()
             return True, f"Management and media addresses updated; authenticated heartbeat reached {target}."
         except Exception as exc:
             return False, f"The Pi stayed on its current server address: {exc}"
@@ -1372,6 +1382,7 @@ class DeviceRuntime:
                 self.sync_setup_ap_once_per_boot()
             except Exception as exc:
                 print(f"Unable to apply setup Wi-Fi profile at startup: {exc}", flush=True)
+            self.configure_package_cache()
             self.confirm_reboot_after_boot()
             while True:
                 # Keep local media responsive during dashboard/router outages;

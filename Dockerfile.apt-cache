@@ -1,0 +1,10 @@
+FROM debian:bookworm-slim
+
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends apt-cacher-ng \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY apt-cacher-ng.conf /etc/apt-cacher-ng/zz-pi-cctv.conf
+
+EXPOSE 3142
+CMD ["/usr/sbin/apt-cacher-ng", "-c", "/etc/apt-cacher-ng", "ForeGround=1"]

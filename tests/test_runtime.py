@@ -226,9 +226,11 @@ class RuntimeTests(unittest.TestCase):
         with TemporaryDirectory() as directory:
             state_path = Path(directory) / "device.json"
             with patch.dict("os.environ", {"CCTV_AGENT_STATE_FILE": str(state_path)}), \
-                    patch("cctv.runtime.http_json", return_value={"ok": True}) as request:
+                    patch("cctv.runtime.http_json", return_value={"ok": True}) as request, \
+                    patch("cctv.runtime.apt_cache.configure", return_value=True) as package_cache:
                 ok, message = runtime.change_server_address("https://new.example:8443", "192.168.10.10")
             self.assertTrue(ok, message)
+            package_cache.assert_called_once_with("https://new.example:8443")
             self.assertEqual(runtime.server, "https://new.example:8443")
             self.assertEqual(runtime.media_server, "192.168.10.10")
             saved = json.loads(state_path.read_text())
@@ -242,9 +244,11 @@ class RuntimeTests(unittest.TestCase):
         with TemporaryDirectory() as directory:
             state_path = Path(directory) / "device.json"
             with patch.dict("os.environ", {"CCTV_AGENT_STATE_FILE": str(state_path)}), \
-                    patch("cctv.runtime.http_json", side_effect=OSError("certificate verify failed")):
+                    patch("cctv.runtime.http_json", side_effect=OSError("certificate verify failed")), \
+                    patch("cctv.runtime.apt_cache.configure") as package_cache:
                 ok, message = runtime.change_server_address("https://new.example", "new-media")
             self.assertFalse(ok)
+            package_cache.assert_not_called()
             self.assertIn("current server address", message)
             self.assertEqual(runtime.server, "https://old.example")
             self.assertEqual(runtime.media_server, "old-media")

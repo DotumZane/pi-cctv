@@ -44,6 +44,19 @@ services:
     depends_on:
       - management
 
+  apt-cache:
+    # Package cache for the Pis' OS updates; the Pis themselves need no
+    # internet access. Bind it to the CCTV-network address with
+    # CCTV_APT_CACHE_BIND when the server also has an internet-facing port.
+    build:
+      context: .
+      dockerfile: Dockerfile.apt-cache
+    restart: unless-stopped
+    ports:
+      - "${CCTV_APT_CACHE_BIND:-0.0.0.0}:3142:3142"
+    volumes:
+      - apt-cache-data:/var/cache/apt-cacher-ng
+
   media:
     image: bluenviron/mediamtx:latest
     restart: unless-stopped
@@ -62,3 +75,4 @@ services:
 
 volumes:
   cctv-data:
+  apt-cache-data:
