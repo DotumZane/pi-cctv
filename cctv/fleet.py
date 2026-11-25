@@ -14,6 +14,21 @@ FLEET_OS_UPDATE_KEY = "fleet_os_update"
 FLEET_AGENT_UPDATE_KEY = "fleet_agent_update"
 
 
+def agent_needs_update(version: str, target: str) -> bool:
+    """Only update older or unreported agents; never downgrade a newer Pi."""
+    def parts(value):
+        if not isinstance(value, str) or not value or not all(p.isascii() and p.isdigit() for p in value.split(".")):
+            return None
+        return tuple(int(p) for p in value.split("."))
+    current, required = parts(version), parts(target)
+    if required is None:
+        return False
+    if current is None:
+        return True
+    size = max(len(current), len(required))
+    return current + (0,) * (size - len(current)) < required + (0,) * (size - len(required))
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -250,7 +265,7 @@ class FleetAgentUpdateCoordinator:
                     version = json.loads(device.get("metadata", "{}")).get("agent_version", "")
                 except (TypeError, ValueError):
                     version = ""
-                if version != self.agent_version:
+                if agent_needs_update(version, self.agent_version):
                     pending_update = any(
                         command.get("command") == "update" and not command.get("consumed_at")
                         for command in self.store.command_history(device["id"], 100)
@@ -331,7 +346,7 @@ class FleetAgentUpdateCoordinator:
                 version = json.loads(device.get("metadata", "{}")).get("agent_version", "")
             except (TypeError, ValueError):
                 version = ""
-            if online and version == self.agent_version:
+            if online and not agent_needs_update(version, self.agent_version):
                 target["state"] = "succeeded"
                 target["updated_at"] = device.get("last_seen")
                 job["completed"] = int(job.get("completed", 0)) + 1
@@ -367,7 +382,7 @@ class FleetAgentUpdateCoordinator:
                         version = json.loads(current.get("metadata", "{}")).get("agent_version", "")
                     except (TypeError, ValueError):
                         version = ""
-                    if version == self.agent_version:
+                    if not agent_needs_update(version, self.agent_version):
                         target["state"] = "succeeded"
                         target["updated_at"] = current.get("last_seen")
                         job["completed"] = int(job.get("completed", 0)) + 1

@@ -94,6 +94,18 @@ class FleetOsUpdateTests(unittest.TestCase):
         finally:
             coordinator.stop()
 
+    def test_fleet_agent_update_excludes_newer_agent(self):
+        self.store.pending_register("cam-new", "New camera", "192.0.2.3", {"agent_version": "0.1.62"})
+        self.store.adopt_pending("cam-new", "camera", "New camera", "")
+        self.store.heartbeat("cam-new", "192.0.2.3", json.dumps({"agent_version": "0.1.62"}))
+        coordinator = FleetAgentUpdateCoordinator(self.store, "0.1.61")
+        coordinator._launch = lambda: None
+        try:
+            job, _ = coordinator.start()
+            self.assertEqual([target["device_id"] for target in job["targets"]], ["cam-1"])
+        finally:
+            coordinator.stop()
+
     def test_fleet_agent_and_os_jobs_share_the_same_serial_execution_lock(self):
         lock = threading.Lock()
         agent = FleetAgentUpdateCoordinator(self.store, "0.1.5", execution_lock=lock)
