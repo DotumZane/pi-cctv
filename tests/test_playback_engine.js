@@ -63,6 +63,9 @@ function harness({ records, zoom = 14400, realClock = false, holdSheets = false,
     const element = {
       name, dataset: {}, readyState: 0, paused: true, seeking: false, duration: 30, videoWidth: 1920, videoHeight: 1080,
       clientWidth: 1280, clientHeight: 720, controls: true, src: '', loads: 0, plays: 0, seeks: 0, _time: 0,
+      ended: false, defaultPlaybackRate: 1, _rate: 1,
+      get playbackRate() { return this._rate; },
+      set playbackRate(value) { if (value !== this._rate) { this._rate = value; element.dispatch('ratechange'); } },
       get currentTime() { return this._time; },
       set currentTime(value) {
         this._time = value; this.seeks++;
@@ -74,7 +77,9 @@ function harness({ records, zoom = 14400, realClock = false, holdSheets = false,
       setAttribute() {}, removeAttribute(name) { if (name === 'controls') this.controls = false; },
       closest() { return host; }, pause() { this.paused = true; },
       load() {
-        this.loads++; this.readyState = 0;
+        this.loads++; this.readyState = 0; this.ended = false;
+        // Loading a new file resets the speed, as browsers do.
+        this.playbackRate = this.defaultPlaybackRate;
         // A stalled main player (slow network) never reports metadata.
         if (!(mainStalls && name === 'main')) setImmediate(() => { this.readyState = 1; element.dispatch('loadedmetadata'); });
       },
@@ -87,7 +92,8 @@ function harness({ records, zoom = 14400, realClock = false, holdSheets = false,
   video.dataset.playback = 'live';
   video.autoplay = true;
   const proxies = [];
-  const status = { innerHTML: '' };
+  const statusHistory = [];
+  const status = { _html: '', get innerHTML() { return this._html; }, set innerHTML(value) { this._html = value; statusHistory.push(value); } };
   const document = {
     body: {}, head: { appendChild() {} }, documentElement: { dataset: {} },
     createElement(tag) {
@@ -115,7 +121,7 @@ function harness({ records, zoom = 14400, realClock = false, holdSheets = false,
     });
   };
   const env = {
-    records, cursor: null, draws, requests, held, proxies, video, status, message, visible, manifests, committed: [],
+    records, cursor: null, draws, requests, held, proxies, video, status, statusHistory, message, visible, manifests, committed: [],
     advance(ms) { fakeClock += ms; },
   };
   const window = { workspaceCamera: 'cam-1', returnWorkspaceToLive: async () => {}, addEventListener() {} };
@@ -442,8 +448,33 @@ async function missingRecordingsAndPreviews() {
   assert.equal(failing.message.textContent, '');
 }
 
+async function speedSurvivesSegmentSwitch() {
+  const env = harness({ records: makeRecords(21600, 4) });
+  await env.window.scrubWorkspaceTimeline(21650);
+  assert.equal(env.video.src, '/recordings/cam-1/2026-11-12/06-00-30.mp4');
+  env.video.playbackRate = 2;
+  // Near the end of the segment the closing frame is kept for the switch.
+  env.video._time = 29.7;
+  const draws = env.draws.length;
+  env.video.dispatch('timeupdate');
+  assert.equal(env.draws.length, draws + 1, 'the closing frame is captured before the segment ends');
+  assert.equal(env.draws.at(-1).source, env.video);
+  env.statusHistory.length = 0;
+  env.video.ended = true;
+  env.video.dispatch('ended');
+  for (let i = 0; i < 8; i++) await tick();
+  assert.equal(env.video.src, '/recordings/cam-1/2026-11-12/06-01-00.mp4', 'playback continues into the next segment');
+  assert.equal(env.video.playbackRate, 2, 'the chosen speed survives the segment switch');
+  assert.equal(env.video.paused, false);
+  assert.ok(!env.statusHistory.some(text => /Loading selected recording/.test(text)), 'a continuous switch does not report a new load');
+  assert.equal(env.draws.at(-1).source, env.video, 'the ended video is not redrawn over the captured frame');
+  await env.window.returnWorkspaceToLive();
+  assert.equal(env.video.playbackRate, 1, 'live view runs at normal speed');
+  assert.equal(env.video.defaultPlaybackRate, 1);
+}
+
 Promise.resolve()
   .then(forwardAndReverse).then(rapidDirectionChanges).then(wheelGestureCommitsOnce).then(zoomSelectsDensity)
-  .then(sourceConsistency).then(segmentBoundaries).then(cacheMisses).then(scrubToPlayback).then(missingRecordingsAndPreviews)
+  .then(sourceConsistency).then(segmentBoundaries).then(cacheMisses).then(scrubToPlayback).then(speedSurvivesSegmentSwitch).then(missingRecordingsAndPreviews)
   .then(() => { console.log('Playback engine checks passed'); process.exit(0); })
   .catch(error => { console.error(error); process.exit(1); });

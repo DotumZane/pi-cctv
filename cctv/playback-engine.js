@@ -636,7 +636,9 @@
       // Start from the picture the viewer is looking at. Any preview frame
       // nearer the cursor replaces it.
       const video = mainVideo();
-      if (drawMainFrame()) {
+      // An ended segment keeps the closing frame captured just before the
+      // end; redrawing from an ended video can paint black in some browsers.
+      if (!video.ended && drawMainFrame()) {
         const recording = video.dataset.playback === 'recording' && typeof workspacePlaybackStartSeconds !== 'undefined';
         const t = recording ? absoluteTimelineSeconds(workspaceTimelineDate, workspacePlaybackStartSeconds + Number(video.currentTime || 0)) : Date.now() / 1000;
         state.displayed = { t, level: VIDEO, key: `main@${t.toFixed(3)}` };
@@ -842,7 +844,9 @@
     return error?.code === 3 || error?.code === 4 || error?.name === 'NotSupportedError';
   }
 
-  async function commit(value, converted = false) {
+  // `continuous` marks the automatic move to the next segment during
+  // playback: it must look like uninterrupted playback, not a new load.
+  async function commit(value, converted = false, continuous = false) {
     const selected = Math.max(0, Math.min(timelineDayLength(workspaceTimelineDate) - 0.001, Number(value) || 0));
     const record = timelineRecordAt(selected);
     const video = mainVideo();
@@ -863,11 +867,11 @@
     // Preparation must not touch the player while the current commit is
     // using it. A commit superseded by new movement no longer blocks it.
     state.commitToken = token;
-    try { return await commitRecording(record, selected, video, token, converted); }
+    try { return await commitRecording(record, selected, video, token, converted, continuous); }
     finally { if (state.commitToken === token) state.commitToken = 0; }
   }
 
-  async function commitRecording(record, selected, video, token, converted) {
+  async function commitRecording(record, selected, video, token, converted, continuous) {
     const offset = recordingOffset(record, selected);
     const url = converted ? `${record.url}${record.url.includes('?') ? '&' : '?'}format=mp4` : sourceFor(record);
     const sameSource = video && workspacePlaybackUrl === record.url && video.dataset.playback === 'recording' && !converted;
@@ -901,7 +905,7 @@
       }
       return;
     }
-    updateStatus('Loading selected recording…');
+    updateStatus(continuous ? 'Playing recording.' : 'Loading selected recording…');
     disableNativeControls(video);
     video.pause();
     video.onerror = null;
@@ -1047,7 +1051,14 @@
       if (state.gesture) state.gesture.ended = true;
       window.workspaceScrubActive = false;
       const live = mainVideo();
-      if (live) live.autoplay = true;
+      if (live) {
+        live.autoplay = true;
+        // Live view always runs at normal speed.
+        live.defaultPlaybackRate = 1;
+        live.playbackRate = 1;
+        const speed = document.querySelector('#workspace-speed');
+        if (speed) speed.value = '1';
+      }
       state.prepared = null;
       const result = await returnToLive(...args);
       const current = mainVideo();
@@ -1107,6 +1118,20 @@
     video.addEventListener('timeupdate', () => {
       if (video.dataset.playback === 'recording' && !state.active && typeof workspacePlaybackStartSeconds !== 'undefined') {
         updateTimelinePlayhead(workspacePlaybackStartSeconds + video.currentTime);
+        // Keep the closing frame of a segment on the hidden overlay. Some
+        // browsers cannot draw a video once it has ended, which showed black
+        // while the next segment loaded.
+        const remaining = (video.duration || 0) - video.currentTime;
+        if (remaining > 0 && remaining < 0.6 && video.readyState >= 2 && ensurePreview()) {
+          drawSource(video, 0, 0, video.videoWidth || video.clientWidth, video.videoHeight || video.clientHeight);
+        }
+      }
+    });
+    // Keep the chosen playback speed across segment loads: loading a new
+    // file resets playbackRate to defaultPlaybackRate.
+    video.addEventListener('ratechange', () => {
+      if (video.dataset.playback === 'recording' && video.playbackRate > 0 && video.defaultPlaybackRate !== video.playbackRate) {
+        video.defaultPlaybackRate = video.playbackRate;
       }
     });
     video.addEventListener('ended', () => {
@@ -1116,10 +1141,10 @@
       if (!current || !Number.isFinite(video.duration)) return;
       const next = nextRecording(timelineSeconds(current));
       const end = timelineSeconds(current) + video.duration;
-      if (next && timelineSeconds(next) <= end + 0.1) void commit(timelineSeconds(next));
+      if (next && timelineSeconds(next) <= end + 0.1) void commit(timelineSeconds(next), false, true);
       else {
         const after = end + 0.1;
-        if (after < timelineDayLength(workspaceTimelineDate)) void commit(after);
+        if (after < timelineDayLength(workspaceTimelineDate)) void commit(after, false, true);
         else { setTarget(timelineDayLength(workspaceTimelineDate) - 0.001, 0, true); startGapClock(); }
       }
     });
