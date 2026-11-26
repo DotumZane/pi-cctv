@@ -24,7 +24,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from urllib.parse import parse_qs, quote, unquote, urlparse
 from urllib import request as urllib_request
 
-from . import __agent_version__, __version__
+from . import __agent_version__, __version__, pi_bootstrap
 from .fleet import FleetAgentUpdateCoordinator, FleetOsUpdateCoordinator
 from .recording import (RecorderSupervisor, mp4_duration, prepare_scrub_frames, prepare_trickplay,
                         scrub_frames_dir, scrub_frames_ready, trickplay_path, recording_schedule_active)
@@ -220,6 +220,41 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(content)
+            return
+        if parsed.path == "/install":
+            # Public installer for a new Pi; it only points the Pi at this
+            # dashboard and installs the same public software it serves below.
+            origin = pi_bootstrap.dashboard_origin(self.headers.get("Host", ""),
+                                                   isinstance(self.connection, ssl.SSLSocket))
+            if origin is None:
+                self.send_json({"error": "open /install using the dashboard's IP address or host name"},
+                               HTTPStatus.BAD_REQUEST)
+                return
+            content = pi_bootstrap.script(*origin).encode()
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/x-shellscript; charset=utf-8")
+            self.send_header("Content-Length", str(len(content)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(content)
+            return
+        if parsed.path.startswith("/software/mediamtx/"):
+            # Mirror of the pinned camera relay release; Pis verify its checksum.
+            archive = parsed.path.rsplit("/", 1)[-1]
+            software_dir = Path(getattr(self.server, "host_update_dir", "/host-update")) / "software"  # type: ignore[attr-defined]
+            try:
+                if not re.fullmatch(r"mediamtx_v[0-9][0-9.]*_linux_(?:arm64|armv7|armv6)\.tar\.gz", archive):
+                    raise FileNotFoundError(archive)
+                relay_file = (software_dir / "mediamtx" / archive).open("rb")
+            except OSError:
+                self.send_json({"error": "this dashboard does not have that camera relay download"}, HTTPStatus.NOT_FOUND)
+                return
+            with relay_file:
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "application/gzip")
+                self.send_header("Content-Length", str(os.fstat(relay_file.fileno()).st_size))
+                self.end_headers()
+                shutil.copyfileobj(relay_file, self.wfile, 64 * 1024)
             return
         if parsed.path in {"/software/pi-cctv.json", "/software/pi-cctv.bundle"}:
             # The project source is public; this only lets offline Pis fetch the

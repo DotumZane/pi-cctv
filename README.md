@@ -142,7 +142,13 @@ curl -fsSL https://raw.githubusercontent.com/DotumZane/pi-cctv/main/install.sh |
 
 ### New Pi: discover dashboards and adopt without a shared key
 
-On a fresh Pi OS Lite install, connect Ethernet to the CCTV LAN and run this once:
+On a fresh Pi OS Lite install, connect Ethernet to the CCTV LAN and install from the dashboard server. The Pi needs no internet access:
+
+```bash
+curl -fsSL http://SERVER:8080/install | sudo bash
+```
+
+The dashboard's `/install` script sets the Pi to use the server for its clock and package cache, then downloads and checks the dashboard's Pi CCTV software. It then runs the installer below in discovery mode. The camera relay (MediaMTX) also comes from the dashboard: the server updater mirrors the pinned release into its software folder, and Pis check its SHA-256 checksum before installing it. Pis try the dashboard first and GitHub second, both when installing and when updating. To install from GitHub instead, which needs internet on the Pi, run:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/DotumZane/pi-cctv/main/install.sh | \

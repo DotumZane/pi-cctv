@@ -11,6 +11,7 @@ SERVER=""
 MEDIA_SERVER=""
 TOKEN=""
 SKIP_PACKAGES="false"
+SKIP_DOWNLOAD="false"
 ENROLL="false"
 DISCOVER="false"
 BOOTSTRAP_TOKEN=""
@@ -34,6 +35,7 @@ while [[ $# -gt 0 ]]; do
     --media-server) MEDIA_SERVER="$2"; shift 2;;
     --token) TOKEN="$2"; shift 2;;
     --skip-packages) SKIP_PACKAGES="true"; shift;;
+    --skip-download) SKIP_DOWNLOAD="true"; shift;;
     --enroll) ENROLL="true"; shift;;
     --discover) DISCOVER="true"; shift;;
     --bootstrap-token) BOOTSTRAP_TOKEN="$2"; shift 2;;
@@ -84,7 +86,10 @@ command -v git >/dev/null || { echo "git is required" >&2; exit 1; }
 command -v python3 >/dev/null || { echo "python3 is required" >&2; exit 1; }
 
 mkdir -p "$(dirname "$INSTALL_DIR")"
-if [[ -d "$INSTALL_DIR/.git" ]]; then
+if [[ "$SKIP_DOWNLOAD" == "true" ]]; then
+  # The dashboard's /install script has already placed its software here.
+  [[ -d "$INSTALL_DIR/.git" ]] || { echo "--skip-download needs an existing checkout at $INSTALL_DIR" >&2; exit 1; }
+elif [[ -d "$INSTALL_DIR/.git" ]]; then
   git -c "safe.directory=$INSTALL_DIR" -C "$INSTALL_DIR" pull --ff-only origin main
 else
   git clone "$REPO_URL" "$INSTALL_DIR"

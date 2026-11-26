@@ -47,7 +47,8 @@ class ServerUpdaterTests(unittest.TestCase):
             (0, "Fast-forward"), (0, "Rebuilt"), (0, "b" * 12),
         ]
         with patch.object(updater, "run", side_effect=responses) as run, \
-                patch.object(updater, "publish_software", return_value={"commit": "b" * 40}):
+                patch.object(updater, "publish_software", return_value={"commit": "b" * 40}), \
+                patch.object(updater, "mirror_relay", return_value=[]):
             self.assertEqual(updater.main(), 0)
         commands = [call.args[0] for call in run.call_args_list]
         self.assertIn(["git", "merge", "--ff-only", "origin/main"], commands)
@@ -66,6 +67,7 @@ class ServerUpdaterTests(unittest.TestCase):
             (0, "Fast-forward"), (0, "Rebuilt"), (0, "b" * 12),
         ]
         with patch.object(updater, "run", side_effect=responses) as run, \
+                patch.object(updater, "mirror_relay", return_value=[]), \
                 patch.object(updater, "publish_software", return_value={"commit": "b" * 40}) as publish:
             self.assertEqual(updater.main(), 0)
         commands = [call.args[0] for call in run.call_args_list]

@@ -8,7 +8,8 @@ Before connecting a new Pi:
 
 1. Update the dashboard from **System settings → Server software**.
 2. Confirm the dashboard has local HTTPS enabled and its `discovery` service is running. The server update deploys both the management and discovery services.
-3. Make sure the Pi can join the same local network as the dashboard. LAN discovery does not cross routers or VLAN boundaries by default.
+3. Open `http://SERVER:8080/software/pi-cctv.json` in a browser. It should show a version number. If it shows an error, run `sudo bash scripts/install-server-updater.sh` once on the server.
+4. Make sure the Pi can join the same local network as the dashboard. LAN discovery does not cross routers or VLAN boundaries by default.
 
 ## 2. Install Raspberry Pi OS Lite
 
@@ -16,14 +17,27 @@ In Raspberry Pi Imager, select **Raspberry Pi OS Lite (64-bit)**. Set a unique h
 
 ## 3. Install Pi CCTV
 
-Sign in to the Pi locally or through Raspberry Pi Connect, then run:
+Sign in to the Pi locally or through Raspberry Pi Connect. Run this one command, using your dashboard server's address:
+
+```bash
+curl -fsSL http://SERVER:8080/install | sudo bash
+```
+
+The Pi does not need internet access. It gets everything from the dashboard server:
+
+- its clock, so package downloads are not rejected;
+- OS packages, through the server's package cache;
+- the Pi CCTV software, in the exact version the dashboard runs;
+- the camera relay program.
+
+The installer then starts the boot service and the Pi searches the network for dashboards. No shared enrollment secret is needed. The server itself needs internet access to fill its package cache the first time each package is installed.
+
+If the dashboard server is older and has no `/install` page, install from GitHub instead. The Pi then needs internet access:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/DotumZane/pi-cctv/main/install.sh | \
   sudo bash -s -- --discover
 ```
-
-The installer installs the required packages, downloads the Pi CCTV software, and starts its boot service. The agent generates a device-specific pairing identity on the Pi and searches the local network for dashboards. No shared enrollment secret is needed.
 
 ## 4. Adopt it from the dashboard
 
@@ -37,6 +51,7 @@ On a monitor Pi, the agent installs the RSG Forest Products boot splash in the b
 
 ## If the Pi does not appear
 
+- If `/install` stops with an error, read its last line: it names what the Pi could not get from the dashboard.
 - Confirm the dashboard server and Pi are on the same LAN/VLAN and that the network allows local UDP discovery on port `42900` and HTTPS on port `8443`.
 - Confirm the dashboard has HTTPS configured and the `discovery` container is running.
 - Check the Pi agent with `sudo systemctl status pi-cctv-agent --no-pager` and `sudo journalctl -u pi-cctv-agent -n 50 --no-pager`.

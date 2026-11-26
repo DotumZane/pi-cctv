@@ -12,6 +12,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -25,6 +26,10 @@ SOFTWARE_DIR = STATE_DIR / "software"
 SOFTWARE_MANIFEST = "pi-cctv.json"
 DEFAULT_BRANCH = "main"
 BRANCH_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,99}")
+RELAY_DIR = "mediamtx"
+RELAY_SCRIPT = Path("scripts/install-camera-relay.sh")
+RELAY_URL = "https://github.com/bluenviron/mediamtx/releases/download/v{version}/{archive}"
+MAX_RELAY_BYTES = 256 * 1024 * 1024
 
 
 def now() -> str:
@@ -151,6 +156,56 @@ def publish_software(repo: Path) -> dict:
     return manifest
 
 
+def relay_releases(repo: Path) -> tuple[str, dict[str, str]]:
+    """Read the pinned camera relay version and checksums the Pis install."""
+    text = (repo / RELAY_SCRIPT).read_text()
+    version = re.search(r"^version=([0-9][0-9.]*)$", text, re.MULTILINE)
+    checksums = dict(re.findall(r"arch=(arm64|armv7|armv6); checksum=([a-f0-9]{64})", text))
+    if not version or not checksums:
+        raise RuntimeError("Could not read the pinned camera relay release")
+    return version.group(1), {f"mediamtx_v{version.group(1)}_linux_{arch}.tar.gz": checksum
+                              for arch, checksum in checksums.items()}
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def mirror_relay(repo: Path, opener=urllib.request.urlopen) -> list[str]:
+    """Keep the pinned camera relay downloads here so new Pis need no internet."""
+    version, wanted = relay_releases(repo)
+    target = SOFTWARE_DIR / RELAY_DIR
+    target.mkdir(mode=0o2770, parents=True, exist_ok=True)
+    for archive, checksum in wanted.items():
+        path = target / archive
+        if path.is_file() and file_sha256(path) == checksum:
+            continue
+        temporary = target / f".{archive}.tmp"
+        try:
+            with opener(RELAY_URL.format(version=version, archive=archive), timeout=120) as response, \
+                    temporary.open("wb") as output:
+                total = 0
+                while chunk := response.read(1024 * 1024):
+                    total += len(chunk)
+                    if total > MAX_RELAY_BYTES:
+                        raise RuntimeError(f"{archive} is larger than expected")
+                    output.write(chunk)
+            if file_sha256(temporary) != checksum:
+                raise RuntimeError(f"{archive} failed its checksum")
+            os.chmod(temporary, 0o644)
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
+    for old in target.glob("mediamtx_*"):
+        if old.name not in wanted:
+            old.unlink(missing_ok=True)
+    return sorted(wanted)
+
+
 def publish_only() -> int:
     """Publish the current checkout for Pis; used once by the updater installer."""
     LOCK.parent.mkdir(parents=True, exist_ok=True)
@@ -161,7 +216,12 @@ def publish_only() -> int:
         except Exception as exc:
             print(f"Could not publish Pi software: {exc}", file=sys.stderr)
             return 1
-    print(f"Published Pi software {manifest['version']} ({manifest['commit'][:12]}) for this dashboard's Pis.")
+        print(f"Published Pi software {manifest['version']} ({manifest['commit'][:12]}) for this dashboard's Pis.")
+        try:
+            mirror_relay(load_repo(json.loads(CONFIG.read_text())))
+            print("Mirrored the camera relay download for new Pis.")
+        except Exception as exc:
+            print(f"Warning: could not mirror the camera relay download; new Pis will use GitHub: {exc}", file=sys.stderr)
     return 0
 
 
@@ -232,6 +292,10 @@ def main() -> int:
                 published = publish_software(repo)
                 status["pi_software_commit"] = published["commit"][:12]
                 status["message"] = "Server updated; its Pis can now update from this dashboard"
+                try:
+                    mirror_relay(repo)
+                except Exception as exc:
+                    status["message"] += f" (camera relay download not mirrored: {exc})"
             except Exception as exc:
                 # The server itself is updated; Pis fall back to GitHub until
                 # the next successful package.

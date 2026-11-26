@@ -22,6 +22,11 @@ PUBLIC_SERVERS = ("0.debian.pool.ntp.org", "1.debian.pool.ntp.org", "2.debian.po
 TIMESYNCD_BINARIES = (Path("/usr/lib/systemd/systemd-timesyncd"), Path("/lib/systemd/systemd-timesyncd"))
 
 
+def config_text(host: str) -> str:
+    return ("# Installed by the Pi CCTV agent: use the dashboard server's clock first.\n"
+            f"[Time]\nNTP={' '.join((host, *PUBLIC_SERVERS))}\n")
+
+
 def configure(server: str, conf_dir: Path | None = None, timesyncd_present: bool | None = None) -> bool:
     """Write the dashboard as this Pi's time server; returns True when it changed."""
     if timesyncd_present is None:
@@ -33,8 +38,7 @@ def configure(server: str, conf_dir: Path | None = None, timesyncd_present: bool
         return False
     conf_dir = conf_dir or CONF_DIR
     path = conf_dir / CONF_NAME
-    content = ("# Installed by the Pi CCTV agent: use the dashboard server's clock first.\n"
-               f"[Time]\nNTP={' '.join((host, *PUBLIC_SERVERS))}\n")
+    content = config_text(host)
     try:
         if path.read_text() == content:
             return False
