@@ -51,7 +51,7 @@ class ServerUpdaterTests(unittest.TestCase):
             self.assertEqual(updater.main(), 0)
         commands = [call.args[0] for call in run.call_args_list]
         self.assertIn(["git", "merge", "--ff-only", "origin/main"], commands)
-        self.assertIn(["docker", "compose", "up", "-d", "--build", "management", "discovery", "media", "apt-cache", "time-server"], commands)
+        self.assertIn(["docker", "compose", "up", "-d", "--build"], commands)
         self.assertTrue(all(isinstance(command, list) for command in commands))
         self.assertFalse((self.state / "request.json").exists())
         status = json.loads((self.state / "status.json").read_text())

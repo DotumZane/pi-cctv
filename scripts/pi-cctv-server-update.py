@@ -217,7 +217,10 @@ def main() -> int:
                     raise RuntimeError("Update is not a fast-forward; manual recovery is required")
             status["message"] = "Building and starting server services"
             write_status(status)
-            compose_code, compose_log = run(["docker", "compose", "up", "-d", "--build", "management", "discovery", "media", "apt-cache", "time-server"], repo, timeout=1800)
+            # Start every service in the updated docker-compose.yml. This script
+            # is the copy loaded before the merge, so a hard-coded service list
+            # would miss services that the new code adds.
+            compose_code, compose_log = run(["docker", "compose", "up", "-d", "--build"], repo, timeout=1800)
             status["log"] = (status["log"] + "\n" + compose_log).strip()[-12000:]
             if compose_code:
                 raise RuntimeError("Docker Compose could not build and start the management service")
