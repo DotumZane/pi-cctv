@@ -2,6 +2,20 @@
 
 A low-latency, centrally managed industrial CCTV system for Raspberry Pi-based cameras and monitor decoders.
 
+## Install a fresh Pi (quick reminder)
+
+1. Flash **Raspberry Pi OS Lite (64-bit)** with Raspberry Pi Imager. Give it a unique hostname, such as `cctv-cam-03`.
+2. Plug the Pi into the CCTV network switch by Ethernet and power it on.
+3. Sign in to the Pi and run this, replacing the address with the dashboard server's:
+
+   ```bash
+   curl -fsSL http://192.168.10.10:8080/install | sudo bash
+   ```
+
+4. On the dashboard, open **Devices → Pending devices**, choose **Camera** or **Monitor**, set its name and location, and click **Adopt**.
+
+The Pi needs no internet access: its clock, OS packages, CCTV software and camera relay all come from the dashboard server. If step 3 stops with an error, its last line says what the Pi could not get from the dashboard. The [Pi install guide](docs/pi-install-guide.md) has the full steps and troubleshooting.
+
 ## Project goals
 
 - Reliable 24/7 operation
