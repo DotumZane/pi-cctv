@@ -648,7 +648,10 @@ function appendVerticalTimelineDay(date,records,index){
   const dayLength=timelineDayLength(date),offset=index*verticalTimelineHeight,layer=document.createElement('div');
   layer.className='vertical-timeline-day-layer';layer.dataset.timelineDay=date;layer.dataset.loading=records.length?'false':'true';layer.style.top=`${offset}px`;layer.style.height=`${verticalTimelineHeight}px`;
   const marker=document.createElement('span');marker.className='vertical-timeline-day-marker';marker.style.top='8px';marker.textContent=date;layer.appendChild(marker);
-  for(let seconds=0;seconds<=dayLength;seconds+=1800){const label=document.createElement('span');label.className='vertical-timeline-label';label.style.top=`${(1-seconds/dayLength)*verticalTimelineHeight}px`;label.textContent=formatTimelineTime(seconds).slice(0,5);layer.appendChild(label)}
+  const labelStep=verticalTimelineLabelStep(dayLength);
+  // Detailed zooms would need thousands of labels per day; those are drawn
+  // on demand around the viewport by renderVerticalTimelineLabels instead.
+  if(dayLength/labelStep<=720)for(let seconds=0;seconds<=dayLength;seconds+=labelStep){const label=document.createElement('span');label.className='vertical-timeline-label';label.style.top=`${(1-seconds/dayLength)*verticalTimelineHeight}px`;label.textContent=verticalTimelineLabelText(seconds,labelStep);layer.appendChild(label)}
   records.forEach((record,recordIndex)=>{const start=verticalDayRecordStart(record,date),duration=verticalDayRecordDuration(record,recordIndex,records),range=document.createElement('span');range.className='vertical-timeline-range';range.style.top=`${Math.max(0,(1-(start+duration)/dayLength)*verticalTimelineHeight)}px`;range.style.height=`${Math.max(3,duration/dayLength*verticalTimelineHeight)}px`;range.title=formatTimelineTime(start);layer.appendChild(range)});
   content.appendChild(layer);content.style.height=`${Math.max(3600,(index+1)*verticalTimelineHeight)}px`;content.style.minHeight=content.style.height;
 }
@@ -666,9 +669,13 @@ buildVerticalTimeline=function(){
   const scroll=document.querySelector('.vertical-timeline-scroll');
   if(!scroll||scroll.dataset.continuousDaysReady)return;
   scroll.dataset.continuousDaysReady='true';
+  ensureVerticalTimelineZoomControls();
+  if(verticalTimelineHeight!==3600)rebuildVerticalTimelineLayers();
   let wheelRemainder=0;
   scroll.addEventListener('wheel',event=>{if(event.ctrlKey||!event.deltaY)return;const pixels=timelineWheelPixels(event);if(event.deltaMode===0&&pixels===event.deltaY)return;event.preventDefault();wheelRemainder+=pixels;const whole=Math.trunc(wheelRemainder);wheelRemainder-=whole;if(whole)scroll.scrollTop+=whole},{passive:false});
+  scroll.addEventListener('wheel',event=>{if(!event.ctrlKey||!event.deltaY)return;event.preventDefault();stepVerticalTimelineZoom(event.deltaY<0?1:-1)},{passive:false});
   scroll.addEventListener('scroll',event=>{
+    scheduleVerticalTimelineLabels();
     if(verticalTimelineProgrammatic)return;
     event.stopImmediatePropagation();
     const liveEdge=verticalTimelineMinimumScroll(scroll);
@@ -719,7 +726,7 @@ window.loadPreviousTimelineDay=async function(){
     if(!response.ok)throw new Error('recording history unavailable');
     const data=await response.json();
     if(generation!==verticalTimelineGeneration)return;
-    pending.forEach(day=>{day.failed=false;day.records=(data.recordings||[]).filter(record=>record.start&&localDateKey(record.start)===day.date).sort((a,b)=>new Date(a.start)-new Date(b.start));const layer=document.querySelector(`.vertical-timeline-day-layer[data-timeline-day="${day.date}"]`);if(layer){layer.dataset.loading='false';layer.querySelectorAll('.vertical-timeline-range').forEach(range=>range.remove());const dayLength=timelineDayLength(day.date);day.records.forEach((record,recordIndex)=>{const start=verticalDayRecordStart(record,day.date),duration=verticalDayRecordDuration(record,recordIndex,day.records),range=document.createElement('span');range.className='vertical-timeline-range';range.style.top=`${Math.max(0,(1-(start+duration)/dayLength)*verticalTimelineHeight)}px`;range.style.height=`${Math.max(3,duration/dayLength*verticalTimelineHeight)}px`;range.title=formatTimelineTime(start);layer.appendChild(range)})}})
+    pending.forEach(day=>{day.failed=false;day.loaded=true;day.records=(data.recordings||[]).filter(record=>record.start&&localDateKey(record.start)===day.date).sort((a,b)=>new Date(a.start)-new Date(b.start));const layer=document.querySelector(`.vertical-timeline-day-layer[data-timeline-day="${day.date}"]`);if(layer){layer.dataset.loading='false';layer.querySelectorAll('.vertical-timeline-range').forEach(range=>range.remove());const dayLength=timelineDayLength(day.date);day.records.forEach((record,recordIndex)=>{const start=verticalDayRecordStart(record,day.date),duration=verticalDayRecordDuration(record,recordIndex,day.records),range=document.createElement('span');range.className='vertical-timeline-range';range.style.top=`${Math.max(0,(1-(start+duration)/dayLength)*verticalTimelineHeight)}px`;range.style.height=`${Math.max(3,duration/dayLength*verticalTimelineHeight)}px`;range.title=formatTimelineTime(start);layer.appendChild(range)})}})
     // A user may have stopped on this day while its metadata was loading.
     // Re-evaluate that selected time so Loading becomes No recording or a frame.
     const selected=verticalTimelineSelection();
@@ -741,8 +748,82 @@ window.loadPreviousTimelineDay=async function(){
     }
   }finally{if(generation===verticalTimelineGeneration)verticalTimelineDayPaging=false}
 };
+// Timeline zoom. Each level is a fixed number of pixels per day; labels give
+// the span a ~600 px timeline shows. A wheel notch always moves one pixel, so
+// it moves 144 s at 24h and 0.1 s at 1m.
+const verticalTimelineZoomLevels=[{id:'24h',pxPerDay:600},{id:'6h',pxPerDay:2400},{id:'4h',pxPerDay:3600},{id:'1h',pxPerDay:14400},{id:'15m',pxPerDay:57600},{id:'5m',pxPerDay:172800},{id:'1m',pxPerDay:864000}];
+// Browsers cap element heights (Firefox near 17.9M px); stay well below.
+const verticalTimelineMaxHeight=15000000;
+let verticalTimelineZoom='4h',verticalTimelineLabelFrame=0;
+try{const saved=typeof localStorage!=='undefined'&&localStorage.getItem('cctvTimelineZoom');const level=verticalTimelineZoomLevels.find(item=>item.id===saved);if(level){verticalTimelineZoom=level.id;verticalTimelineHeight=level.pxPerDay}}catch{}
+function verticalTimelineLabelStep(dayLength=86400){const pxPerSecond=verticalTimelineHeight/dayLength;return [1,5,10,15,30,60,120,300,600,900,1800,3600,7200,10800].find(step=>step*pxPerSecond>=44)||10800}
+function verticalTimelineLabelText(seconds,step){const text=formatTimelineTime(Math.min(seconds,86399));return step<60?text:(seconds>=86400?'24:00':text.slice(0,5))}
+function scheduleVerticalTimelineLabels(){if(verticalTimelineLabelFrame||typeof requestAnimationFrame!=='function')return;verticalTimelineLabelFrame=requestAnimationFrame(()=>{verticalTimelineLabelFrame=0;renderVerticalTimelineLabels()})}
+function renderVerticalTimelineLabels(force=false){
+  const scroll=document.querySelector('.vertical-timeline-scroll'),band=document.querySelector('.vertical-timeline-label-band');
+  if(!scroll||!band||!verticalTimelineLoadedDays.length)return;
+  const step=verticalTimelineLabelStep();
+  if(86400/step<=720){if(band.childElementCount)band.textContent='';band.dataset.range='';return}
+  const top=Math.max(0,scroll.scrollTop-scroll.clientHeight),bottom=scroll.scrollTop+scroll.clientHeight*2,range=`${Math.floor(top/scroll.clientHeight)}:${verticalTimelineHeight}`;
+  if(!force&&band.dataset.range===range)return;
+  band.dataset.range=range;band.textContent='';
+  const H=verticalTimelineHeight,fragment=document.createDocumentFragment();
+  for(let index=Math.floor(top/H);index<=Math.min(verticalTimelineLoadedDays.length-1,Math.floor(bottom/H));index++){
+    const dayLength=timelineDayLength(verticalTimelineLoadedDays[index].date),first=Math.max(0,Math.floor((1-(bottom-index*H)/H)*dayLength/step)*step),last=Math.min(dayLength,(1-(top-index*H)/H)*dayLength);
+    for(let seconds=first;seconds<=last;seconds+=step){const label=document.createElement('span');label.className='vertical-timeline-label';label.style.top=`${index*H+(1-seconds/dayLength)*H}px`;label.textContent=verticalTimelineLabelText(seconds,step);fragment.appendChild(label)}
+  }
+  band.appendChild(fragment);
+}
+function rebuildVerticalTimelineLayers(){
+  const content=document.querySelector('.vertical-timeline-content');
+  if(!content||typeof content.appendChild!=='function')return;
+  content.textContent='';
+  verticalTimelineLoadedDays.forEach((day,index)=>{appendVerticalTimelineDay(day.date,day.records,index);const layer=content.querySelector(`[data-timeline-day="${day.date}"]`);if(layer&&(index===0||day.loaded))layer.dataset.loading='false'});
+  const band=document.createElement('div');band.className='vertical-timeline-label-band';content.appendChild(band);
+  content.style.height=`${Math.max(verticalTimelineHeight,verticalTimelineLoadedDays.length*verticalTimelineHeight)}px`;content.style.minHeight=content.style.height;
+  renderVerticalTimelineLabels(true);
+}
+function setVerticalTimelineZoom(id){
+  const level=verticalTimelineZoomLevels.find(item=>item.id===id),scroll=document.querySelector('.vertical-timeline-scroll');
+  if(!level||!scroll||level.pxPerDay===verticalTimelineHeight)return false;
+  // Keep the timestamp under the fixed cursor (or the live edge) in place.
+  const live=document.querySelector('#workspace-live')?.dataset.playback==='live'&&!window.workspaceScrubActive;
+  const selection=verticalTimelineSelection(),dayIndex=Math.max(0,verticalTimelineLoadedDays.findIndex(day=>day.date===selection.date));
+  if((dayIndex+2)*level.pxPerDay>verticalTimelineMaxHeight){
+    const help=document.querySelector('.vertical-timeline-help');
+    if(help)help.textContent=`Zoom ${id} is not available this far back. Scroll nearer to today first.`;
+    return false;
+  }
+  // Older days beyond the selection are reloaded on demand.
+  while(verticalTimelineLoadedDays.length>dayIndex+2&&verticalTimelineLoadedDays.length*level.pxPerDay>verticalTimelineMaxHeight)verticalTimelineLoadedDays.pop();
+  verticalTimelineZoom=level.id;verticalTimelineHeight=level.pxPerDay;
+  try{localStorage.setItem('cctvTimelineZoom',level.id)}catch{}
+  verticalTimelineProgrammatic=true;
+  rebuildVerticalTimelineLayers();
+  const dayLength=timelineDayLength(selection.date),minScroll=verticalTimelineMinimumScroll(scroll);
+  const target=live?minScroll:(dayIndex+1-selection.seconds/dayLength)*verticalTimelineHeight-26;
+  scroll.scrollTop=Math.max(minScroll,Math.min(scroll.scrollHeight-scroll.clientHeight,target));
+  renderVerticalTimelineLabels(true);
+  requestAnimationFrame(()=>{verticalTimelineProgrammatic=false});
+  updateVerticalTimelineZoomControls();
+  return true;
+}
+function stepVerticalTimelineZoom(direction){const index=verticalTimelineZoomLevels.findIndex(item=>item.id===verticalTimelineZoom),next=verticalTimelineZoomLevels[Math.max(0,Math.min(verticalTimelineZoomLevels.length-1,index+direction))];if(next)setVerticalTimelineZoom(next.id)}
+function updateVerticalTimelineZoomControls(){
+  document.querySelectorAll?.('.vertical-timeline-zoom button').forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.zoom===verticalTimelineZoom)));
+  const help=document.querySelector('.vertical-timeline-help'),perNotch=86400/verticalTimelineHeight;
+  if(help)help.textContent=`Scroll to move in time · ${perNotch>=1?`${Math.round(perNotch)} s`:`${perNotch.toFixed(1)} s`} per wheel notch · Ctrl+scroll or pinch to zoom.`;
+}
+function ensureVerticalTimelineZoomControls(){
+  const heading=document.querySelector('.vertical-timeline-heading');
+  if(!heading||heading.querySelector('.vertical-timeline-zoom'))return;
+  const group=document.createElement('div');group.className='vertical-timeline-zoom';group.setAttribute('role','group');group.setAttribute('aria-label','Timeline zoom');
+  verticalTimelineZoomLevels.forEach(level=>{const button=document.createElement('button');button.type='button';button.className='ghost';button.dataset.zoom=level.id;button.textContent=level.id;button.title=`Show about ${level.id} of recordings`;button.addEventListener('click',()=>setVerticalTimelineZoom(level.id));group.appendChild(button)});
+  heading.appendChild(group);
+  updateVerticalTimelineZoomControls();
+}
 const verticalTimelineDayStyle=document.createElement('style');
-verticalTimelineDayStyle.textContent='.vertical-timeline-day-layer{position:absolute;left:0;right:0}.vertical-timeline-day-layer[data-loading="true"]{background:linear-gradient(90deg,transparent,#ffffff05,transparent);background-size:200% 100%;animation:verticalTimelineLoading 1.2s linear infinite}.vertical-timeline-day-marker{position:absolute;left:42px;right:8px;z-index:2;padding:3px 5px;border-top:1px solid #ffffff24;color:var(--muted);font-size:9px;font-weight:700;letter-spacing:.04em;pointer-events:none;background:linear-gradient(90deg,#0b1118dd,transparent)}@keyframes verticalTimelineLoading{from{background-position:200% 0}to{background-position:-200% 0}}';
+verticalTimelineDayStyle.textContent='.vertical-timeline-heading{flex-wrap:wrap;gap:6px}.vertical-timeline-zoom{display:flex;flex-wrap:wrap;gap:2px;width:100%}.vertical-timeline-zoom button{flex:1 1 0;min-width:0;padding:3px 0;font-size:11px;line-height:1.2;border-radius:5px}.vertical-timeline-zoom button[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:#06101a}.vertical-timeline-label-band{position:absolute;inset:0;pointer-events:none}.vertical-timeline-day-layer{position:absolute;left:0;right:0}.vertical-timeline-day-layer[data-loading="true"]{background:linear-gradient(90deg,transparent,#ffffff05,transparent);background-size:200% 100%;animation:verticalTimelineLoading 1.2s linear infinite}.vertical-timeline-day-marker{position:absolute;left:42px;right:8px;z-index:2;padding:3px 5px;border-top:1px solid #ffffff24;color:var(--muted);font-size:9px;font-weight:700;letter-spacing:.04em;pointer-events:none;background:linear-gradient(90deg,#0b1118dd,transparent)}@keyframes verticalTimelineLoading{from{background-position:200% 0}to{background-position:-200% 0}}';
 document.head.appendChild(verticalTimelineDayStyle);
 </script><script>
 // Camera tuning uses the same dashboard/NVR HLS path as Live views, but keeps

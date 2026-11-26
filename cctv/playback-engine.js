@@ -1,169 +1,128 @@
 /*
- * Persistent playback engine for the camera workspace.
+ * Recorded-video scrubbing engine for the camera workspace.
  *
- * The dashboard stores recordings as individual MP4/MKV segments, not as one
- * HLS/DASH VOD presentation.  A manifest player would therefore not solve
- * seeking by itself.  Instead we keep the live/normal player stable and use a
- * a dense frame atlas plus a canvas for bidirectional scrubbing. The proxy
- * and server-extracted frames remain fallbacks while an atlas is prepared.
+ * Normal playback uses the native <video id="workspace-live"> element with one
+ * MP4 segment at a time. While the timeline moves, that player stays paused
+ * and a canvas overlay shows frames from the server's time-indexed preview
+ * track:
+ *
+ *   fine    one 256x144 keyframe per second, in per-segment sheets
+ *   coarse  one 160x90 frame per 15 s, one sheet per hour
+ *   video   the original MP4 decoded by a hidden <video> (detailed zooms)
+ *
+ * The density follows the timeline zoom and the cursor speed. A single
+ * requestAnimationFrame loop draws the available frame closest to the cursor.
+ * A frame replaces the displayed one only when it is closer to the cursor, so
+ * late responses never move the picture away from the requested time. The
+ * last frame stays visible until a better one is ready.
  */
 (function () {
   'use strict';
 
   const debug = new URLSearchParams(location.search).has('debugPlayback');
+  const FINE = 'fine', COARSE = 'coarse', VIDEO = 'video';
+  const INTERVAL = { fine: 1, coarse: 15, video: 1 / 30 };
+  // Timeline seconds per pixel up to which per-second sheets are used, and
+  // the cursor speed (footage seconds per second) that sheets can keep up with.
+  const FINE_MAX_SPP = 10, FINE_MAX_SPEED = 120;
+  // Detailed zooms decode the recording itself for sub-second positions.
+  const VIDEO_MAX_SPP = 0.6, VIDEO_MAX_SPEED = 30;
+  const LIMITS = { decodedFine: 16, decodedCoarse: 4, sheetFetches: 4, manifestFetches: 3, decodes: 2 };
+  const COMMIT_IDLE_MS = 350, WHEEL_IDLE_MS = 300, SCROLLEND_GRACE_MS = 120;
+
   const state = {
-    canvas: null,
-    ctx: null,
-    scrubMessage: null,
-    frame: 0,
-    frameDelay: 0,
-    target: null,
-    targetRecord: null,
-    targetOffset: 0,
-    targetAbsolute: null,
-    inFlight: 0,
-    pending: null,
-    lastRequestedAt: 0,
-    lastFrameTime: null,
-    lastPreviewAt: 0,
-    lastBitmap: null,
-    motionDirection: 0,
-    motionEpoch: 0,
-    camera: null,
-    frameCache: new Map(),
-    frameLoads: new Map(),
-    requestToken: 0,
-    lastInputAt: 0,
-    lastValue: null,
-    lastTime: 0,
-    committing: false,
-    gapPlaying: false,
-    gapTimer: 0,
-    gapLastTick: 0,
-    gapTicking: false,
-    commitTimer: 0,
-    commitScheduleTimer: 0,
-    pointerDown: false,
-    active: false,
-    hasFrame: false,
-    hasPicture: false,
-    proxy: null,
-    proxyPath: null,
-    proxyReady: false,
-    proxyLoading: false,
-    proxyChecking: null,
-    proxyRetry: 0,
-    proxyWaiting: false,
-    proxyFailed: false,
-    proxyDesired: null,
-    proxySeeking: false,
-    proxyFrame: 0,
-    proxyOpenTimer: 0,
-    proxyOpenPath: null,
-    sequential: false,
-    reverseVideo: false,
-    scrubSpeed: 0,
-    proxyVideoFrame: 0,
-    proxyEpoch: 0,
-    lastProxyTime: null,
-    lastVideoAt: 0,
-    lastVideoPosition: null,
-    lastVideoPath: null,
-    videoFallbackTimer: 0,
-    measurements: [],
-    snapshotRequests: 0,
-    atlasPath: null,
-    atlasManifest: null,
-    atlasBase: null,
-    atlasChecking: null,
-    atlasWaiting: false,
-    atlasRetry: 0,
-    atlasFailed: false,
-    atlasCache: new Map(),
-    atlasLoads: new Map(),
-    atlasDemands: new Map(),
-    atlasManifests: new Map(),
-    atlasChecks: new Map(),
-    atlasPrefetching: new Set(),
-    atlasPrefetchQueue: new Map(),
-    atlasRecordList: null,
-    atlasRecordIndices: new Map(),
-    atlasPrefetchRetry: new Map(),
-    atlasWarmTimer: 0,
-    atlasWarmPath: null,
-    atlasWarmRetry: new Map(),
-    atlasFrame: 0,
-    atlasTransitionAt: 0,
-    overviewCache: new Map(),
-    overviewLoading: new Set(),
-    overviewQueue: new Map(),
-    overviewRetry: new Map(),
-    overviewTiles: new Map(),
-    overviewTileLoading: new Set(),
-    overviewHighTargets: new Set(),
-    overviewHighTimers: new Set(),
+    canvas: null, ctx: null, message: null, proxy: null,
+    active: false, loop: 0, camera: null,
+    // Cursor: the requested timestamp. `t` is absolute epoch seconds.
+    cursor: { t: null, selected: null, record: null, offset: 0, date: null },
+    target: null, targetRecord: null, targetAbsolute: null, targetOffset: 0,
+    velocity: 0, direction: 0, lastInputAt: 0, lastInputT: null,
+    displayed: null, hasPicture: false, confirmedGap: false,
+    hours: new Map(), manifestQueue: [], manifestsInFlight: 0,
+    sheets: new Map(), decodedFine: new Map(), decodedCoarse: new Map(),
+    sheetsInFlight: 0, decodesInFlight: 0,
+    proxyPath: null, proxyReady: false, proxySeeking: false, proxyDirect: false,
+    requestToken: 0, committing: false,
+    gapPlaying: false, gapTimer: 0, gapLastTick: 0, gapTicking: false,
+    commitTimer: 0, commitScheduleTimer: 0, pointerDown: false, lastWheelAt: 0,
+    gesture: null, lastValue: null, lastTime: 0,
   };
 
-  function log(event, details) {
-    if (debug) console.debug('[playback]', event, details || '');
-  }
+  function log(event, details) { if (debug) console.debug('[playback]', event, details || ''); }
 
-  function measureFrame(id, position, source) {
-    const now = performance.now();
-    if (source === 'video') {
-      state.lastVideoAt = now;
-      state.lastVideoPosition = position;
-      state.lastVideoPath = state.proxyPath;
+  // ---------------------------------------------------------------- metrics
+  const metrics = {
+    since: 0, ticks: 0, paints: 0, keys: new Set(), sources: {}, levels: {},
+    latencies: [], errors: [], pendingInputs: [], hits: 0, misses: 0,
+    manifestRequests: 0, sheetRequests: 0, aborted: 0, gestures: [],
+  };
+  function resetMetrics() {
+    Object.assign(metrics, { since: performance.now(), ticks: 0, paints: 0, keys: new Set(), sources: {},
+      levels: {}, latencies: [], errors: [], pendingInputs: [], hits: 0, misses: 0,
+      manifestRequests: 0, sheetRequests: 0, aborted: 0, gestures: [] });
+  }
+  resetMetrics();
+  function percentile(values, p) {
+    if (!values.length) return null;
+    const sorted = [...values].sort((a, b) => a - b);
+    return sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * p))];
+  }
+  function recordPaint(frame, now) {
+    metrics.paints += 1;
+    metrics.keys.add(frame.key);
+    metrics.sources[frame.level] = (metrics.sources[frame.level] || 0) + 1;
+    if (state.cursor.t !== null) {
+      metrics.errors.push(Math.abs(frame.t - state.cursor.t));
+      if (metrics.errors.length > 5000) metrics.errors.shift();
     }
-    const rows = state.measurements;
-    state.lastFrameTime = position;
-    if (rows.length && rows[rows.length - 1].id === id) return;
-    rows.push({ id, source, at: now, latencyMs: Math.max(0, now - state.lastInputAt),
-      errorSeconds: state.targetAbsolute === null ? null : Math.abs(state.targetAbsolute - position) });
-    while (rows.length && rows[0].at < now - 10000) rows.shift();
+    // An input is satisfied by the first painted frame within one frame
+    // interval of the time that input requested.
+    const tolerance = Math.max(INTERVAL[frame.level], 0.05);
+    metrics.pendingInputs = metrics.pendingInputs.filter(input => {
+      if (Math.abs(frame.t - input.t) > tolerance) return now - input.at < 5000;
+      metrics.latencies.push(now - input.at);
+      if (metrics.latencies.length > 5000) metrics.latencies.shift();
+      return false;
+    });
   }
   window.cctvScrubMetrics = {
-    reset() { state.measurements.length = 0; state.snapshotRequests = 0; },
+    reset: resetMetrics,
     snapshot() {
-      const rows = state.measurements;
-      const elapsed = rows.length > 1 ? (rows[rows.length - 1].at - rows[0].at) / 1000 : 0;
-      const latencies = rows.map(row => row.latencyMs).sort((a, b) => a - b);
-      const unique = new Set(rows.map(row => row.id)).size;
-      return { uniqueFrames: unique, displayedChanges: rows.length, seconds: elapsed,
-        fps: elapsed ? Math.max(0, unique - 1) / elapsed : 0,
-        snapshotRequests: state.snapshotRequests,
-        decoder: {active: state.active, sequential: state.sequential, ready: state.proxyReady, seeking: state.proxySeeking, desired: state.proxyDesired},
-        medianLatencyMs: latencies.length ? latencies[Math.floor(latencies.length / 2)] : null,
-        maxPositionErrorSeconds: rows.reduce((max, row) => Math.max(max, row.errorSeconds || 0), 0),
-        sources: rows.reduce((counts, row) => { counts[row.source] = (counts[row.source] || 0) + 1; return counts; }, {}) };
+      const seconds = Math.max(0.001, (performance.now() - metrics.since) / 1000);
+      const errors = metrics.errors, lookups = metrics.hits + metrics.misses;
+      const commits = metrics.gestures.map(gesture => gesture.commits);
+      return {
+        seconds,
+        // Canvas work and distinct footage frames are measured separately.
+        renderFps: metrics.ticks / seconds,
+        paintFps: metrics.paints / seconds,
+        fps: Math.max(0, metrics.keys.size - 1) / seconds,
+        uniqueFrames: metrics.keys.size,
+        displayedChanges: metrics.paints,
+        medianLatencyMs: percentile(metrics.latencies, 0.5),
+        p95LatencyMs: percentile(metrics.latencies, 0.95),
+        meanPositionErrorSeconds: errors.length ? errors.reduce((a, b) => a + b, 0) / errors.length : null,
+        maxPositionErrorSeconds: errors.reduce((a, b) => Math.max(a, b), 0),
+        cacheHitRate: lookups ? metrics.hits / lookups : null,
+        cacheHits: metrics.hits, cacheMisses: metrics.misses,
+        manifestRequests: metrics.manifestRequests, sheetRequests: metrics.sheetRequests, abortedRequests: metrics.aborted,
+        commitsPerGesture: commits, gestures: commits.length,
+        sources: { ...metrics.sources }, levels: { ...metrics.levels },
+        decoder: { active: state.active, ready: state.proxyReady, seeking: state.proxySeeking },
+      };
     },
   };
 
+  // ------------------------------------------------------------ DOM helpers
   function mainVideo() { return document.querySelector('#workspace-live'); }
   function shell() { return mainVideo()?.closest('.workspace-video-shell'); }
+  function isMp4(record) { return /\.mp4(?:[?#]|$)/i.test(String(record?.url || '')); }
   function sourceFor(record) {
+    // Recorder output is browser-playable MP4. Only legacy MKV recordings go
+    // through the server's conversion endpoint.
     const url = String(record?.url || '');
-    // Recorder output is normally already browser-playable MP4. Do not send
-    // those files through the server's FFmpeg conversion path: that makes
-    // Safari wait for a full transcode before it can seek. MKV recordings
-    // still use the conversion endpoint for browser compatibility.
-    if (/\.mp4(?:[?#]|$)/i.test(url)) return url;
+    if (isMp4(record)) return url;
     return `${url}${url.includes('?') ? '&' : '?'}format=mp4`;
-  }
-
-  function instrument(video, name) {
-    if (!video || video.dataset.playbackDiagnostics) return;
-    video.dataset.playbackDiagnostics = name;
-    ['loadstart', 'loadedmetadata', 'durationchange', 'canplay', 'playing', 'pause',
-      'seeking', 'seeked', 'waiting', 'stalled', 'error', 'emptied'].forEach(type => {
-      video.addEventListener(type, () => log(`${name}:${type}`, {
-        src: video.currentSrc || video.src,
-        currentTime: Number(video.currentTime || 0).toFixed(3),
-        readyState: video.readyState,
-        networkState: video.networkState,
-        error: video.error?.code || null,
-      }));
-    });
   }
 
   function disableNativeControls(video) {
@@ -181,7 +140,6 @@
     const video = mainVideo(), host = shell();
     if (!video || !host) return false;
     disableNativeControls(video);
-    instrument(video, 'main');
     if (!state.canvas) {
       state.canvas = document.createElement('canvas');
       state.canvas.className = 'workspace-scrub-frame';
@@ -189,20 +147,20 @@
       host.appendChild(state.canvas);
       state.ctx = state.canvas.getContext('2d', { alpha: false });
     }
-    if (!state.scrubMessage) {
-      state.scrubMessage = document.createElement('div');
-      state.scrubMessage.className = 'workspace-scrub-message';
-      state.scrubMessage.setAttribute('role', 'status');
-      state.scrubMessage.setAttribute('aria-live', 'polite');
-      host.appendChild(state.scrubMessage);
+    if (!state.message) {
+      state.message = document.createElement('div');
+      state.message.className = 'workspace-scrub-message';
+      state.message.setAttribute('role', 'status');
+      state.message.setAttribute('aria-live', 'polite');
+      host.appendChild(state.message);
     }
     return true;
   }
 
   function scrubMessage(message) {
-    if (!state.scrubMessage) return;
-    state.scrubMessage.textContent = message || '';
-    state.scrubMessage.classList.toggle('visible', Boolean(message));
+    if (!state.message || state.message.textContent === (message || '')) return;
+    state.message.textContent = message || '';
+    state.message.classList.toggle('visible', Boolean(message));
   }
 
   function fitCanvas() {
@@ -210,817 +168,437 @@
     if (!video || !canvas) return;
     const rawWidth = Math.max(1, video.clientWidth * devicePixelRatio);
     const rawHeight = Math.max(1, video.clientHeight * devicePixelRatio);
-    // Preview sources are small; a full Retina-sized canvas needlessly paints
-    // millions of extra pixels on every scroll. CSS still fills the player.
+    // Preview frames are small; a Retina-sized canvas only adds paint cost.
     const scale = Math.min(1, 1280 / rawWidth, 720 / rawHeight);
     const width = Math.max(1, Math.round(rawWidth * scale));
     const height = Math.max(1, Math.round(rawHeight * scale));
     if (canvas.width !== width || canvas.height !== height) {
       canvas.width = width;
       canvas.height = height;
-      if (state.active && state.lastBitmap) paintBitmap(state.lastBitmap);
-      if (state.active && state.atlasManifest) scheduleAtlasFrame();
+      state.displayed = state.displayed && { ...state.displayed, stale: true };
     }
   }
 
-  function paintBitmap(bitmap) {
-    const canvas = state.canvas;
-    const scale = Math.min(canvas.width / bitmap.width, canvas.height / bitmap.height);
-    const width = bitmap.width * scale, height = bitmap.height * scale;
-    state.ctx.fillStyle = '#030507';
-    state.ctx.fillRect(0, 0, canvas.width, canvas.height);
-    state.ctx.drawImage(bitmap, (canvas.width - width) / 2, (canvas.height - height) / 2, width, height);
-  }
-
-  function drawImage(source) {
-    const video = mainVideo();
-    if (!state.ctx || !source || !video || source.readyState < 2) return false;
+  function drawSource(source, sx, sy, sw, sh) {
     fitCanvas();
-    const sw = source.videoWidth || source.clientWidth;
-    const sh = source.videoHeight || source.clientHeight;
-    if (!sw || !sh) return false;
     const cw = state.canvas.width, ch = state.canvas.height;
-    const scale = Math.min(cw / sw, ch / sh);
-    const dw = sw * scale, dh = sh * scale;
+    const scale = Math.min(cw / sw, ch / sh), dw = sw * scale, dh = sh * scale;
     state.ctx.fillStyle = '#030507';
     state.ctx.fillRect(0, 0, cw, ch);
-    state.ctx.drawImage(source, (cw - dw) / 2, (ch - dh) / 2, dw, dh);
-    state.hasFrame = true;
+    state.ctx.drawImage(source, sx, sy, sw, sh, (cw - dw) / 2, (ch - dh) / 2, dw, dh);
     state.hasPicture = true;
-    if (source !== video) state.lastPreviewAt = performance.now();
     if (state.active) state.canvas.classList.add('visible');
-    scrubMessage('');
-    return true;
   }
 
   function drawMainFrame() {
     const video = mainVideo();
-    if (state.active && video?.readyState >= 2) drawImage(video);
-  }
-
-  function drawExtractedFrame(bitmap, request) {
-    if (!state.active || !state.ctx || !bitmap) return;
-    fitCanvas();
-    paintBitmap(bitmap);
-    state.hasFrame = true;
-    state.hasPicture = true;
-    state.lastBitmap = bitmap;
-    state.lastFrameTime = request.absolute;
-    state.lastPreviewAt = performance.now();
-    state.canvas.classList.add('visible');
-    measureFrame(frameKey(request), request.absolute, 'snapshot');
-    scrubMessage(request.absolute === state.targetAbsolute ? '' : `Preview · ${formatTimelineTime(request.selected)}`);
-    log('scrub:frame', { requested: request.selected, displayed: state.lastFrameTime,
-      latencyMs: Math.round(performance.now() - request.startedAt) });
-  }
-
-  function frameKey(request) {
-    return `${request.record.path}:${Math.round(request.offset * 4)}`;
-  }
-
-  function usablePreviewPosition(absolute, direction, maxLag = 90) {
-    if (state.targetAbsolute === null || !state.targetRecord) return false;
-    // Permit a bounded amount of time for decoding while fast scrolling
-    // crosses short files. Require progress in the current direction and
-    // never let an older completion replace a newer displayed frame.
-    const tolerance = Math.max(0.5, Math.min(maxLag, state.scrubSpeed * (maxLag > 90 ? 1.5 : 0.75)));
-    const delta = absolute - state.targetAbsolute;
-    if (Math.abs(delta) > tolerance || (direction && delta * direction > 0.25)) return false;
-    return !(state.lastFrameTime !== null && direction &&
-      (absolute - state.lastFrameTime) * direction < -0.001);
-  }
-
-  function absoluteTimelineSeconds(date, value) {
-    return new Date(`${date}T00:00:00`).getTime() / 1000 + Number(value);
-  }
-
-  function atlasSheetName(index) { return `${String(index).padStart(3, '0')}.jpg`; }
-
-  function atlasKey(path, index) { return `${path}:${index}`; }
-
-  // A small sheet covers an entire hour. It is used only while moving fast;
-  // the ordinary per-recording atlas remains the precise preview.
-  function requestOverview(camera, hour, compact = false) {
-    const base = `${camera}:${hour}`, key = `${base}:${compact ? 'compact' : 'standard'}`;
-    if (hour < 0 || hour > 4102444800) return;
-    const cached = state.overviewCache.get(base);
-    const maxAge = !cached?.times.length || hour + 3600 > Date.now() / 1000 ? 30000 : 300000;
-    if (cached && performance.now() - cached.loadedAt > maxAge) {
-      state.overviewCache.delete(base);
-    }
-    const current = state.overviewCache.get(base);
-    if ((current && (!current.times.length || compact || current.width >= 384)) || state.overviewLoading.has(key) ||
-        (state.overviewRetry.get(key) || 0) > performance.now()) return;
-    state.overviewQueue.set(key, {camera, hour, compact, base});
-    pumpOverviews();
-  }
-
-  function requestDetailedOverview(camera, hour) {
-    const base = `${camera}:${hour}`, key = `${base}:high`;
-    const cached = state.overviewCache.get(base);
-    if (!state.overviewHighTargets.has(base) || !cached?.blob || cached.width >= 512 ||
-        state.overviewLoading.has(key) || state.overviewQueue.has(key) ||
-        (state.overviewRetry.get(key) || 0) > performance.now()) return;
-    state.overviewQueue.set(key, {camera, hour, detail: true, base});
-    pumpOverviews();
-  }
-
-  function scheduleDetailedOverview(camera, hour) {
-    const key = `${camera}:${hour}`;
-    if (!state.overviewHighTargets.has(key) || state.overviewHighTimers.has(key)) return;
-    state.overviewHighTimers.add(key);
-    setTimeout(() => {
-      state.overviewHighTimers.delete(key);
-      if (window.workspaceCamera === camera) requestDetailedOverview(camera, hour);
-    }, 10000);
-  }
-
-  function pumpOverviews() {
-    while (state.overviewLoading.size < 2 && state.overviewQueue.size) {
-      const [key, item] = state.overviewQueue.entries().next().value;
-      state.overviewQueue.delete(key);
-      state.overviewLoading.add(key);
-      const base = item.base || key;
-      api(`/api/recordings/overview?camera_id=${encodeURIComponent(item.camera)}&hour=${item.hour}${item.detail ? '&detail=high' : item.compact ? '&detail=compact' : ''}`)
-        .then(response => response.ok ? response.json() : null)
-        .then(async result => {
-          if (!result?.ready) {
-            state.overviewRetry.set(key, performance.now() + 3000);
-            setTimeout(() => { if (window.workspaceCamera === item.camera) {
-              if (item.detail) requestDetailedOverview(item.camera, item.hour);
-              else requestOverview(item.camera, item.hour, item.compact);
-            } }, 3100);
-            return;
-          }
-          if (!result.image || !result.times?.length) {
-            if (!item.detail && !state.overviewCache.has(base)) state.overviewCache.set(base, {blob: null, times: [], loadedAt: performance.now()});
-            return;
-          }
-          const binary = atob(result.image), bytes = new Uint8Array(binary.length);
-          for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-          const previous = state.overviewCache.get(base);
-          if (!item.detail && previous?.width > result.width) return;
-          if (item.detail && !previous) return;
-          state.overviewCache.set(base, {blob: new Blob([bytes], {type: 'image/jpeg'}), times: result.times, width: result.width,
-            height: result.height, columns: result.columns, loadedAt: performance.now()});
-          while (state.overviewCache.size > 24) {
-            const oldest = state.overviewCache.keys().next().value;
-            state.overviewCache.delete(oldest);
-          }
-          if (!item.detail) scheduleDetailedOverview(item.camera, item.hour);
-          if (state.active && state.camera === item.camera && state.scrubSpeed > 4) paintOverview();
-        }).catch(() => { state.overviewRetry.set(key, performance.now() + 3000); })
-        .finally(() => { state.overviewLoading.delete(key); pumpOverviews(); });
-    }
-  }
-
-  function warmOverview(absolute, direction = -1) {
-    if (!state.camera || !Number.isFinite(absolute) || typeof atob !== 'function' || typeof Blob === 'undefined') return;
-    const hour = Math.floor(absolute / 3600) * 3600;
-    state.overviewQueue.clear();
-    state.overviewHighTargets = new Set();
-    for (let i = 0; i < 24; i++) {
-      const targetHour = hour + Math.sign(direction || -1) * i * 3600;
-      if (i < 8) state.overviewHighTargets.add(`${state.camera}:${targetHour}`);
-      requestOverview(state.camera, targetHour, i >= 8);
-      if (i < 8 && state.overviewCache.has(`${state.camera}:${targetHour}`)) scheduleDetailedOverview(state.camera, targetHour);
-    }
-  }
-
-  function paintOverview() {
-    if (!state.active || !state.targetRecord || state.targetAbsolute === null || !state.motionDirection) return false;
-    const hour = Math.floor(state.targetAbsolute / 3600) * 3600;
-    let best = null;
-    for (const h of [hour, hour - 3600, hour + 3600]) {
-      const entry = state.overviewCache.get(`${state.camera}:${h}`);
-      if (!entry) continue;
-      entry.times.forEach((stamp, index) => {
-        const delta = (state.targetAbsolute - stamp) * state.motionDirection;
-        if (delta < -0.001 || delta > 120 || (state.lastFrameTime !== null &&
-            (stamp - state.lastFrameTime) * state.motionDirection < -0.001)) return;
-        if (!best || delta < best.delta) best = {entry, stamp, index, delta, hour: h};
-      });
-    }
-    if (!best) return false;
-    const {entry, stamp, index} = best;
-    const key = `${state.camera}:${best.hour}`;
-    state.overviewCache.delete(key);
-    state.overviewCache.set(key, entry);
-    const tileKey = `${key}:${entry.loadedAt}:${index}`;
-    const tile = state.overviewTiles.get(tileKey);
-    if (!tile) {
-      if (!state.overviewTileLoading.has(tileKey) && state.overviewTileLoading.size < 2) {
-        state.overviewTileLoading.add(tileKey);
-        createImageBitmap(entry.blob, (index % entry.columns) * entry.width,
-          Math.floor(index / entry.columns) * entry.height, entry.width, entry.height)
-          .then(bitmap => {
-            state.overviewTiles.set(tileKey, bitmap);
-            while (state.overviewTiles.size > 8) {
-              const oldest = state.overviewTiles.keys().next().value;
-              state.overviewTiles.get(oldest)?.close?.();
-              state.overviewTiles.delete(oldest);
-            }
-            if (state.overviewCache.get(key) === entry && state.active && state.scrubSpeed > 4) paintOverview();
-          }).catch(() => {}).finally(() => state.overviewTileLoading.delete(tileKey));
-      }
-      return false;
-    }
-    state.overviewTiles.delete(tileKey);
-    state.overviewTiles.set(tileKey, tile);
-    fitCanvas();
-    const cw = state.canvas.width, ch = state.canvas.height;
-    const scale = Math.min(cw / entry.width, ch / entry.height);
-    const dw = entry.width * scale, dh = entry.height * scale;
-    state.ctx.fillStyle = '#030507';
-    state.ctx.fillRect(0, 0, cw, ch);
-    state.ctx.drawImage(tile, 0, 0, entry.width, entry.height,
-      (cw - dw) / 2, (ch - dh) / 2, dw, dh);
-    state.hasFrame = state.hasPicture = true;
-    state.canvas.classList.add('visible');
-    const when = new Date(stamp * 1000);
-    scrubMessage(`Preview · ${formatTimelineTime(when.getHours() * 3600 + when.getMinutes() * 60 + when.getSeconds())}`);
-    state.lastPreviewAt = performance.now();
-    measureFrame(`overview:${best.hour}:${index}`, stamp, 'overview');
+    if (!state.active || !state.ctx || !video || video.readyState < 2) return false;
+    const width = video.videoWidth || video.clientWidth, height = video.videoHeight || video.clientHeight;
+    if (!width || !height) return false;
+    drawSource(video, 0, 0, width, height);
     return true;
   }
 
-  function prefetchNearbyAtlas(record, direction) {
-    if (!direction || typeof workspaceTimelineRecords === 'undefined') return;
-    if (state.atlasRecordList !== workspaceTimelineRecords || state.atlasRecordIndices.size !== workspaceTimelineRecords.length) {
-      state.atlasRecordList = workspaceTimelineRecords;
-      state.atlasRecordIndices = new Map(workspaceTimelineRecords.map((item, index) => [item.path, index]));
+  // ------------------------------------------------------------- time math
+  function dayStart(date) { return new Date(`${date}T00:00:00`).getTime() / 1000; }
+  function absoluteTimelineSeconds(date, value) { return dayStart(date) + Number(value); }
+  function recordStart(record) {
+    const start = new Date(record?.start).getTime() / 1000;
+    return Number.isFinite(start) ? start : absoluteTimelineSeconds(workspaceTimelineDate, timelineSeconds(record));
+  }
+  function clock(t) {
+    const date = new Date(t * 1000);
+    return [date.getHours(), date.getMinutes(), date.getSeconds()].map(value => String(value).padStart(2, '0')).join(':');
+  }
+  function secondsPerPixel() {
+    const height = typeof verticalTimelineHeight === 'number' && verticalTimelineHeight > 0 ? verticalTimelineHeight : 3600;
+    const length = typeof timelineDayLength === 'function' ? timelineDayLength(workspaceTimelineDate) : 86400;
+    return length / height;
+  }
+  function hourOf(t) { return Math.floor(t / 3600) * 3600; }
+
+  // Pick the frame density from the zoom level and the cursor speed.
+  function desiredLevel() {
+    const spp = secondsPerPixel(), speed = Math.abs(state.velocity);
+    if (spp <= VIDEO_MAX_SPP && speed <= VIDEO_MAX_SPEED && isMp4(state.cursor.record)) return VIDEO;
+    if (spp <= FINE_MAX_SPP && speed <= FINE_MAX_SPEED) return FINE;
+    return COARSE;
+  }
+  // How far a frame may be from the cursor before it is reported as stale.
+  function lagBound(level) {
+    return INTERVAL[level === VIDEO ? FINE : level] * 1.5 + Math.abs(state.velocity) * 0.25;
+  }
+
+  // ------------------------------------------------------------- manifests
+  function hourKey(camera, hour) { return `${camera}:${hour}`; }
+
+  function indexHour(data) {
+    const fine = [];
+    (data.segments || []).forEach(segment => {
+      const perSheet = segment.columns * segment.rows;
+      segment.times.forEach((offset, index) => {
+        const sheet = Math.floor(index / perSheet), cell = index % perSheet;
+        fine.push({ t: segment.start + offset, level: FINE, cell, columns: segment.columns,
+          width: segment.width, height: segment.height,
+          url: `${segment.base}${String(sheet).padStart(3, '0')}.jpg?v=${encodeURIComponent(segment.version)}`,
+          key: `${segment.path}:${index}` });
+      });
+    });
+    fine.sort((a, b) => a.t - b.t);
+    const coarse = (data.coarse?.times || []).map((t, cell) => ({ t, level: COARSE, cell,
+      columns: data.coarse.columns, width: data.coarse.width, height: data.coarse.height,
+      url: data.coarse.url, key: `coarse:${data.hour}:${t}` }));
+    const pending = new Set((data.pending || []).map(item => item.path));
+    return { fine, coarse, pending };
+  }
+
+  function manifestAge(entry) {
+    const hour = entry.hour, now = Date.now() / 1000;
+    return hour + 3600 > now - 60 || entry.index?.pending.size ? 10000 : 300000;
+  }
+
+  function requestHour(hour, priority) {
+    if (!state.camera || hour < 0) return null;
+    const key = hourKey(state.camera, hour);
+    let entry = state.hours.get(key);
+    if (entry && (entry.loading || performance.now() - entry.loadedAt < (entry.error ? 5000 : manifestAge(entry)))) {
+      if (entry.queued) entry.priority = Math.min(entry.priority, priority);
+      return entry;
     }
-    const index = state.atlasRecordIndices.get(record.path) ?? -1;
-    if (index < 0) return;
-    // Ten 30-second segments cover approximately five minutes. Retarget the
-    // pending queue whenever the user changes position or direction.
-    state.atlasPrefetchQueue.clear();
-    for (let step = 1; step <= 10; step++) {
-      const next = workspaceTimelineRecords[index + Math.sign(direction) * step];
-      if (next) prefetchAtlas(next, direction, Number(state.target) + Math.sign(direction) * 24 * step);
+    if (!entry) {
+      entry = { hour, camera: state.camera, index: null, loadedAt: 0, loading: false };
+      state.hours.set(key, entry);
+      while (state.hours.size > 96) {
+        const oldest = state.hours.keys().next().value;
+        if (oldest === key) break;
+        state.hours.delete(oldest);
+      }
     }
-    for (let step = 1; step <= 2; step++) {
-      const previous = workspaceTimelineRecords[index - Math.sign(direction) * step];
-      if (previous) prefetchAtlas(previous, -direction, Number(state.target) - Math.sign(direction) * 24 * step);
+    if (!entry.queued) {
+      entry.queued = true;
+      entry.priority = priority;
+      state.manifestQueue.push(entry);
+    } else entry.priority = Math.min(entry.priority, priority);
+    pumpManifests();
+    return entry;
+  }
+
+  function pumpManifests() {
+    state.manifestQueue.sort((a, b) => a.priority - b.priority);
+    while (state.manifestsInFlight < LIMITS.manifestFetches && state.manifestQueue.length) {
+      const entry = state.manifestQueue.shift();
+      entry.queued = false;
+      if (entry.camera !== state.camera) continue;
+      entry.loading = true;
+      state.manifestsInFlight += 1;
+      metrics.manifestRequests += 1;
+      api(`/api/recordings/preview-track?camera_id=${encodeURIComponent(entry.camera)}&hour=${entry.hour}`)
+        .then(response => { if (!response.ok) throw new Error(`manifest ${response.status}`); return response.json(); })
+        .then(data => { entry.index = indexHour(data); entry.error = false; })
+        .catch(error => { entry.error = true; log('preview:manifest-error', error.message); })
+        .finally(() => {
+          entry.loading = false;
+          entry.loadedAt = performance.now();
+          state.manifestsInFlight -= 1;
+          pumpManifests();
+          wake();
+        });
     }
   }
 
-  function prefetchAtlas(next, direction, predictedSeconds) {
-    if (!next || state.atlasPrefetching.has(next.path) ||
-        (state.atlasPrefetchRetry.get(next.path) || 0) > performance.now()) return;
-    if (state.atlasPrefetching.size >= 2) {
-      state.atlasPrefetchQueue.set(next.path, {next, direction, predictedSeconds});
+  // ---------------------------------------------------------------- sheets
+  function decodedCache(level) { return level === COARSE ? state.decodedCoarse : state.decodedFine; }
+
+  function decodedSheet(frame) {
+    const cache = decodedCache(frame.level), bitmap = cache.get(frame.url);
+    if (bitmap) { cache.delete(frame.url); cache.set(frame.url, bitmap); }
+    return bitmap || null;
+  }
+
+  function storeDecoded(level, url, bitmap) {
+    const cache = decodedCache(level), limit = level === COARSE ? LIMITS.decodedCoarse : LIMITS.decodedFine;
+    cache.set(url, bitmap);
+    while (cache.size > limit) {
+      const oldest = cache.keys().next().value;
+      if (state.displayed?.url !== oldest) cache.get(oldest)?.close?.();
+      cache.delete(oldest);
+    }
+  }
+
+  // `wanted` maps sheet URL -> {level, priority}. Fetches outside the wanted
+  // set are aborted; the browser HTTP cache keeps their bytes for later.
+  function syncSheets(wanted) {
+    for (const [url, sheet] of state.sheets) {
+      if (!wanted.has(url) && sheet.controller) {
+        sheet.controller.abort();
+        metrics.aborted += 1;
+        state.sheets.delete(url);
+      }
+    }
+    const queue = [...wanted.entries()]
+      .filter(([url, item]) => !decodedCache(item.level).has(url) && !state.sheets.has(url))
+      .sort((a, b) => a[1].priority - b[1].priority);
+    for (const [url, item] of queue) {
+      if (state.sheetsInFlight >= LIMITS.sheetFetches) break;
+      fetchSheet(url, item.level);
+    }
+  }
+
+  function fetchSheet(url, level) {
+    const controller = typeof AbortController === 'function' ? new AbortController() : null;
+    const sheet = { controller, level };
+    state.sheets.set(url, sheet);
+    state.sheetsInFlight += 1;
+    metrics.sheetRequests += 1;
+    api(url, controller ? { signal: controller.signal } : {})
+      .then(response => { if (!response.ok) throw new Error(`sheet ${response.status}`); return response.blob(); })
+      .then(blob => {
+        sheet.controller = null;
+        state.decodesInFlight += 1;
+        return Promise.resolve(createImageBitmap(blob)).finally(() => { state.decodesInFlight -= 1; });
+      })
+      .then(bitmap => { storeDecoded(level, url, bitmap); })
+      .catch(error => { if (error?.name !== 'AbortError') log('preview:sheet-error', error?.message); })
+      .finally(() => {
+        state.sheetsInFlight -= 1;
+        if (state.sheets.get(url) === sheet) state.sheets.delete(url);
+        wake();
+      });
+  }
+
+  // ---------------------------------------------------------- frame lookup
+  function hourIndex(hour) {
+    return state.camera ? state.hours.get(hourKey(state.camera, hour))?.index || null : null;
+  }
+
+  function lowerBound(frames, t) {
+    let low = 0, high = frames.length;
+    while (low < high) { const mid = (low + high) >> 1; if (frames[mid].t < t) low = mid + 1; else high = mid; }
+    return low;
+  }
+
+  // Nearest frame of `level` within `bound` seconds of `t`. With `decoded`,
+  // only frames whose sheet is ready to draw are considered.
+  function nearestFrame(level, t, bound, decoded) {
+    let best = null;
+    for (const hour of [hourOf(t), hourOf(t) - 3600, hourOf(t) + 3600]) {
+      if (Math.abs(hour + 1800 - t) > 1800 + bound) continue;
+      const frames = hourIndex(hour)?.[level];
+      if (!frames?.length) continue;
+      const start = lowerBound(frames, t);
+      for (let step = 0; step < frames.length; step++) {
+        const left = start - 1 - step, right = start + step;
+        const candidates = [right < frames.length ? frames[right] : null, left >= 0 ? frames[left] : null];
+        if (!candidates[0] && !candidates[1]) break;
+        let nearer = false;
+        for (const frame of candidates) {
+          if (!frame) continue;
+          const distance = Math.abs(frame.t - t);
+          if (distance > bound || (best && distance >= best.distance)) continue;
+          nearer = true;
+          if (!decoded || decodedSheet(frame)) best = { frame, distance };
+        }
+        if (!nearer) break;
+      }
+    }
+    return best?.frame || null;
+  }
+
+  // --------------------------------------------------------- render loop
+  function wake() {
+    if (state.active && !state.loop) state.loop = requestAnimationFrame(tick);
+  }
+
+  function distanceToCursor(frame) { return frame ? Math.abs(frame.t - state.cursor.t) : Infinity; }
+
+  function paintFrame(frame) {
+    const bitmap = decodedSheet(frame);
+    if (!bitmap) return false;
+    const x = (frame.cell % frame.columns) * frame.width, y = Math.floor(frame.cell / frame.columns) * frame.height;
+    drawSource(bitmap, x, y, frame.width, frame.height);
+    state.displayed = frame;
+    recordPaint(frame, performance.now());
+    return true;
+  }
+
+  function updateLabel(level) {
+    const cursor = state.cursor, shown = state.displayed;
+    if (!cursor.record) return;
+    if (!shown) {
+      const pending = hourIndex(hourOf(cursor.t))?.pending.has(cursor.record.path);
+      scrubMessage(pending ? 'Preparing preview…' : 'Loading preview…');
       return;
     }
-    state.atlasPrefetching.add(next.path);
-    const loadManifest = state.atlasManifests.has(next.path) ? Promise.resolve(state.atlasManifests.get(next.path)) :
-      api(`/api/recordings/scrub-frames?prepare=0&path=${encodeURIComponent(next.path)}`)
-        .then(response => response.ok ? response.json() : null);
-    loadManifest.then(result => {
-      if (!result?.ready || !result.manifest?.frames || !result.urlBase) {
-        // A segment may finish building moments after this check. Retry soon
-        // instead of suppressing a newly available preview for half a minute.
-        state.atlasPrefetchRetry.set(next.path, performance.now() + 5000);
-        if (state.atlasPrefetchRetry.size > 128) state.atlasPrefetchRetry.delete(state.atlasPrefetchRetry.keys().next().value);
-        return;
-      }
-      state.atlasManifests.set(next.path, result);
-      if (state.atlasManifests.size > 16) state.atlasManifests.delete(state.atlasManifests.keys().next().value);
-      if (state.atlasPath === next.path) {
-        state.atlasManifest = result.manifest;
-        state.atlasBase = result.urlBase;
-        scheduleAtlasFrame();
-      }
-      // A mouse-wheel notch moves about 24 seconds. Warm the sheet the next
-      // notch is likely to land on, including the middle of a segment.
-      const predicted = predictedSeconds - timelineSeconds(next);
-      const perSheet = result.manifest.columns * result.manifest.rows;
-      const frame = Math.max(0, Math.min(result.manifest.frames - 1, Math.floor(predicted * result.manifest.fps)));
-      const sheet = Number.isFinite(frame / perSheet) && perSheet > 0
-        ? Math.floor(frame / perSheet) : (direction < 0 ? result.manifest.sheets - 1 : 0);
-      const key = atlasKey(next.path, sheet);
-      if (state.atlasCache.has(key) || state.atlasLoads.has(key)) return;
-      const job = api(result.urlBase + atlasSheetName(sheet), { credentials: 'same-origin' })
-        .then(response => { if (!response.ok) throw new Error('preview unavailable'); return response.blob(); })
-        .then(blob => createImageBitmap(blob)).then(bitmap => {
-          state.atlasCache.set(key, bitmap);
-          if (state.atlasCache.size > 12) {
-            const oldest = state.atlasCache.keys().next().value;
-            state.atlasCache.get(oldest)?.close?.();
-            state.atlasCache.delete(oldest);
-          }
-          if (state.atlasPath === next.path) scheduleAtlasFrame();
-        }).catch(() => {}).finally(() => state.atlasLoads.delete(key));
-      state.atlasLoads.set(key, job);
-      return job;
-    }).catch(() => {}).finally(() => {
-      state.atlasPrefetching.delete(next.path);
-      while (state.atlasPrefetching.size < 2 && state.atlasPrefetchQueue.size) {
-        const [path, queued] = state.atlasPrefetchQueue.entries().next().value;
-        state.atlasPrefetchQueue.delete(path);
-        prefetchAtlas(queued.next, queued.direction, queued.predictedSeconds);
-      }
+    const distance = distanceToCursor(shown);
+    if (distance <= Math.max(INTERVAL[shown.level], 0.5)) scrubMessage('');
+    else if (distance <= lagBound(level)) scrubMessage(`Preview · ${clock(shown.t)}`);
+    else scrubMessage(`Loading preview · showing ${clock(shown.t)}`);
+  }
+
+  function prefetch(level) {
+    const t = state.cursor.t, speed = Math.abs(state.velocity), direction = state.direction;
+    const sheetLevel = level === VIDEO ? FINE : level, interval = INTERVAL[sheetLevel];
+    // Look further ahead the faster the cursor moves; keep a short window
+    // behind so a reversal finds frames already decoded.
+    const ahead = Math.max(interval * (sheetLevel === FINE ? 45 : 8), speed * 2.5);
+    const behind = Math.max(interval * (sheetLevel === FINE ? 15 : 4), speed * 0.5);
+    const from = direction < 0 ? t - ahead : t - behind, to = direction < 0 ? t + behind : t + ahead;
+    const hours = [];
+    for (let hour = hourOf(from); hour <= hourOf(to) && hours.length < 14; hour += 3600) hours.push(hour);
+    hours.forEach(hour => requestHour(hour, Math.abs(hour + 1800 - t)));
+    const wanted = new Map();
+    const want = (frame) => {
+      const distance = Math.abs(frame.t - t), forward = Math.sign(frame.t - t) === direction;
+      const priority = forward || !direction ? distance : distance * 2;
+      const current = wanted.get(frame.url);
+      if (!current || priority < current.priority) wanted.set(frame.url, { level: frame.level, priority });
+    };
+    hours.forEach(hour => {
+      const frames = hourIndex(hour)?.[sheetLevel] || [];
+      for (let i = lowerBound(frames, from); i < frames.length && frames[i].t <= to; i++) want(frames[i]);
     });
-  }
-
-  function warmRecentAtlases() {
-    if (typeof workspaceTimelineRecords === 'undefined' || !workspaceTimelineRecords.length) return;
-    // Start with recent segments while the live view is
-    // already visible, so the first backward wheel notches need less waiting.
-    state.atlasPrefetchQueue.clear();
-    const recent = workspaceTimelineRecords.slice(-10).reverse();
-    const latest = recent[0];
-    const duration = Number(latest.duration) || Number(typeof workspaceTimelineSegmentSeconds === 'undefined' ? 30 : workspaceTimelineSegmentSeconds) || 30;
-    const live = typeof liveTimelineSeconds === 'function' ? liveTimelineSeconds() : null;
-    const start = live ?? (timelineSeconds(latest) + duration);
-    recent.forEach((record, index) => {
-      prefetchAtlas(record, -1, start - 24 * (index + 1));
+    // Keep the sheet under the cursor wanted at every level so a switch of
+    // density never aborts the frame that is about to be drawn.
+    for (const other of [FINE, COARSE]) {
+      const near = nearestFrame(other, t, lagBound(other), false);
+      if (near) want(near);
+    }
+    // Never want more sheets than the decoded cache can hold, or prefetching
+    // would evict the frames it just fetched.
+    const kept = new Map(), counts = { fine: 0, coarse: 0 };
+    [...wanted.entries()].sort((a, b) => a[1].priority - b[1].priority).forEach(([url, item]) => {
+      const limit = item.level === COARSE ? LIMITS.decodedCoarse - 1 : LIMITS.decodedFine - 2;
+      if (counts[item.level] < limit) { counts[item.level] += 1; kept.set(url, item); }
     });
+    syncSheets(kept);
   }
 
-  function prepareVisitedAtlas(record) {
-    if (state.atlasManifest || state.atlasManifests.has(record.path) || state.atlasFailed ||
-        state.atlasWarmPath === record.path || (state.atlasWarmRetry.get(record.path) || 0) > performance.now()) return;
-    clearTimeout(state.atlasWarmTimer);
-    state.atlasWarmPath = record.path;
-    state.atlasWarmTimer = setTimeout(() => {
-      state.atlasWarmPath = null;
-      if (!state.active || state.targetRecord?.path !== record.path) return;
-      state.atlasWarmRetry.set(record.path, performance.now() + 10000);
-      if (state.atlasWarmRetry.size > 128) state.atlasWarmRetry.delete(state.atlasWarmRetry.keys().next().value);
-      // One server-wide worker prepares a visited segment in the background.
-      // Never block preview or recording while it is being prepared.
-      api(`/api/recordings/scrub-frames?prepare=1&path=${encodeURIComponent(record.path)}`)
-        .then(response => response.ok ? response.json() : null)
-        .then(result => {
-          // A background build may finish soon; do not retain an earlier
-          // negative prefetch result when this segment is revisited.
-          state.atlasPrefetchRetry.delete(record.path);
-          if (!result?.ready || !result.manifest?.frames || !result.urlBase) return;
-          state.atlasManifests.set(record.path, result);
-          if (state.atlasPath === record.path) {
-            state.atlasManifest = result.manifest;
-            state.atlasBase = result.urlBase;
-            scheduleAtlasFrame();
-          }
-        }).catch(() => {});
-    }, 150);
-  }
-
-  function loadAtlasSheet(index, pendingFrame = null) {
-    const manifest = state.atlasManifest, path = state.atlasPath, base = state.atlasBase;
-    const key = atlasKey(path, index);
-    if (!manifest || index < 0 || index >= manifest.sheets || state.atlasCache.has(key)) return;
-    let job = state.atlasLoads.get(key);
-    if (!job) {
-      job = api(base + atlasSheetName(index), { credentials: 'same-origin' })
-      .then(response => { if (!response.ok) throw new Error(`atlas ${response.status}`); return response.blob(); })
-      .then(blob => createImageBitmap(blob))
-      .then(bitmap => {
-        // Retain decoded sheets across short recording boundaries. A wheel
-        // gesture commonly crosses several 30-second files and then reverses.
-        state.atlasCache.set(key, bitmap);
-        if (state.atlasCache.size > 12) {
-          const oldest = state.atlasCache.keys().next().value;
-          state.atlasCache.get(oldest)?.close?.();
-          state.atlasCache.delete(oldest);
-        }
-        if (state.atlasPath === path && state.atlasBase === base) scheduleAtlasFrame();
-      }).catch(error => log('scrub:atlas-sheet-error', error.message))
-      .finally(() => state.atlasLoads.delete(key));
-      state.atlasLoads.set(key, job);
+  function tick() {
+    state.loop = 0;
+    if (!state.active || state.cursor.t === null) return;
+    metrics.ticks += 1;
+    const now = performance.now();
+    // Without input the cursor is at rest: its speed decays to zero.
+    if (now - state.lastInputAt > 150) state.velocity *= 0.5;
+    if (Math.abs(state.velocity) < 0.01) state.velocity = 0;
+    const level = desiredLevel();
+    metrics.levels[level] = (metrics.levels[level] || 0) + 1;
+    if (state.cursor.record) {
+      prefetch(level);
+      if (level === VIDEO || (state.cursor.record && isMp4(state.cursor.record) &&
+          hourIndex(hourOf(state.cursor.t))?.pending.has(state.cursor.record.path))) {
+        requestProxy(state.cursor.record);
+      }
+      chaseProxy();
+      const sheetLevel = level === VIDEO ? FINE : level;
+      const bound = lagBound(sheetLevel);
+      const nearestAny = nearestFrame(sheetLevel, state.cursor.t, bound, false);
+      let candidate = nearestFrame(sheetLevel, state.cursor.t, bound, true);
+      if (nearestAny) {
+        if (candidate === nearestAny) metrics.hits += 1; else metrics.misses += 1;
+      }
+      // Use the other density only when this one has nothing near the cursor.
+      if (!candidate) candidate = nearestFrame(sheetLevel === FINE ? COARSE : FINE, state.cursor.t, bound, true);
+      const shown = state.displayed;
+      // Replace the picture only with a frame nearer the cursor, or with an
+      // equally near frame from this zoom level's own density.
+      const nearer = candidate && shown && distanceToCursor(candidate) < distanceToCursor(shown) - 1e-3;
+      const upgrade = candidate && shown && candidate.level === sheetLevel && shown.level !== sheetLevel &&
+        distanceToCursor(candidate) <= distanceToCursor(shown) + 1e-3;
+      if (candidate && candidate.key !== shown?.key && (!shown || shown.stale || nearer || upgrade)) {
+        paintFrame(candidate);
+      } else if (shown?.stale && shown.level !== VIDEO && decodedSheet(shown)) paintFrame({ ...shown, stale: false });
+      updateLabel(sheetLevel);
     }
-    if (!pendingFrame) return;
-    const existing = state.atlasDemands.get(key);
-    if (existing) { existing.frame = pendingFrame; return; }
-    const demand = {frame: pendingFrame};
-    state.atlasDemands.set(key, demand);
-    job.then(() => {
-      const frame = demand.frame, bitmap = state.atlasCache.get(key);
-      if (bitmap && state.active && state.motionDirection &&
-          frame.epoch === state.motionEpoch && frame.camera === state.camera &&
-          frame.date === workspaceTimelineDate && performance.now() - state.lastInputAt < 500 &&
-          (state.atlasPath !== path || Math.floor(state.targetOffset * manifest.fps / (manifest.columns * manifest.rows)) !== index) &&
-          usablePreviewPosition(frame.absolute, state.motionDirection, 900)) {
-        paintAtlasFrame(bitmap, manifest, path, frame.index, frame.absolute, frame.seconds);
-      }
-    }).finally(() => { if (state.atlasDemands.get(key) === demand) state.atlasDemands.delete(key); });
+    // Keep ticking until the cursor has come to rest and its frames are in,
+    // so the resting density (finer than the moving one) gets drawn.
+    const busy = state.sheetsInFlight || state.manifestsInFlight || state.proxySeeking ||
+      now - state.lastInputAt < 600 || state.velocity !== 0 || state.gapPlaying;
+    if (busy) wake();
   }
 
-  function videoPreviewCurrent() {
-    return Boolean((state.sequential || state.reverseVideo) && state.proxyReady &&
-      state.lastVideoPath === state.targetRecord?.path && state.lastVideoPosition !== null &&
-      state.targetAbsolute !== null && performance.now() - state.lastVideoAt < 200 &&
-      Math.abs(state.targetAbsolute - state.lastVideoPosition) <= 0.3);
-  }
-
-  function paintAtlasFrame(bitmap, manifest, path, index, displayed, seconds) {
-    const perSheet = manifest.columns * manifest.rows, cell = index % perSheet;
-    fitCanvas();
-    const cw = state.canvas.width, ch = state.canvas.height;
-    const scale = Math.min(cw / manifest.width, ch / manifest.height);
-    const dw = manifest.width * scale, dh = manifest.height * scale;
-    state.ctx.fillStyle = '#030507';
-    state.ctx.fillRect(0, 0, cw, ch);
-    state.ctx.drawImage(bitmap, (cell % manifest.columns) * manifest.width,
-      Math.floor(cell / manifest.columns) * manifest.height, manifest.width, manifest.height,
-      (cw - dw) / 2, (ch - dh) / 2, dw, dh);
-    state.hasFrame = true;
-    state.hasPicture = true;
-    state.canvas.classList.add('visible');
-    scrubMessage(Math.abs(state.targetAbsolute - displayed) > 1 ? `Preview · ${formatTimelineTime(seconds)}` : '');
-    state.lastPreviewAt = performance.now();
-    measureFrame(`${path}:${index}`, displayed, 'atlas');
-  }
-
-  function scheduleAtlasFrame() {
-    if (state.atlasFrame || !state.active || !state.atlasManifest || videoPreviewCurrent()) return;
-    state.atlasFrame = requestAnimationFrame(() => {
-      state.atlasFrame = 0;
-      const manifest = state.atlasManifest;
-      if (!state.active || !manifest || videoPreviewCurrent() || state.targetRecord?.path !== state.atlasPath) return;
-      const perSheet = manifest.columns * manifest.rows;
-      const targetIndex = Math.min(manifest.frames - 1, Math.max(0, Math.floor(state.targetOffset * manifest.fps)));
-      let index = targetIndex;
-      const recordStart = absoluteTimelineSeconds(workspaceTimelineDate, timelineSeconds(state.targetRecord));
-      const distance = state.lastFrameTime === null ? Infinity : state.targetAbsolute - state.lastFrameTime;
-      if (state.scrubSpeed > 4 && Math.abs(distance) > 1 && Math.abs(distance) <= 30 &&
-          Math.sign(distance) === state.motionDirection) {
-        if (!state.atlasTransitionAt) state.atlasTransitionAt = performance.now();
-        if (performance.now() - state.atlasTransitionAt < 120) {
-          const from = Math.max(0, Math.min(manifest.frames - 1, Math.floor((state.lastFrameTime - recordStart) * manifest.fps)));
-          const difference = targetIndex - from;
-          index = from + Math.sign(difference) * Math.max(1, Math.ceil(Math.abs(difference) * 0.3));
-        }
-      }
-      let sheet = Math.floor(index / perSheet);
-      let key = atlasKey(state.atlasPath, sheet);
-      let bitmap = state.atlasCache.get(key);
-      if (!bitmap && index !== targetIndex) {
-        // Never delay the current target waiting for optional in-between
-        // sheets. Warm them, but use the target immediately if it is ready.
-        loadAtlasSheet(sheet);
-        index = targetIndex;
-        sheet = Math.floor(index / perSheet);
-        key = atlasKey(state.atlasPath, sheet);
-        bitmap = state.atlasCache.get(key);
-      }
-      if (!bitmap) {
-        loadAtlasSheet(sheet, { index, absolute: recordStart + index / manifest.fps,
-          seconds: timelineSeconds(state.targetRecord) + index / manifest.fps,
-          date: workspaceTimelineDate, epoch: state.motionEpoch, camera: state.camera });
-        return;
-      }
-      state.atlasCache.delete(key);
-      state.atlasCache.set(key, bitmap);
-      const displayed = recordStart + index / manifest.fps;
-      paintAtlasFrame(bitmap, manifest, state.atlasPath, index, displayed, timelineSeconds(state.targetRecord) + index / manifest.fps);
-      loadAtlasSheet(sheet + (state.motionDirection >= 0 ? 1 : -1));
-      if (index !== targetIndex) scheduleAtlasFrame();
-      else state.atlasTransitionAt = 0;
-    });
-  }
-
-  function ensureAtlas(record) {
-    if (!record || !ensurePreview()) return false;
-    if (state.atlasPath !== record.path) {
-      state.atlasPath = record.path;
-      state.atlasManifest = null;
-      state.atlasBase = null;
-      state.atlasChecking = state.atlasChecks.get(record.path) || null;
-      state.atlasWaiting = false;
-      state.atlasFailed = false;
-      clearTimeout(state.atlasRetry);
-      if (state.atlasFrame) cancelAnimationFrame(state.atlasFrame);
-      state.atlasFrame = 0;
-      const cached = state.atlasManifests.get(record.path);
-      if (cached) {
-        state.atlasManifest = cached.manifest;
-        state.atlasBase = cached.urlBase;
-        state.atlasManifests.delete(record.path);
-        state.atlasManifests.set(record.path, cached);
-      }
+  // ------------------------------------------------------ video fine scrub
+  function requestProxy(record) {
+    if (!record || !isMp4(record) || !ensurePreview()) return;
+    if (state.proxyPath === record.path) return;
+    if (!state.proxy) {
+      const proxy = document.createElement('video');
+      if (!proxy?.addEventListener) return;
+      proxy.className = 'workspace-scrub-proxy';
+      proxy.muted = true;
+      proxy.preload = 'auto';
+      proxy.setAttribute('playsinline', '');
+      disableNativeControls(proxy);
+      shell().appendChild(proxy);
+      proxy.addEventListener('loadedmetadata', () => { state.proxyReady = true; state.proxySeeking = false; wake(); });
+      proxy.addEventListener('seeked', () => { state.proxySeeking = false; onProxyFrame(); wake(); });
+      proxy.addEventListener('error', () => { state.proxyReady = false; state.proxySeeking = false; });
+      state.proxy = proxy;
     }
-    if (state.atlasManifest) return true;
-    if (state.atlasFailed || state.atlasWaiting || state.atlasChecking ||
-        (state.atlasPrefetchRetry.get(record.path) || 0) > performance.now()) return false;
-    const path = record.path;
-    const check = api(`/api/recordings/scrub-frames?prepare=0&path=${encodeURIComponent(path)}`)
-      .then(response => response.ok ? response.json() : null)
-      .then(result => {
-        if (result?.ready && result.manifest?.frames && result.urlBase) {
-          state.atlasManifests.set(path, result);
-          if (state.atlasManifests.size > 16) state.atlasManifests.delete(state.atlasManifests.keys().next().value);
-          if (state.atlasPath === path) {
-            state.atlasManifest = result.manifest;
-            state.atlasBase = result.urlBase;
-            scheduleAtlasFrame();
-          }
-        } else if (result?.failed && state.atlasPath === path) state.atlasFailed = true;
-        else {
-          if (state.atlasPath !== path) return;
-          state.atlasPrefetchRetry.set(path, performance.now() + 5000);
-          if (state.atlasPrefetchRetry.size > 128) state.atlasPrefetchRetry.delete(state.atlasPrefetchRetry.keys().next().value);
-          state.atlasWaiting = true;
-          state.atlasRetry = setTimeout(() => {
-            state.atlasWaiting = false;
-            if (state.atlasPath === path && state.active) ensureAtlas(record);
-          }, 5000);
-        }
-      }).catch(error => log('scrub:atlas-error', error.message))
-      .finally(() => {
-        state.atlasChecks.delete(path);
-        if (state.atlasPath === path) state.atlasChecking = null;
-      });
-    state.atlasChecking = check;
-    state.atlasChecks.set(path, check);
-    return false;
+    state.proxyPath = record.path;
+    state.proxyRecord = record;
+    state.proxyReady = false;
+    state.proxySeeking = false;
+    state.proxy.src = record.url;
+    state.proxy.load?.();
   }
 
-  function seekProxy() {
-    if (state.proxyFrame || !state.proxyReady || state.proxySeeking || !state.proxy || !state.active || (state.atlasManifest && !state.sequential && !state.reverseVideo)) return;
-    state.proxyFrame = requestAnimationFrame(() => {
-      state.proxyFrame = 0;
-      const desired = state.proxyDesired;
-      if (desired === null || !state.proxyReady || state.proxySeeking || !state.active) return;
-      const proxy = state.proxy;
-      const target = Math.max(0, Math.min(desired, Math.max(0, proxy.duration - 0.125)));
-      if (state.sequential && typeof proxy.requestVideoFrameCallback === 'function' && typeof proxy.play === 'function') {
-        if (Math.abs(proxy.currentTime - target) > 0.3) {
-          proxy.pause();
-          state.lastProxyTime = null;
-          state.proxySeeking = true;
-          try { proxy.currentTime = target; } catch { state.proxySeeking = false; }
-          return;
-        }
-        proxy.playbackRate = Math.max(0.25, Math.min(4, state.scrubSpeed || 1));
-        if (proxy.paused) Promise.resolve(proxy.play()).catch(() => { state.sequential = false; scheduleAtlasFrame(); });
-        return;
-      }
-      if (Math.abs(proxy.currentTime - target) < (state.reverseVideo ? 0.015 : 0.07) && proxy.readyState >= 2) {
-        if (!state.reverseVideo) drawImage(proxy);
-        return;
-      }
-      state.proxySeeking = true;
-      try { proxy.currentTime = target; }
-      catch { state.proxySeeking = false; }
-    });
+  // One seek at a time; the newest cursor position wins. With one keyframe
+  // per second each seek decodes at most a second of footage.
+  function chaseProxy() {
+    const proxy = state.proxy, record = state.cursor.record;
+    if (!proxy || !state.proxyReady || state.proxySeeking || !record || state.proxyPath !== record.path) return;
+    const target = Math.max(0, Math.min(state.cursor.offset, Math.max(0, (proxy.duration || Infinity) - 0.05)));
+    if (Math.abs(proxy.currentTime - target) < 0.02) return;
+    state.proxySeeking = true;
+    try { proxy.currentTime = target; } catch { state.proxySeeking = false; }
   }
 
-  function ensureProxy(record, direct = false) {
-    if (!record || !ensurePreview()) return false;
-    if (!state.proxy && !document.createElement('video').addEventListener) return false;
-    if (state.proxyPath !== record.path) {
-      state.proxy?.pause?.();
-      state.proxyEpoch += 1;
-      state.lastProxyTime = null;
-      state.proxyPath = record.path;
-      state.proxyReady = false;
-      state.proxyLoading = false;
-      state.proxyDesired = null;
-      state.proxySeeking = false;
-      state.proxyChecking = null;
-      state.proxyWaiting = false;
-      state.proxyFailed = false;
-      clearTimeout(state.proxyRetry);
-      if (state.proxyFrame) cancelAnimationFrame(state.proxyFrame);
-      state.proxyFrame = 0;
-      if (state.proxy) {
-        state.proxy.removeAttribute('src');
-        state.proxy.load();
-      }
-    }
-    if (state.proxyReady) return true;
-    if (state.proxyFailed || state.proxyWaiting) return false;
-    if (state.proxyLoading) return false;
-    if (state.proxyChecking) return false;
-    // A browser-playable recording can provide frames immediately while its
-    // dense atlas is being generated. This avoids waiting for a full encode.
-    const path = record.path;
-    const source = direct ? Promise.resolve({ ready: true, url: record.url }) :
-      api(`/api/recordings/trickplay?path=${encodeURIComponent(path)}`)
-        .then(response => response.ok ? response.json() : null);
-    state.proxyChecking = source
-      .then(result => {
-        if (state.proxyPath !== path) return;
-        if (result?.ready && result.url) {
-          if (!state.proxy) {
-            const proxy = document.createElement('video');
-            if (!proxy.addEventListener) return;
-            proxy.className = 'workspace-scrub-proxy';
-            proxy.muted = true;
-            proxy.preload = 'auto';
-            proxy.setAttribute('playsinline', '');
-            shell().appendChild(proxy);
-            proxy.addEventListener('loadedmetadata', () => {
-              if (proxy.currentSrc && proxy.src && proxy.currentSrc !== proxy.src) return;
-              state.proxyReady = true;
-              state.proxyLoading = false;
-              state.proxyDesired = state.targetOffset;
-              seekProxy();
-            });
-            proxy.addEventListener('seeked', () => {
-              if (proxy.currentSrc && proxy.src && proxy.currentSrc !== proxy.src) return;
-              state.proxySeeking = false;
-              if ((state.sequential || state.reverseVideo) && state.active && state.targetRecord?.path === state.proxyPath) {
-                // The frame callback identifies what was actually decoded;
-                // currentTime alone can name the same frame repeatedly.
-                if (state.sequential || Math.abs(proxy.currentTime - state.targetOffset) > 0.08) seekProxy();
-                return;
-              }
-              if (state.active && state.proxyReady && !state.atlasManifest && state.targetRecord?.path === state.proxyPath) {
-                // A seek may complete after the cursor has moved. Keep the
-                // prior frame unless this decode is still near the target.
-                const absolute = absoluteTimelineSeconds(workspaceTimelineDate, timelineSeconds(state.targetRecord) + proxy.currentTime);
-                if (usablePreviewPosition(absolute, state.motionDirection) && drawImage(proxy)) {
-                  state.lastFrameTime = absolute;
-                  if (Math.abs(absolute - state.targetAbsolute) > 0.5) {
-                    scrubMessage(`Preview · ${formatTimelineTime(timelineSeconds(state.targetRecord) + proxy.currentTime)}`);
-                  }
-                }
-                seekProxy();
-              }
-            });
-            proxy.addEventListener('error', () => {
-              state.proxyReady = false; state.proxyLoading = false; state.proxySeeking = false; state.proxyFailed = true;
-              if (state.active && state.atlasManifest) scheduleAtlasFrame();
-              else if (state.active && state.pending) scheduleFrame();
-            });
-            if (typeof proxy.requestVideoFrameCallback === 'function') {
-              const subscribe = () => {
-                const epoch = state.proxyEpoch;
-                state.proxyVideoFrame = proxy.requestVideoFrameCallback((_, metadata) => {
-                subscribe();
-                if (epoch !== state.proxyEpoch) return;
-                const position = Number(metadata.mediaTime);
-                const absolute = Number.isFinite(position) && state.targetRecord
-                  ? absoluteTimelineSeconds(workspaceTimelineDate, timelineSeconds(state.targetRecord) + position) : null;
-                const passed = absolute !== null && state.lastFrameTime !== null && state.motionDirection &&
-                  Math.sign(absolute - state.lastFrameTime) === -state.motionDirection;
-                if (state.sequential && Number.isFinite(position) && position > state.targetOffset + 0.08) proxy.pause();
-                if (state.reverseVideo && state.active && state.proxyReady && !state.proxySeeking && Number.isFinite(position) &&
-                    state.targetRecord?.path === state.proxyPath && Math.abs(position - state.targetOffset) <= 0.15 &&
-                    !passed && (state.lastProxyTime === null || position < state.lastProxyTime)) {
-                  if (drawImage(proxy)) {
-                    state.lastProxyTime = position;
-                    measureFrame(`${state.proxyPath}:${position.toFixed(3)}`, absolute, 'video');
-                  }
-                  return;
-                }
-                if (!state.active || !state.sequential || !state.proxyReady || state.proxySeeking || !Number.isFinite(position) ||
-                    state.targetRecord?.path !== state.proxyPath || position > state.targetOffset + 0.08 ||
-                    position < state.targetOffset - 0.3 ||
-                    passed ||
-                    (state.lastProxyTime !== null && position <= state.lastProxyTime)) return;
-                if (drawImage(proxy)) {
-                  state.lastProxyTime = position;
-                  measureFrame(`${state.proxyPath}:${position.toFixed(3)}`, absolute, 'video');
-                }
-                });
-              };
-              subscribe();
-            }
-            state.proxy = proxy;
-          }
-          state.proxyLoading = true;
-          state.proxy.src = result.url;
-          state.proxy.load();
-        } else if (result?.failed) {
-          state.proxyFailed = true;
-        } else {
-          state.proxyWaiting = true;
-          state.proxyRetry = setTimeout(() => {
-            state.proxyWaiting = false;
-            if (state.proxyPath === path && state.active) ensureProxy(record);
-          }, 2000);
-        }
-      }).catch(error => log('scrub:proxy-error', error.message))
-      .finally(() => { if (state.proxyPath === path) state.proxyChecking = null; });
-    return false;
+  function onProxyFrame() {
+    const proxy = state.proxy, record = state.proxyRecord;
+    if (!state.active || !proxy || proxy.readyState < 2 || !record || state.cursor.record?.path !== record.path) return;
+    const frame = { t: recordStart(record) + proxy.currentTime, level: VIDEO, key: `${record.path}@${proxy.currentTime.toFixed(3)}` };
+    if (state.displayed && distanceToCursor(frame) >= distanceToCursor(state.displayed) - 1e-3) return;
+    const width = proxy.videoWidth, height = proxy.videoHeight;
+    if (!width || !height) return;
+    drawSource(proxy, 0, 0, width, height);
+    state.displayed = frame;
+    recordPaint(frame, performance.now());
+    updateLabel(FINE);
   }
 
-  function requestProxy(record, direct) {
-    if (state.proxyPath === record.path) return ensureProxy(record, direct);
-    if (state.proxyOpenPath === record.path) return false;
-    clearTimeout(state.proxyOpenTimer);
-    state.proxyOpenPath = record.path;
-    state.proxyOpenTimer = setTimeout(() => {
-      state.proxyOpenPath = null;
-      if (!state.active || state.targetRecord?.path !== record.path || (state.atlasManifest && !state.sequential && !state.reverseVideo)) return;
-      if (ensureProxy(record, direct)) {
-        state.proxyDesired = state.targetOffset;
-        seekProxy();
-      }
-    }, 120);
-    return false;
-  }
-
-  async function fetchFrame(request) {
-    state.inFlight += 1;
-    request.startedAt = performance.now();
-    try {
-      const key = frameKey(request);
-      let bitmap = state.frameCache.get(key);
-      if (!bitmap) {
-        let pending = state.frameLoads.get(key);
-        if (!pending) {
-          state.snapshotRequests += 1;
-          const url = `/api/recordings/snapshot?preview=1&path=${encodeURIComponent(request.record.path)}&at=${request.offset.toFixed(2)}`;
-          pending = api(url, { credentials: 'same-origin' })
-            .then(response => { if (!response.ok) throw new Error(`frame request ${response.status}`); return response.blob(); })
-            .then(blob => createImageBitmap(blob)).then(image => {
-              state.frameCache.set(key, image);
-              if (state.frameCache.size > 80) {
-                const oldest = state.frameCache.keys().next().value;
-                const evicted = state.frameCache.get(oldest);
-                if (evicted !== state.lastBitmap) evicted?.close?.();
-                state.frameCache.delete(oldest);
-              }
-              return image;
-            }).finally(() => state.frameLoads.delete(key));
-          state.frameLoads.set(key, pending);
-        }
-        bitmap = await pending;
-      } else {
-        state.frameCache.delete(key);
-        state.frameCache.set(key, bitmap);
-      }
-      // A frame can trail the cursor during a fast move, but cannot replace a
-      // newer frame or a frame from the opposite side after direction changes.
-      if (state.active && request.epoch === state.motionEpoch && request.camera === state.camera &&
-          usablePreviewPosition(request.absolute, state.motionDirection)) drawExtractedFrame(bitmap, request);
-    } catch (error) { log('scrub:frame-error', error.message); }
-    finally {
-      state.inFlight -= 1;
-      if (state.pending && state.active) scheduleFrame();
-    }
-  }
-
-  function scheduleFrame() {
-    if (state.pending && state.frameDelay && state.frameCache.has(frameKey(state.pending))) {
-      clearTimeout(state.frameDelay);
-      state.frameDelay = 0;
-    }
-    if (state.frame || state.frameDelay || !state.pending ||
-        (state.inFlight >= 2 && !state.frameCache.has(frameKey(state.pending)))) return;
-    state.frame = requestAnimationFrame(() => {
-      state.frame = 0;
-      if (!state.active || !state.pending ||
-          (state.inFlight >= 2 && !state.frameCache.has(frameKey(state.pending)))) return;
-      const request = state.pending;
-      const interval = state.frameCache.has(frameKey(request)) ? 0 : Math.max(0, 180 - (performance.now() - state.lastRequestedAt));
-      if (interval) {
-        state.frameDelay = setTimeout(() => { state.frameDelay = 0; scheduleFrame(); }, interval);
-        return;
-      }
-      state.pending = null;
-      state.lastRequestedAt = performance.now();
-      void fetchFrame(request);
-    });
-  }
-
+  // ----------------------------------------------------------- preview on/off
   function showPreview() {
     if (!ensurePreview()) return;
-    state.active = true;
+    if (!state.active) {
+      state.active = true;
+      // Start from the picture the viewer is looking at. Any preview frame
+      // nearer the cursor replaces it.
+      const video = mainVideo();
+      if (drawMainFrame()) {
+        const recording = video.dataset.playback === 'recording' && typeof workspacePlaybackStartSeconds !== 'undefined';
+        const t = recording ? absoluteTimelineSeconds(workspaceTimelineDate, workspacePlaybackStartSeconds + Number(video.currentTime || 0)) : Date.now() / 1000;
+        state.displayed = { t, level: VIDEO, key: `main@${t.toFixed(3)}` };
+      } else if (state.displayed) state.displayed = { ...state.displayed, stale: true };
+    }
     window.workspaceScrubActive = true;
-    if (!state.hasFrame) drawMainFrame();
-    if (state.hasFrame) state.canvas.classList.add('visible');
+    if (state.hasPicture) state.canvas.classList.add('visible');
+    wake();
   }
 
   function hidePreview() {
-    state.sequential = false;
-    state.reverseVideo = false;
-    state.atlasTransitionAt = 0;
-    clearTimeout(state.videoFallbackTimer);
-    state.videoFallbackTimer = 0;
-    state.proxy?.pause?.();
     state.active = false;
     window.workspaceScrubActive = false;
+    if (state.loop) cancelAnimationFrame(state.loop);
+    state.loop = 0;
     clearTimeout(state.commitScheduleTimer);
     clearTimeout(state.commitTimer);
     state.commitScheduleTimer = state.commitTimer = 0;
-    clearTimeout(state.atlasWarmTimer);
-    state.atlasWarmPath = null;
-    state.pending = null;
-    state.lastFrameTime = null;
-    state.motionDirection = 0;
-    state.proxyDesired = null;
-    clearTimeout(state.proxyRetry);
-    clearTimeout(state.proxyOpenTimer);
-    state.proxyOpenPath = null;
-    state.proxyWaiting = false;
-    if (state.proxyFrame) cancelAnimationFrame(state.proxyFrame);
-    state.proxyFrame = 0;
-    if (state.atlasFrame) cancelAnimationFrame(state.atlasFrame);
-    state.atlasFrame = 0;
-    clearTimeout(state.atlasRetry);
-    state.atlasWaiting = false;
+    state.velocity = 0;
+    state.direction = 0;
+    state.proxy?.pause?.();
     if (state.canvas) state.canvas.classList.remove('visible');
     scrubMessage('');
-    if (state.frame) cancelAnimationFrame(state.frame);
-    state.frame = 0;
-    clearTimeout(state.frameDelay);
-    state.frameDelay = 0;
   }
 
   function recordingOffset(record, selected) {
@@ -1029,83 +607,76 @@
     return Number.isFinite(duration) && duration > 0 ? Math.min(offset, Math.max(0, duration - 0.04)) : offset;
   }
 
-  function setTarget(value, velocity, confirmedGap = false) {
+  function updateStatus(message) {
+    const status = document.querySelector('#workspace-player');
+    if (status && message) status.innerHTML = `<span class="notice">${esc(message)}</span>`;
+  }
+
+  // --------------------------------------------------------------- gestures
+  function gesture() {
+    const now = performance.now();
+    if (!state.gesture || state.gesture.ended) {
+      state.gesture = { startedAt: now, commits: 0, moved: false, ended: false };
+      metrics.gestures.push(state.gesture);
+      if (metrics.gestures.length > 200) metrics.gestures.shift();
+    }
+    return state.gesture;
+  }
+
+  function setTarget(value, _velocity, confirmedGap = false) {
     if (!state.gapTicking) stopGapClock();
     const selected = Math.max(0, Math.min(timelineDayLength(workspaceTimelineDate) - 0.001, Number(value) || 0));
     const record = timelineRecordAt(selected);
-    const wasGap = state.target !== null && !state.targetRecord;
-    // A seek started before this movement may still be decoding. Its result
-    // must never hide or overwrite the frame selected by the new movement.
     if (selected !== state.target || record?.path !== state.targetRecord?.path) {
       state.requestToken += 1;
       clearTimeout(state.commitTimer);
     }
     if (state.camera !== window.workspaceCamera) {
       state.camera = window.workspaceCamera;
-      state.motionEpoch += 1;
-      state.lastFrameTime = null;
-      state.lastBitmap = null;
-      state.hasFrame = false;
+      state.displayed = null;
       state.hasPicture = false;
+      state.manifestQueue = [];
       state.canvas?.classList.remove('visible');
     }
-    const absolute = absoluteTimelineSeconds(workspaceTimelineDate, selected);
-    const elapsed = state.lastInputAt ? Math.max(16, performance.now() - state.lastInputAt) : 0;
-    const speed = elapsed && state.targetAbsolute !== null ? Math.abs(absolute - state.targetAbsolute) * 1000 / elapsed : 0;
-    const direction = state.targetAbsolute === null ? 0 : Math.sign(absolute - state.targetAbsolute);
-    if (direction && state.motionDirection && direction !== state.motionDirection) {
-      state.motionEpoch += 1;
-      state.lastProxyTime = null;
-      state.atlasTransitionAt = 0;
+    const now = performance.now(), absolute = absoluteTimelineSeconds(workspaceTimelineDate, selected);
+    if (!state.gapTicking) {
+      const current = gesture();
+      if (state.cursor.t === null || absolute !== state.cursor.t) current.moved = true;
     }
-    if (direction) state.motionDirection = direction;
-    state.lastInputAt = performance.now();
-    state.lastValue = selected;
-    state.target = selected;
+    if (state.cursor.t !== null && state.lastInputAt) {
+      const elapsed = Math.max(8, now - state.lastInputAt), delta = absolute - state.cursor.t;
+      const instant = delta * 1000 / elapsed, direction = Math.sign(delta);
+      if (direction && direction !== state.direction) state.velocity = instant;
+      else state.velocity += (instant - state.velocity) * Math.min(1, elapsed / 120);
+      if (direction) state.direction = direction;
+    }
+    state.lastInputAt = now;
+    state.cursor = { t: absolute, selected, record, offset: record ? recordingOffset(record, selected) : 0, date: workspaceTimelineDate };
+    state.lastValue = state.target = selected;
     state.targetAbsolute = absolute;
     state.targetRecord = record;
-    state.targetOffset = record ? recordingOffset(record, selected) : 0;
-    const sequential = Boolean(record && direction > 0 && speed > 0 && speed <= 4 &&
-      /\.mp4(?:[?#]|$)/i.test(record.url || '') &&
-      typeof HTMLVideoElement !== 'undefined' && typeof HTMLVideoElement.prototype.requestVideoFrameCallback === 'function');
-    if (!sequential && state.sequential) state.proxy?.pause?.();
-    state.sequential = sequential;
-    state.reverseVideo = Boolean(record && direction < 0 && speed > 0 && speed <= 4 &&
-      /\.mp4(?:[?#]|$)/i.test(record.url || '') &&
-      typeof HTMLVideoElement !== 'undefined' && typeof HTMLVideoElement.prototype.requestVideoFrameCallback === 'function');
-    state.scrubSpeed = speed;
+    state.targetOffset = state.cursor.offset;
+    metrics.pendingInputs.push({ at: now, t: absolute });
+    if (metrics.pendingInputs.length > 500) metrics.pendingInputs.shift();
     const playing = mainVideo();
     if (playing?.dataset.playback === 'recording' && !playing.paused) playing.pause();
     showPreview();
-    if (state.scrubSpeed > 4) {
-      warmOverview(absolute, state.motionDirection);
-      paintOverview();
-    }
     if (typeof workspaceTimelineLastValue !== 'undefined') workspaceTimelineLastValue = selected;
     if (typeof verticalTimelineSetPosition === 'function') verticalTimelineSetPosition(selected, false);
     if (typeof updateTimelinePlayhead === 'function') updateTimelinePlayhead(selected);
     if (!record) {
-      log('scrub:gap', { selected });
-      state.pending = null;
-      if (state.frame) cancelAnimationFrame(state.frame);
-      state.frame = 0;
+      // Keep the last picture visible with an explicit label instead of
+      // flashing black for brief gaps between recording segments.
       const date = workspaceTimelineDate;
       const loading = document.querySelector(`.vertical-timeline-day-layer[data-timeline-day="${date}"]`)?.dataset.loading === 'true';
-      if (loading) {
-        // Keep the last picture in place while older days are being indexed.
-        scrubMessage('Loading recordings…');
-        return;
-      }
-      // Keep the last picture visible, with an explicit gap label, instead of
-      // flashing black for brief gaps between recording segments.
+      if (loading) { scrubMessage('Loading recordings…'); return; }
       const hadFrame = state.hasPicture;
       if (!hadFrame) {
         fitCanvas();
         state.ctx.fillStyle = '#030507';
         state.ctx.fillRect(0, 0, state.canvas.width, state.canvas.height);
+        state.hasPicture = true;
       }
-      state.lastFrameTime = null;
-      state.hasFrame = true;
       state.canvas.classList.add('visible');
       if (confirmedGap) {
         scrubMessage(`No recording · ${date} ${formatTimelineTime(selected)}${hadFrame ? ' · last frame shown' : ''}`);
@@ -1116,54 +687,12 @@
       }
       return;
     }
-    scrubMessage('');
-    if (wasGap) updateStatus('Loading recording preview…');
-    const atlasReady = ensureAtlas(record);
-    if (!atlasReady) prepareVisitedAtlas(record);
-    prefetchNearbyAtlas(record, state.motionDirection);
-    if (atlasReady) {
-      scheduleAtlasFrame();
-      if ((state.sequential || state.reverseVideo) && !state.videoFallbackTimer) {
-        // Some browsers report metadata but never deliver frames from the
-        // hidden decoder. Recheck after a short grace period rather than
-        // leaving the last displayed picture frozen indefinitely.
-        state.videoFallbackTimer = setTimeout(() => {
-          state.videoFallbackTimer = 0;
-          if (state.active && !videoPreviewCurrent()) scheduleAtlasFrame();
-        }, 220);
-      }
-    }
-    // Seek the original MP4 while the atlas builds. Older MKV recordings use
-    // snapshots until a compatible proxy is available.
-    const direct = /\.mp4(?:[?#]|$)/i.test(record.url || '');
-    const proxyReady = (state.sequential || state.reverseVideo || !atlasReady) && (state.atlasFailed && !state.sequential && !state.reverseVideo ? requestProxy(record, false) : (direct && requestProxy(record, true)));
-    state.proxyDesired = state.targetOffset;
-    if (proxyReady) {
-      seekProxy();
-    }
-    // Fast scrolling crosses minutes of footage per second. Reusing a
-    // nearby frame avoids redundant decodes; committed playback stays exact.
-    const step = speed > 120 ? 2 : speed > 30 ? 1 : 0.25;
-    const offset = Math.floor(state.targetOffset / step) * step;
-    const difference = state.targetOffset - offset;
-    const request = { selected: selected - difference, record, offset,
-      absolute: absolute - difference, camera: state.camera, direction: state.motionDirection, epoch: state.motionEpoch };
-    if (!atlasReady && (!proxyReady || !videoPreviewCurrent()) && (state.frameCache.has(frameKey(request)) || !state.lastPreviewAt || performance.now() - state.lastPreviewAt >= 200)) {
-      state.pending = request;
-      scheduleFrame();
-    }
+    wake();
   }
 
-  function updateStatus(message) {
-    const status = document.querySelector('#workspace-player');
-    if (status && message) status.innerHTML = `<span class="notice">${esc(message)}</span>`;
-  }
+  // ---------------------------------------------------------------- gaps
+  function userPaused() { return typeof workspaceUserPaused !== 'undefined' && workspaceUserPaused; }
 
-  function userPaused() {
-    return typeof workspaceUserPaused !== 'undefined' && workspaceUserPaused;
-  }
-
-  // Find the next actual segment without skipping the time between segments.
   function nextRecording(seconds) {
     return (typeof workspaceTimelineRecords === 'undefined' ? [] : workspaceTimelineRecords)
       .filter(item => timelineSeconds(item) > seconds)
@@ -1187,7 +716,7 @@
     state.gapPlaying = true;
     state.gapLastTick = performance.now();
     showGapControl();
-    const tick = async () => {
+    const step = async () => {
       if (!state.gapPlaying || userPaused()) { stopGapClock(); showGapControl(); return; }
       const now = performance.now();
       const rate = Math.max(0.01, Number(mainVideo()?.playbackRate) || 1);
@@ -1207,8 +736,7 @@
         await loadCameraTimeline(window.workspaceCamera);
         if (!state.gapPlaying || userPaused() || token !== state.requestToken) return;
         if (workspaceTimelineDate !== nextDate) {
-          stopGapClock();
-          showGapControl();
+          stopGapClock(); showGapControl();
           updateStatus('Unable to load the next day of recordings.');
           return;
         }
@@ -1216,24 +744,15 @@
       }
       if (typeof liveTimelineSeconds === 'function') {
         const live = liveTimelineSeconds();
-        if (live !== null && selected >= live) {
-          stopGapClock();
-          void window.returnWorkspaceToLive();
-          return;
-        }
+        if (live !== null && selected >= live) { stopGapClock(); void window.returnWorkspaceToLive(); return; }
       }
-      const record = timelineRecordAt(selected);
-      if (record) {
-        stopGapClock();
-        void commit(selected);
-        return;
-      }
+      if (timelineRecordAt(selected)) { stopGapClock(); void commit(selected); return; }
       state.gapTicking = true;
       try { setTarget(selected, 0, true); } finally { state.gapTicking = false; }
       showGapControl();
-      state.gapTimer = setTimeout(tick, 250);
+      state.gapTimer = setTimeout(step, 250);
     };
-    state.gapTimer = setTimeout(tick, 250);
+    state.gapTimer = setTimeout(step, 250);
   }
 
   window.toggleWorkspaceGap = function () {
@@ -1241,18 +760,18 @@
     if (state.gapPlaying) {
       if (typeof workspaceUserPaused !== 'undefined') workspaceUserPaused = true;
       stopGapClock();
-      showGapControl();
     } else {
       if (typeof workspaceUserPaused !== 'undefined') workspaceUserPaused = false;
       startGapClock();
     }
+    showGapControl();
     return true;
   };
 
+  // --------------------------------------------------------------- commit
   function canRetryRecording(error, record, converted) {
-    if (converted || !/\.mp4(?:[?#]|$)/i.test(record?.url || '')) return false;
-    // Only retry media format/decode failures. Network and autoplay errors
-    // should not launch a costly server-side conversion.
+    if (converted || !isMp4(record)) return false;
+    // Only media format/decode failures justify a server-side conversion.
     return error?.code === 3 || error?.code === 4 || error?.name === 'NotSupportedError';
   }
 
@@ -1262,11 +781,13 @@
     const video = mainVideo();
     state.requestToken += 1;
     const token = state.requestToken;
+    if (state.gesture && !state.gesture.ended) { state.gesture.commits += 1; state.gesture.ended = true; }
     if (!record) {
-      // Keep the gap overlay visible after release so an earlier recording or
-      // the live stream cannot be mistaken for footage at the selected time.
+      // Keep the gap overlay so earlier footage or live cannot be mistaken
+      // for footage at the selected time.
       if (video && !video.paused) video.pause();
       setTarget(selected, 0, true);
+      if (state.gesture) state.gesture.ended = true;
       if (typeof verticalTimelineUserScrolling !== 'undefined') verticalTimelineUserScrolling = false;
       if (video && typeof setWorkspaceMode === 'function') setWorkspaceMode('recording');
       startGapClock();
@@ -1276,16 +797,15 @@
     const url = converted ? `${record.url}${record.url.includes('?') ? '&' : '?'}format=mp4` : sourceFor(record);
     const sameSource = video && workspacePlaybackUrl === record.url && video.dataset.playback === 'recording' && !converted;
     const same = sameSource && video.readyState >= 1 && !video.error;
-    // Keep the last decoded preview frame over the player while the main
-    // element seeks. Replacing the source first and hiding the preview here
-    // caused the visible black flash during every scrub commit.
+    // Keep the last preview frame over the player while it seeks; hiding it
+    // first is what caused black flashes on commit.
     showPreview();
     if (same) {
-      video.pause();
-      try { video.currentTime = offset; } catch {}
+      if (Math.abs(video.currentTime - offset) > 0.04) {
+        video.pause();
+        try { video.currentTime = offset; } catch {}
+      }
       if (typeof setWorkspaceMode === 'function') setWorkspaceMode('recording');
-      // Some browsers defer decoding a paused seek until playback starts.
-      // Start it behind the preview instead of waiting on a paused element.
       try { await startAndWaitForFrame(video); }
       catch (error) {
         if (token === state.requestToken && canRetryRecording(video.error || error, record, converted)) {
@@ -1358,8 +878,6 @@
     let playback;
     try { playback = Promise.resolve(video.play()); }
     catch (error) { playback = Promise.reject(error); }
-    // Reject promptly if the browser blocks playback; otherwise keep the
-    // preview visible until the first frame has actually decoded.
     return Promise.all([frame, playback]);
   }
 
@@ -1383,12 +901,7 @@
         video.removeEventListener('error', failed);
         error ? reject(error) : resolve();
       };
-      const ready = () => {
-        if (video.seeking || video.readyState < 2) return;
-        // A paused Safari video may not produce another frame callback after
-        // seeked; current data is sufficient to resume and reveal the video.
-        finish();
-      };
+      const ready = () => { if (!video.seeking && video.readyState >= 2) finish(); };
       const failed = () => finish(video.error || new Error('frame decode failed'));
       const timer = setTimeout(() => finish(new Error('frame decode timed out')), 8000);
       video.addEventListener('seeked', ready);
@@ -1399,6 +912,28 @@
     });
   }
 
+  // One gesture ends in one commit. A mouse wheel moves the timeline with
+  // programmatic scrolls, and browsers report `scrollend` after each notch,
+  // so wheel gestures wait for the wheel to go idle instead.
+  function scheduleCommit(delay) {
+    clearTimeout(state.commitTimer);
+    state.commitTimer = setTimeout(() => {
+      state.commitTimer = 0;
+      if (state.pointerDown) return;
+      const sinceWheel = performance.now() - state.lastWheelAt;
+      if (sinceWheel < WHEEL_IDLE_MS) { scheduleCommit(WHEEL_IDLE_MS - sinceWheel + 10); return; }
+      if (state.active && state.lastValue !== null && state.gesture?.moved && !state.gesture.ended) void commit(state.lastValue);
+    }, delay);
+  }
+
+  function warmCurrentHours() {
+    if (!state.camera) return;
+    const now = Date.now() / 1000;
+    requestHour(hourOf(now), 0);
+    requestHour(hourOf(now) - 3600, 1);
+  }
+
+  // ---------------------------------------------------------------- install
   function install() {
     const video = mainVideo();
     if (!video || document.documentElement.dataset.playbackEngineInstalled) return;
@@ -1409,99 +944,83 @@
       window.openLiveWorkspace = async (...args) => {
         const result = await openWorkspace(...args);
         if (window.workspaceCamera === args[0]) {
-          warmRecentAtlases();
           state.camera = window.workspaceCamera;
-          warmOverview(Date.now() / 1000, -1);
+          warmCurrentHours();
         }
         return result;
       };
     }
-    const originalScrub = window.scrubWorkspaceTimeline;
     window.previewWorkspaceTimeline = (value) => setTarget(value, 0);
     window.previewWorkspaceTimelineScrub = (value, velocity) => setTarget(value, velocity);
     window.scrubWorkspaceTimeline = (value) => commit(value);
     const returnToLive = window.returnWorkspaceToLive;
     window.returnWorkspaceToLive = async (...args) => {
       stopGapClock();
-      state.atlasPrefetchQueue.clear();
       state.requestToken += 1;
       clearTimeout(state.commitScheduleTimer);
       clearTimeout(state.commitTimer);
-      clearTimeout(state.atlasWarmTimer);
-      clearTimeout(state.proxyOpenTimer);
-      state.proxyOpenPath = null;
-      state.atlasWarmPath = null;
       state.active = false;
       state.pointerDown = false;
-      state.lastValue = null;
-      state.target = null;
-      state.targetAbsolute = null;
+      state.lastValue = state.target = state.targetAbsolute = null;
       state.targetRecord = null;
-      state.motionDirection = 0;
-      state.motionEpoch += 1;
+      state.cursor = { t: null, selected: null, record: null, offset: 0, date: null };
+      state.velocity = 0;
+      state.direction = 0;
+      if (state.gesture) state.gesture.ended = true;
       window.workspaceScrubActive = false;
       const result = await returnToLive(...args);
-      const video = mainVideo();
-      if (video?.readyState >= 2) hidePreview();
-      else video?.addEventListener('loadeddata', hidePreview, { once: true });
+      const current = mainVideo();
+      if (current?.readyState >= 2) hidePreview();
+      else current?.addEventListener('loadeddata', hidePreview, { once: true });
       return result;
     };
     window.verticalTimelineSeek = (value) => {
-      const now = performance.now();
-      const previous = state.lastValue;
-      const elapsed = state.lastTime ? Math.max(16, now - state.lastTime) : 0;
-      const velocity = previous === null || !elapsed ? 0 : (Number(value) - previous) / (elapsed / 1000);
-      setTarget(value, velocity);
-      state.lastTime = now;
+      setTarget(value, 0);
       clearTimeout(state.commitTimer);
-      // A drag commits on release. Wheel scrolling commits after its momentum
-      // settles; neither path replaces the main video during pointer movement.
     };
+    const onTimeline = event => Boolean(event.target?.closest?.('.vertical-timeline-scroll'));
+    document.addEventListener('wheel', event => { if (onTimeline(event)) state.lastWheelAt = performance.now(); }, { capture: true, passive: true });
     document.addEventListener('scroll', event => {
-      if (!event.target?.closest?.('.vertical-timeline-scroll')) return;
+      if (!onTimeline(event)) return;
       if (typeof verticalTimelineProgrammatic !== 'undefined' && verticalTimelineProgrammatic) return;
       clearTimeout(state.commitTimer);
       if (state.pointerDown) return;
       // The document capture listener runs before the timeline's own scroll
-      // handler. Schedule after propagation, otherwise setTarget cancels the
-      // timer that was just created for this very scroll event.
+      // handler; schedule after propagation so this scroll counts.
       clearTimeout(state.commitScheduleTimer);
       state.commitScheduleTimer = setTimeout(() => {
         state.commitScheduleTimer = 0;
-        if (state.pointerDown) return;
-        clearTimeout(state.commitTimer);
-        state.commitTimer = setTimeout(() => {
-          state.commitTimer = 0;
-          if (state.active && state.lastValue !== null) void commit(state.lastValue);
-        }, 350);
+        if (!state.pointerDown) scheduleCommit(COMMIT_IDLE_MS);
       }, 0);
     }, true);
-    // Browsers that report the end of momentum can start playback immediately
-    // instead of waiting for the fallback debounce after the final scroll.
+    // Native and touch scrolling report the end of momentum, so commit soon
+    // after it. Browsers also fire scrollend after every programmatic scroll
+    // (each wheel notch, keyboard step or scripted move), so a short grace
+    // period lets the next scroll of the same gesture cancel this commit.
     document.addEventListener('scrollend', event => {
-      if (!event.target?.closest?.('.vertical-timeline-scroll')) return;
+      if (!onTimeline(event)) return;
       if (typeof verticalTimelineProgrammatic !== 'undefined' && verticalTimelineProgrammatic) return;
       if (state.pointerDown || !state.active || state.lastValue === null) return;
       if (!state.commitScheduleTimer && !state.commitTimer) return;
       clearTimeout(state.commitScheduleTimer);
-      clearTimeout(state.commitTimer);
-      state.commitScheduleTimer = state.commitTimer = 0;
-      void commit(state.lastValue);
+      state.commitScheduleTimer = 0;
+      scheduleCommit(performance.now() - state.lastWheelAt < WHEEL_IDLE_MS ? WHEEL_IDLE_MS : SCROLLEND_GRACE_MS);
     }, true);
     document.addEventListener('pointerdown', event => {
-      if (event.target?.closest?.('.vertical-timeline-scroll')) {
-        state.pointerDown = true;
-        clearTimeout(state.commitScheduleTimer);
-        clearTimeout(state.commitTimer);
-        state.commitScheduleTimer = state.commitTimer = 0;
-      }
+      if (!onTimeline(event)) return;
+      state.pointerDown = true;
+      gesture();
+      clearTimeout(state.commitScheduleTimer);
+      clearTimeout(state.commitTimer);
+      state.commitScheduleTimer = state.commitTimer = 0;
     }, true);
-    document.addEventListener('pointerup', event => {
+    document.addEventListener('pointerup', () => {
       if (!state.pointerDown) return;
       state.pointerDown = false;
       clearTimeout(state.commitTimer);
       state.commitTimer = 0;
-      if (state.lastValue !== null) void commit(state.lastValue);
+      // A click without movement must not restart normal playback.
+      if (state.lastValue !== null && state.gesture?.moved && !state.gesture.ended) void commit(state.lastValue);
     }, true);
     document.addEventListener('pointercancel', () => { state.pointerDown = false; }, true);
     video.addEventListener('timeupdate', () => {
@@ -1523,12 +1042,12 @@
         else { setTarget(timelineDayLength(workspaceTimelineDate) - 0.001, 0, true); startGapClock(); }
       }
     });
-    window.addEventListener('resize', fitCanvas, { passive: true });
+    window.addEventListener('resize', () => { fitCanvas(); wake(); }, { passive: true });
     new MutationObserver(() => {
       disableNativeControls(mainVideo());
       if (state.active) fitCanvas();
     }).observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['controls', 'src'] });
-    log('installed', { originalScrub: Boolean(originalScrub) });
+    log('installed');
   }
 
   const style = document.createElement('style');

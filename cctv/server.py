@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from collections import OrderedDict
+import hashlib
 import ipaddress
 import json
 import math
@@ -31,6 +32,7 @@ from .recording import (RecorderSupervisor, mp4_duration, prepare_scrub_frames, 
 from .store import Store
 from .server_logs import capture_server_output, read_server_logs
 from .scrub_overview import overview
+from .preview_track import PREVIEW_ROOT, coarse_sheet, hour_manifest, preview_ready
 
 
 ROOT = Path(__file__).parent
@@ -156,6 +158,24 @@ class Handler(BaseHTTPRequestHandler):
             return True
         self.send_json({"error": "authentication required"}, HTTPStatus.UNAUTHORIZED)
         return False
+
+    def send_cached_file(self, path: Path, content_type: str, etag: str, immutable: bool) -> None:
+        """Send a small static file with ETag revalidation."""
+        cache = "private, max-age=31536000, immutable" if immutable else "private, no-cache"
+        if self.headers.get("If-None-Match") == etag:
+            self.send_response(HTTPStatus.NOT_MODIFIED)
+            self.send_header("ETag", etag)
+            self.send_header("Cache-Control", cache)
+            self.end_headers()
+            return
+        body = path.read_bytes()
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("ETag", etag)
+        self.send_header("Cache-Control", cache)
+        self.end_headers()
+        self.wfile.write(body)
 
     def viewer_restricted_path(self, path: str) -> bool:
         """Keep viewer sessions limited to camera viewing and recordings."""
@@ -916,6 +936,51 @@ class Handler(BaseHTTPRequestHandler):
             quality = params.get('detail', [''])[0]
             self.send_json(overview(root, camera, hour, quality) if quality in ('high', 'compact') else overview(root, camera, hour))
             return
+        if parsed.path in {"/api/recordings/preview-track", "/api/recordings/preview-coarse"}:
+            if not self.require_read_auth():
+                return
+            params = parse_qs(parsed.query)
+            camera = params.get("camera_id", [""])[0]
+            try:
+                hour = int(params.get("hour", [""])[0])
+                if not camera or camera.startswith(".") or "/" in camera or "\\" in camera or not 0 <= hour <= 4102444800 or hour % 3600:
+                    raise ValueError("invalid preview request")
+            except ValueError:
+                self.send_json({"error": "invalid preview request"}, HTTPStatus.BAD_REQUEST)
+                return
+            root = Path(getattr(self.server, "recordings_dir", "recordings")).resolve()
+            if (root / camera).resolve().parent != root:
+                self.send_json({"error": "invalid camera"}, HTTPStatus.BAD_REQUEST)
+                return
+            if parsed.path.endswith("/preview-track"):
+                manifest = hour_manifest(root, camera, hour)
+                manifest.pop("_coarse_files", None)
+                body = json.dumps(manifest, separators=(",", ":")).encode()
+                etag = '"' + hashlib.sha1(body).hexdigest()[:20] + '"'
+                # The manifest grows while an hour is recorded: revalidate on
+                # each use, and answer unchanged manifests with 304.
+                if self.headers.get("If-None-Match") == etag:
+                    self.send_response(HTTPStatus.NOT_MODIFIED)
+                    self.send_header("ETag", etag)
+                    self.send_header("Cache-Control", "private, no-cache")
+                    self.end_headers()
+                    return
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("ETag", etag)
+                self.send_header("Cache-Control", "private, no-cache")
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            built = coarse_sheet(root, camera, hour)
+            if not built:
+                self.send_json({"error": "preview not available"}, HTTPStatus.NOT_FOUND)
+                return
+            sheet, version = built
+            self.send_cached_file(sheet, "image/jpeg", f'"{version}"',
+                                  immutable=params.get("v", [""])[0] == version)
+            return
         if parsed.path in {"/api/recordings/trickplay", "/api/recordings/scrub-frames"}:
             if not self.require_read_auth():
                 return
@@ -1043,8 +1108,27 @@ class Handler(BaseHTTPRequestHandler):
             root = Path(getattr(self.server, "recordings_dir", "recordings")).resolve()
             requested = (root / unquote(parsed.path.removeprefix("/recordings/"))).resolve()
             is_atlas = requested.suffix == ".jpg" and (root / ".scrub-frames") in requested.parents
-            if root not in requested.parents or not requested.is_file() or (not is_atlas and requested.suffix not in {".mkv", ".mp4"}):
+            is_preview = requested.suffix == ".jpg" and (root / PREVIEW_ROOT) in requested.parents
+            if root not in requested.parents or not requested.is_file() or (not is_atlas and not is_preview and requested.suffix not in {".mkv", ".mp4"}):
                 self.send_json({"error": "recording not found"}, HTTPStatus.NOT_FOUND)
+                return
+            if is_preview:
+                # Sheet URLs carry the segment manifest version, so a rebuilt
+                # preview gets a new URL and cached sheets never go stale.
+                segment = requested.parent if requested.parent.name != "coarse" else requested.parent.parent
+                try:
+                    relative = segment.relative_to(root / PREVIEW_ROOT)
+                except ValueError:
+                    relative = None
+                source = root / relative.with_suffix(".mp4") if relative and len(relative.parts) == 3 else None
+                if source is not None and not source.is_file():
+                    source = source.with_suffix(".mkv")
+                if source is None or not source.is_file() or not preview_ready(source, segment):
+                    self.send_json({"error": "recording not found"}, HTTPStatus.NOT_FOUND)
+                    return
+                stamp = (segment / "manifest.json").stat().st_mtime_ns
+                self.send_cached_file(requested, "image/jpeg", f'"{stamp}-{requested.stat().st_size}"',
+                                      immutable=parse_qs(parsed.query).get("v", [""])[0] == str(stamp))
                 return
             if is_atlas:
                 relative = requested.parent.relative_to(root / ".scrub-frames")

@@ -227,7 +227,11 @@ def prune_recordings(output_dir: Path, retention_hours: int, now: datetime | Non
             frames = scrub_frames_dir(output_dir, path)
             shutil.rmtree(frames, ignore_errors=True)
             frames.with_suffix(".failed").unlink(missing_ok=True)
+            from .preview_track import remove_preview
+            remove_preview(output_dir, path)
             removed += 1
+    from .preview_track import prune_previews
+    prune_previews(output_dir, retention_hours, (now or datetime.now(timezone.utc)).timestamp())
     for proxy in (output_dir / ".trickplay-cache").glob("**/*.mp4"):
         source = output_dir / proxy.relative_to(output_dir / ".trickplay-cache")
         if not source.is_file() and not source.with_suffix(".mkv").is_file():
@@ -254,13 +258,15 @@ def prune_recordings(output_dir: Path, retention_hours: int, now: datetime | Non
 
 def enforce_storage_limit(output_dir: Path, limit_gb: int) -> int:
     files = sorted(recording_files(output_dir), key=lambda path: path.stat().st_mtime)
+    from .preview_track import preview_size, remove_preview
     def assets_size(path: Path) -> int:
         proxy = trickplay_path(output_dir, path)
         playback = playback_cache_path(output_dir, path)
         frames = scrub_frames_dir(output_dir, path)
         return ((proxy.stat().st_size if proxy.is_file() else 0)
                 + (playback.stat().st_size if playback.is_file() else 0)
-                + sum(frame.stat().st_size for frame in frames.glob("*.jpg")))
+                + sum(frame.stat().st_size for frame in frames.glob("*.jpg"))
+                + preview_size(output_dir, path))
     total = sum(path.stat().st_size + assets_size(path) for path in files)
     removed = 0
     limit = max(1, limit_gb) * 1024**3
@@ -276,6 +282,7 @@ def enforce_storage_limit(output_dir: Path, limit_gb: int) -> int:
         frames = scrub_frames_dir(output_dir, path)
         shutil.rmtree(frames, ignore_errors=True)
         frames.with_suffix(".failed").unlink(missing_ok=True)
+        remove_preview(output_dir, path)
         total -= size + proxy_size
         removed += 1
     return removed
@@ -393,7 +400,7 @@ class RecorderSupervisor:
         self._preview_wake = threading.Event()
         self._processes: dict[str, tuple[subprocess.Popen, tuple[int, int, int], str]] = {}
         self._thread: threading.Thread | None = None
-        self._trickplay_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cctv-trickplay")
+        self._trickplay_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cctv-preview-index")
         self._trickplay_job = None
         self._scrub_oldest_first = False
 
@@ -475,15 +482,15 @@ class RecorderSupervisor:
                     self._processes[camera_id] = (process, config_key, today)
                     print(f"NVR recorder started for {camera_id} (pid {process.pid})", flush=True)
 
-                # Prepare one closed segment at a time without blocking the
-                # stream-copy recorder or opening another camera connection.
+                # Index one closed segment at a time into the preview track,
+                # newest first, without touching the stream-copy recorders or
+                # opening another camera connection. The worker thread is the
+                # persistent indexer; FFmpeg runs once per closed segment.
                 if space_available and (not self._trickplay_job or self._trickplay_job.done()):
-                    source = next_scrub_frame_source(self.output_dir, oldest_first=self._scrub_oldest_first)
+                    from .preview_track import build_segment_preview, next_preview_source
+                    source = next_preview_source(self.output_dir)
                     if source:
-                        fps = SCRUB_BACKFILL_FPS if self._scrub_oldest_first else SCRUB_ATLAS_FPS
-                        self._scrub_oldest_first = not self._scrub_oldest_first
-                        self._trickplay_job = self._trickplay_pool.submit(
-                            prepare_scrub_frames, source, scrub_frames_dir(self.output_dir, source), fps)
+                        self._trickplay_job = self._trickplay_pool.submit(build_segment_preview, self.output_dir, source)
                         self._trickplay_job.add_done_callback(self._preview_finished)
 
                 if time.monotonic() - last_cleanup >= 300:

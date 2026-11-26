@@ -142,7 +142,74 @@ async function checkHistoryRetry() {
   assert.equal(vm.runInContext('verticalTimelineLoadedDays[1].records.length', globals), 1, 'refresh keeps older recording metadata');
 }
 
+function checkZoom() {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'cctv', 'dashboard.html'), 'utf8');
+  const minimum = source.slice(source.indexOf('function verticalTimelineMinimumScroll('), source.indexOf('\nfunction verticalTimelineSecondsFromScroll('));
+  const paging = source.slice(source.indexOf('let verticalTimelineDayPaging='), source.indexOf('\nconst verticalTimelineDayStyle='));
+  const element = (className = '') => {
+    const node = { className, style: {}, dataset: {}, children: [], textContent: '',
+      appendChild(child) { if (child.fragment) node.children.push(...child.children); else node.children.push(child); return child; },
+      setAttribute() {}, addEventListener() {},
+      querySelector(selector) {
+        const day = selector.match(/data-timeline-day="([^"]+)"/)?.[1];
+        return node.children.find(child => (day ? child.dataset.timelineDay === day : selector === `.${child.className}`)) || null;
+      },
+      get childElementCount() { return node.children.length; } };
+    Object.defineProperty(node, 'textContent', { get() { return ''; }, set() { node.children = []; } });
+    return node;
+  };
+  const content = element('vertical-timeline-content'), help = { textContent: '' };
+  const scroll = { scrollTop: 0, clientHeight: 600, dataset: {}, get scrollHeight() { return parseFloat(content.style.height) || 3600; } };
+  const document = {
+    querySelector(selector) {
+      if (selector === '.vertical-timeline-scroll') return scroll;
+      if (selector === '.vertical-timeline-content') return content;
+      if (selector === '.vertical-timeline-label-band') return content.querySelector(selector);
+      if (selector === '.vertical-timeline-help') return help;
+      if (selector === '#workspace-live') return { dataset: { playback: 'recording' } };
+      return null;
+    },
+    querySelectorAll() { return []; },
+    createElement() { return element(); },
+    createDocumentFragment() { const fragment = element(); fragment.fragment = true; return fragment; },
+  };
+  const date = '2026-11-20', frames = [];
+  const globals = { document, window: {}, workspaceTimelineDate: date, workspaceTimelineRecords: [], workspaceTimelineLastValue: 0,
+    workspaceTimelineSegmentSeconds: 30, verticalTimelineHeight: 3600, verticalTimelineProgrammatic: false,
+    localDateKey: () => '2026-11-25', workspaceDayStart: day => new Date(`${day}T00:00:00`), timelineDayLength: () => 86400,
+    formatTimelineTime: value => new Date(Math.floor(value) * 1000).toISOString().slice(11, 19),
+    buildVerticalTimeline() {}, requestAnimationFrame(fn) { frames.push(fn); return frames.length; }, console, setTimeout, clearTimeout };
+  vm.createContext(globals);
+  vm.runInContext(minimum + '\n' + paging + '\nverticalTimelineLoadedDays=[{date:"2026-11-21",records:[]},{date:"2026-11-20",records:[{start:new Date("2026-11-20T09:15:00").toISOString(),duration:30}],loaded:true}];', globals);
+  const at = seconds => { scroll.scrollTop = (2 - seconds / 86400) * 3600 - 26; };
+  at(9 * 3600 + 15 * 60 + 10);
+  const before = vm.runInContext('verticalTimelineSelection()', globals);
+  assert.equal(vm.runInContext('setVerticalTimelineZoom("1h")', globals), true);
+  assert.equal(globals.verticalTimelineHeight, 14400);
+  const after = vm.runInContext('verticalTimelineSelection()', globals);
+  assert.equal(after.date, before.date, 'zoom keeps the selected day');
+  assert.ok(Math.abs(after.seconds - before.seconds) < 0.5, `zoom keeps the selected time (${before.seconds} -> ${after.seconds})`);
+  assert.equal(globals.verticalTimelineProgrammatic, true, 'the zoom reposition does not count as a user scroll');
+  frames.splice(0).forEach(fn => fn());
+  assert.equal(globals.verticalTimelineProgrammatic, false);
+  assert.equal(vm.runInContext('verticalTimelineLabelStep()', globals), 300, '1h zoom labels every five minutes');
+  assert.match(help.textContent, /6 s per wheel notch/);
+  assert.equal(vm.runInContext('setVerticalTimelineZoom("1m")', globals), true);
+  const fine = vm.runInContext('verticalTimelineSelection()', globals);
+  assert.ok(Math.abs(fine.seconds - before.seconds) < 0.5, 'the detailed zoom keeps the selected time');
+  const band = content.querySelector('.vertical-timeline-label-band');
+  assert.ok(band.children.length > 0 && band.children.length < 400, `detailed labels are drawn around the viewport only (${band.children.length})`);
+  assert.equal(vm.runInContext('verticalTimelineLabelStep()', globals), 5);
+  assert.ok(content.children.filter(child => child.dataset.timelineDay).every(layer => layer.children.length < 10), 'day layers skip per-day labels at detailed zoom');
+  vm.runInContext('verticalTimelineLoadedDays=Array.from({length:30},(_, i)=>({date:`2026-10-${String(30-i).padStart(2,"0")}`,records:[]}))', globals);
+  globals.verticalTimelineHeight = 3600;
+  scroll.scrollTop = 25 * 3600;
+  assert.equal(vm.runInContext('setVerticalTimelineZoom("1m")', globals), false, 'zooms that exceed the browser height limit are refused');
+  assert.equal(globals.verticalTimelineHeight, 3600);
+  assert.match(help.textContent, /not available this far back/);
+}
+
 const yesterday = new Date(); yesterday.setDate(yesterday.getDate() - 1);
 const key = date => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-Promise.resolve().then(checkWheelSensitivity).then(checkRecordedDuration).then(() => checkLiveEdge(key(new Date()))).then(() => checkLiveEdge(key(yesterday))).then(checkHistoryRetry)
+Promise.resolve().then(checkWheelSensitivity).then(checkRecordedDuration).then(() => checkLiveEdge(key(new Date()))).then(() => checkLiveEdge(key(yesterday))).then(checkHistoryRetry).then(checkZoom)
   .catch(error => { console.error(error); process.exitCode = 1; });
