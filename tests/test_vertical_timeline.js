@@ -142,7 +142,7 @@ async function checkHistoryRetry() {
   assert.equal(vm.runInContext('verticalTimelineLoadedDays[1].records.length', globals), 1, 'refresh keeps older recording metadata');
 }
 
-function checkZoom() {
+async function checkZoom() {
   const source = fs.readFileSync(path.join(__dirname, '..', 'cctv', 'dashboard.html'), 'utf8');
   const minimum = source.slice(source.indexOf('function verticalTimelineMinimumScroll('), source.indexOf('\nfunction verticalTimelineSecondsFromScroll('));
   const paging = source.slice(source.indexOf('let verticalTimelineDayPaging='), source.indexOf('\nconst verticalTimelineDayStyle='));
@@ -174,7 +174,9 @@ function checkZoom() {
     createDocumentFragment() { const fragment = element(); fragment.fragment = true; return fragment; },
   };
   const date = '2026-11-20', frames = [];
-  const globals = { document, window: {}, workspaceTimelineDate: date, workspaceTimelineRecords: [], workspaceTimelineLastValue: 0,
+  const globals = { document, window: { workspaceCamera: 'cam' }, workspaceTimelineDate: date, workspaceTimelineRecords: [], workspaceTimelineLastValue: 0,
+    verticalTimelineUserScrolling: false, workspaceNextDate: day => new Date(new Date(`${day}T00:00:00`).getTime() + 86400000),
+    api: async () => ({ ok: true, json: async () => ({ recordings: [] }) }),
     workspaceTimelineSegmentSeconds: 30, verticalTimelineHeight: 3600, verticalTimelineProgrammatic: false,
     localDateKey: () => '2026-11-25', workspaceDayStart: day => new Date(`${day}T00:00:00`), timelineDayLength: () => 86400,
     formatTimelineTime: value => new Date(Math.floor(value) * 1000).toISOString().slice(11, 19),
@@ -207,6 +209,21 @@ function checkZoom() {
   assert.equal(vm.runInContext('setVerticalTimelineZoom("1m")', globals), false, 'zooms that exceed the browser height limit are refused');
   assert.equal(globals.verticalTimelineHeight, 3600);
   assert.match(help.textContent, /not available this far back/);
+  // Zoomed out, one day is shorter than the window: earlier days are loaded
+  // so the timeline can scroll, and the selected time is put back.
+  vm.runInContext('verticalTimelineLoadedDays=[{date:"2026-11-25",records:[]}]', globals);
+  globals.verticalTimelineHeight = 3600;
+  globals.localDateKey = () => '2026-11-25';
+  scroll.scrollTop = (1 - 61000 / 86400) * 3600 - 26;
+  globals.workspaceTimelineDate = '2026-11-25';
+  assert.equal(vm.runInContext('setVerticalTimelineZoom("24h")', globals), true);
+  for (let i = 0; i < 20; i++) await new Promise(resolve => setImmediate(resolve));
+  frames.splice(0).forEach(fn => fn());
+  const days = vm.runInContext('verticalTimelineLoadedDays.length', globals);
+  assert.ok(days * 600 >= scroll.clientHeight * 2, `enough earlier days are loaded to scroll at 24h (${days})`);
+  const kept = vm.runInContext('verticalTimelineSelection()', globals);
+  assert.equal(kept.date, '2026-11-25');
+  assert.ok(Math.abs(kept.seconds - 61000) < 300, `the selected time survives the 24h zoom (${kept.seconds})`);
 }
 
 const yesterday = new Date(); yesterday.setDate(yesterday.getDate() - 1);

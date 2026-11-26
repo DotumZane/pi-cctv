@@ -41,7 +41,7 @@ function manifestFor(records, hour) {
       width: 160, height: 90, columns: 16, times: coarse } : null };
 }
 
-function harness({ records, zoom = 14400, realClock = false, holdSheets = false } = {}) {
+function harness({ records, zoom = 14400, realClock = false, holdSheets = false, mainStalls = false } = {}) {
   let fakeClock = 1000;
   const now = () => (realClock ? performance.now() : fakeClock);
   const animationFrames = [], draws = [], requests = [], held = [], listeners = new Map();
@@ -50,10 +50,14 @@ function harness({ records, zoom = 14400, realClock = false, holdSheets = false 
   const message = { textContent: '', setAttribute() {}, classList: { toggle() {} } };
   const context2d = {
     fillRect() {}, set fillStyle(_) {},
-    drawImage(source, sx, sy, sw, sh) { draws.push({ source, sx, sy, sw, sh, at: now(), cursor: env.cursor }); },
+    drawImage(source, sx, sy, sw, sh) {
+      draws.push({ source, sx, sy, sw, sh, at: now(), cursor: env.cursor,
+        mainTime: source === video ? video.currentTime : null, mainSrc: source === video ? video.src : null });
+    },
   };
   const canvas = { width: 0, height: 0, setAttribute() {}, getContext() { return context2d; },
-    classList: { add(name) { visible.add(name); }, remove(name) { visible.delete(name); } } };
+    classList: { add(name) { visible.add(name); }, remove(name) { visible.delete(name); },
+      toggle(name, on) { if (on) visible.add(name); else visible.delete(name); } } };
   function media(name) {
     const own = new Map();
     const element = {
@@ -69,7 +73,11 @@ function harness({ records, zoom = 14400, realClock = false, holdSheets = false 
       dispatch(type) { (own.get(type) || []).slice().forEach(fn => fn({ type })); },
       setAttribute() {}, removeAttribute(name) { if (name === 'controls') this.controls = false; },
       closest() { return host; }, pause() { this.paused = true; },
-      load() { this.loads++; this.readyState = 0; setImmediate(() => { this.readyState = 1; element.dispatch('loadedmetadata'); }); },
+      load() {
+        this.loads++; this.readyState = 0;
+        // A stalled main player (slow network) never reports metadata.
+        if (!(mainStalls && name === 'main')) setImmediate(() => { this.readyState = 1; element.dispatch('loadedmetadata'); });
+      },
       play() { this.plays++; this.paused = false; setImmediate(() => { this.readyState = 2; element.dispatch('canplay'); }); return Promise.resolve(); },
     };
     return element;
@@ -77,6 +85,7 @@ function harness({ records, zoom = 14400, realClock = false, holdSheets = false 
   const host = { appendChild() {} };
   const video = media('main');
   video.dataset.playback = 'live';
+  video.autoplay = true;
   const proxies = [];
   const status = { innerHTML: '' };
   const document = {
@@ -146,7 +155,11 @@ function harness({ records, zoom = 14400, realClock = false, holdSheets = false 
   // Map a draw back to the footage time it shows.
   env.frameTime = draw => {
     const url = draw.source?.id;
-    if (!url) return draw.source === video ? 'main' : draw.source?.name === 'proxy' ? 'video' : null;
+    if (draw.source === video) {
+      const match = draw.mainSrc.match(/(\d\d)-(\d\d)-(\d\d)\.mp4$/);
+      return match ? Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3]) + draw.mainTime : 'main';
+    }
+    if (!url) return draw.source?.name === 'proxy' ? 'video' : null;
     const cell = Math.round(draw.sy / draw.sh) * (url.includes('preview-coarse') ? 16 : 6) + Math.round(draw.sx / draw.sw);
     if (url.includes('preview-coarse')) {
       const hour = Number(new URL(url, 'http://x').searchParams.get('hour'));
@@ -157,6 +170,10 @@ function harness({ records, zoom = 14400, realClock = false, holdSheets = false 
   };
   env.level = draw => (draw.source?.id?.includes('preview-coarse') ? 'coarse' : draw.source?.id ? 'fine' : 'other');
   env.lastSheetDraw = () => [...draws].reverse().find(draw => draw.source?.id);
+  // The latest preview sheet or main-player frame (main frames are exact).
+  env.lastFrameDraw = () => [...draws].reverse().find(draw => draw.source?.id || draw.source === video);
+  // The picture on screen: a preview sheet level, or 'main' for the player.
+  env.shownLevel = () => { const draw = draws.at(-1); return draw?.source === video ? 'main' : env.level(draw); };
   return env;
 }
 const timelineTarget = { closest: () => true };
@@ -180,12 +197,12 @@ async function forwardAndReverse() {
     }
     // The speed estimate needs a few events to reach full speed.
     assert.ok(env.draws.slice(settled).every(draw => env.level(draw) === 'coarse'), 'fast movement uses one density: the coarse track');
-    // At rest the per-second track takes over and lands on the cursor.
+    // At rest a sharper frame takes over and lands on the cursor: the
+    // per-second track, then the prepared main player.
     env.advance(400);
     await env.frames(10);
-    const last = env.lastSheetDraw();
-    assert.equal(env.level(last), 'fine', 'a resting cursor shows the per-second frame');
-    assert.equal(env.frameTime(last), env.cursor, 'the resting frame is the requested second');
+    assert.ok(['fine', 'main'].includes(env.shownLevel()), `a resting cursor shows a sharp frame (${env.shownLevel()})`);
+    assert.equal(env.frameTime(env.lastFrameDraw()), env.cursor, 'the resting frame is the requested time');
     const metrics = env.metrics();
     assert.ok(metrics.uniqueFrames >= 20);
     assert.ok(metrics.renderFps >= metrics.fps, 'canvas ticks and distinct frames are counted separately');
@@ -201,7 +218,7 @@ async function rapidDirectionChanges() {
   await env.frames(6);
   let cursor = 21900;
   const pattern = [...Array(8).fill(2), ...Array(8).fill(-2), ...Array(8).fill(2), ...Array(8).fill(-2)];
-  let previous = env.frameTime(env.lastSheetDraw());
+  let previous = env.frameTime(env.lastFrameDraw());
   for (const step of pattern) {
     cursor += step;
     const before = env.draws.length;
@@ -216,7 +233,7 @@ async function rapidDirectionChanges() {
   }
   env.advance(400);
   await env.frames(8);
-  assert.equal(env.frameTime(env.lastSheetDraw()), cursor, 'after reversals the preview settles on the cursor');
+  assert.equal(env.frameTime(env.lastFrameDraw()), cursor, 'after reversals the preview settles on the cursor');
 }
 
 async function wheelGestureCommitsOnce() {
@@ -260,17 +277,22 @@ async function wheelGestureCommitsOnce() {
 }
 
 async function zoomSelectsDensity() {
-  const env = harness({ records: makeRecords(21600, 20), zoom: 3600 });
-  await env.move(21700, { frames: 6 });
+  const env = harness({ records: makeRecords(21600, 40), zoom: 3600 });
+  await env.move(21700, { stepMs: 400, frames: 6 });
+  env.draws.length = 0;
+  // 4h zoom: one wheel notch is 24 s; notches 16 ms apart are 1500 s/s.
+  for (let i = 1; i <= 12; i++) await env.move(21700 + i * 24);
+  const moving = env.draws.filter(draw => draw.source?.id).slice(3);
+  assert.ok(moving.length > 0 && moving.every(draw => env.level(draw) === 'coarse'), 'the moving 4h zoom uses 15 s frames');
   env.advance(400);
-  await env.frames(6);
-  assert.equal(env.level(env.lastSheetDraw()), 'coarse', 'the 4h zoom (24 s per pixel) uses 15 s frames');
+  await env.frames(30);
+  assert.ok(['fine', 'main'].includes(env.shownLevel()), `at rest the 4h zoom sharpens (${env.shownLevel()})`);
   env.setZoom(14400);
   await env.move(21701, { stepMs: 400, frames: 6 });
   env.advance(400);
-  await env.frames(6);
+  await env.frames(30);
   assert.equal(env.level(env.lastSheetDraw()), 'fine', 'the 1h zoom uses per-second frames');
-  assert.equal(env.frameTime(env.lastSheetDraw()), 21701, 'the selected timestamp is kept across zoom changes');
+  assert.equal(env.frameTime(env.lastFrameDraw()), 21701, 'the selected timestamp is kept across zoom changes');
   env.setZoom(172800);
   await env.move(21701.5, { stepMs: 400, frames: 6 });
   assert.equal(env.proxies.length, 1, 'detailed zooms decode the recording itself');
@@ -282,26 +304,25 @@ async function zoomSelectsDensity() {
 }
 
 async function sourceConsistency() {
-  const env = harness({ records: makeRecords(21600, 20), zoom: 14400 });
+  const env = harness({ records: makeRecords(21600, 120), zoom: 14400 });
   await env.move(21700, { stepMs: 400, frames: 6 });
   env.advance(400);
-  await env.frames(6);
-  assert.equal(env.level(env.lastSheetDraw()), 'fine');
-  // Zoomed out, a decoded per-second sheet is near the cursor, but the
-  // coarse track is the source for this zoom level.
+  await env.frames(30);
+  assert.ok(['fine', 'main'].includes(env.shownLevel()));
+  // Zoomed out and moving, decoded per-second sheets are near the cursor,
+  // but the coarse track is the source for this zoom level.
   env.setZoom(600);
   env.draws.length = 0;
-  await env.move(21705, { stepMs: 400, frames: 6 });
-  env.advance(400);
-  await env.frames(6);
-  assert.ok(env.draws.length > 0);
+  for (let i = 1; i <= 20; i++) await env.move(21700 + i * 144);
+  const sheets = env.draws.filter(draw => draw.source?.id);
+  const first = sheets.findIndex(draw => env.level(draw) === 'coarse');
+  assert.ok(first >= 0, 'the 24h zoom shows the coarse track');
   // Until the hour's coarse sheet arrives, an already decoded per-second
   // frame may stand in; once the zoom's own density is on screen, it stays.
-  const first = env.draws.findIndex(draw => env.level(draw) === 'coarse');
-  assert.ok(first >= 0, 'the 24h zoom shows the coarse track');
-  assert.ok(env.draws.slice(first).every(draw => env.level(draw) === 'coarse'), 'the 24h zoom does not mix in per-second frames');
-  for (const second of [21712, 21731, 21755]) await env.move(second, { stepMs: 400, frames: 4 });
-  assert.ok(env.draws.slice(first).every(draw => env.level(draw) === 'coarse'), 'later moves stay on the coarse track');
+  assert.ok(sheets.slice(first).every(draw => env.level(draw) === 'coarse'), 'the moving 24h zoom does not mix in per-second frames');
+  env.advance(400);
+  await env.frames(30);
+  assert.ok(['fine', 'main'].includes(env.shownLevel()), `at rest a sharper frame replaces the 160x90 one (${env.shownLevel()})`);
 }
 
 async function segmentBoundaries() {
@@ -310,18 +331,18 @@ async function segmentBoundaries() {
   const shown = [];
   for (let second = 21626; second <= 21636; second++) {
     await env.move(second, { stepMs: 250, frames: 4 });
-    shown.push(env.frameTime(env.lastSheetDraw()));
+    shown.push(env.frameTime(env.lastFrameDraw()));
   }
   assert.deepEqual(shown, [21626, 21627, 21628, 21629, 21630, 21631, 21632, 21633, 21634, 21635, 21636],
     'slow movement shows every second across the 06:00:30 segment boundary');
 }
 
 async function cacheMisses() {
-  const env = harness({ records: makeRecords(21600, 160), holdSheets: true });
+  const env = harness({ records: makeRecords(21600, 160), holdSheets: true, mainStalls: true });
   await env.move(21700, { stepMs: 400, frames: 4 });
   env.held.splice(0).forEach(item => item.resolve());
   await env.frames(6);
-  assert.equal(env.frameTime(env.lastSheetDraw()), 21700);
+  assert.equal(env.frameTime(env.lastFrameDraw()), 21700);
   const draws = env.draws.length;
   // Jump into the next hour while its sheets are still downloading.
   env.advance(5000);
@@ -334,27 +355,53 @@ async function cacheMisses() {
   assert.ok(env.metrics().abortedRequests > 0, 'obsolete sheet requests are aborted');
   env.advance(400);
   for (let i = 0; i < 20; i++) { env.held.splice(0).forEach(item => item.resolve()); await env.frames(1); }
-  assert.equal(env.frameTime(env.lastSheetDraw()), 21610, 'the frame for the latest cursor appears once loaded');
+  assert.equal(env.frameTime(env.lastFrameDraw()), 21610, 'the frame for the latest cursor appears once loaded');
   assert.ok(env.metrics().cacheMisses > 0);
 }
 
 async function scrubToPlayback() {
   const env = harness({ records: makeRecords(21600, 4) });
-  await env.move(21650, { stepMs: 400, frames: 6 });
-  assert.equal(env.video.loads, 0, 'scrubbing never loads the main player');
-  assert.equal(env.visible.has('visible'), true);
-  await env.window.scrubWorkspaceTimeline(21650);
+  for (const second of [21640, 21645, 21650]) await env.move(second, { stepMs: 16, frames: 1 });
+  assert.equal(env.video.loads, 0, 'the main player is untouched while the cursor moves');
+  // At rest the main player is prepared behind the preview, and its full
+  // resolution frame replaces the small preview frame.
+  env.advance(400);
+  await env.frames(30);
+  assert.equal(env.video.loads, 1);
   assert.equal(env.video.src, '/recordings/cam-1/2026-11-12/06-00-30.mp4');
   assert.equal(env.video.currentTime, 20);
+  assert.equal(env.video.paused, true, 'preparing does not start playback');
+  assert.equal(env.video.autoplay, false, 'the live autoplay attribute cannot start the prepared recording');
+  assert.equal(env.draws.at(-1).source, env.video, 'the sharp frame of the main player is shown at rest');
+  assert.equal(env.visible.has('visible'), true);
+  const seeks = env.video.seeks;
+  // Keep the render loop running during the commit: it must not pause the
+  // player the commit is starting.
+  const pauses = [];
+  const realPause = env.video.pause;
+  env.video.pause = function () { pauses.push(performance.now()); return realPause.call(this); };
+  const committed = env.window.scrubWorkspaceTimeline(21650);
+  await env.frames(10);
+  await committed;
+  env.video.pause = realPause;
+  assert.equal(pauses.length, 0, 'preparation never pauses the player during a commit');
+  assert.equal(env.status.innerHTML.includes('Playing recording.'), true, 'the status reports recording playback');
+  assert.equal(env.video.loads, 1, 'the commit reuses the prepared player');
+  assert.equal(env.video.seeks, seeks, 'the prepared position is not re-seeked');
   assert.equal(env.video.paused, false);
   assert.equal(env.visible.has('visible'), false, 'the preview hides once the player shows its first frame');
   assert.equal(env.video.controls, false, 'browser-native controls stay disabled');
   // Committing the time that is already playing does not restart it.
-  env.globals.workspacePlaybackUrl = env.video.src;
-  const seeks = env.video.seeks;
   await env.window.scrubWorkspaceTimeline(21650);
   assert.equal(env.video.loads, 1);
   assert.equal(env.video.seeks, seeks, 'the same position is not re-seeked');
+  // Moving again before the commit leaves the prepared player alone until
+  // the cursor rests at the new position.
+  await env.move(21700, { stepMs: 16, frames: 2 });
+  assert.equal(env.video.paused, true, 'scrubbing pauses playback');
+  assert.equal(env.video.loads, 1);
+  await env.window.returnWorkspaceToLive();
+  assert.equal(env.video.autoplay, true, 'returning to live restores autoplay');
 }
 
 async function missingRecordingsAndPreviews() {
@@ -369,18 +416,30 @@ async function missingRecordingsAndPreviews() {
   await env.window.scrubWorkspaceTimeline(21900);
   assert.match(env.message.textContent, /No recording .* last frame shown/, 'a committed gap is labelled');
   assert.equal(env.visible.has('visible'), true);
+  assert.equal(env.visible.has('stale'), true, 'the held frame is dimmed in a gap');
+  // Before the first recording, the label says when footage starts.
+  await env.window.scrubWorkspaceTimeline(21000);
+  assert.match(env.message.textContent, /next recording 06:00:00/);
+  await env.move(21650, { stepMs: 400, frames: 8 });
+  assert.equal(env.visible.has('stale'), false, 'returning to footage removes the dimming');
   // A closed segment without a preview yet: label it and decode the MP4.
   await env.move(21695, { stepMs: 400, frames: 8 });
   assert.equal(env.proxies.length, 1, 'a segment without preview frames falls back to the recording');
   assert.match(env.proxies[0].src, /06-01-30\.mp4$/);
   await env.frames(4);
-  assert.equal(env.draws.at(-1).source.name, 'proxy', 'the decoded recording frame is shown');
+  assert.ok(['proxy', 'main'].includes(env.draws.at(-1).source.name), 'a frame decoded from the recording is shown');
+  assert.equal(env.frameTime(env.draws.at(-1)) === 'video' || env.frameTime(env.draws.at(-1)) === 21695, true);
   // Unavailable manifests (server error) leave the picture in place.
   const failing = harness({ records: makeRecords(21600, 4) });
   failing.globals.api = () => Promise.resolve({ ok: false, status: 503 });
-  await failing.move(21650, { stepMs: 400, frames: 6 });
+  await failing.move(21640, { stepMs: 16, frames: 2 });
+  await failing.move(21650, { stepMs: 16, frames: 2 });
   assert.equal(failing.draws.filter(draw => draw.source?.id).length, 0);
-  assert.match(failing.message.textContent, /Loading preview/);
+  assert.match(failing.message.textContent, /Loading preview/, 'a moving cursor without preview data says so');
+  failing.advance(400);
+  await failing.frames(30);
+  assert.equal(failing.frameTime(failing.draws.at(-1)), 21650, 'at rest the recording itself provides the frame');
+  assert.equal(failing.message.textContent, '');
 }
 
 Promise.resolve()

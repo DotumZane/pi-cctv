@@ -30,7 +30,7 @@
   // Detailed zooms decode the recording itself for sub-second positions.
   const VIDEO_MAX_SPP = 0.6, VIDEO_MAX_SPEED = 30;
   const LIMITS = { decodedFine: 16, decodedCoarse: 4, sheetFetches: 4, manifestFetches: 3, decodes: 2 };
-  const COMMIT_IDLE_MS = 350, WHEEL_IDLE_MS = 300, SCROLLEND_GRACE_MS = 120;
+  const COMMIT_IDLE_MS = 350, WHEEL_IDLE_MS = 300, SCROLLEND_GRACE_MS = 120, REST_AFTER_MS = 120, PREPARE_AFTER_MS = 120;
 
   const state = {
     canvas: null, ctx: null, message: null, proxy: null,
@@ -189,6 +189,7 @@
     state.ctx.fillRect(0, 0, cw, ch);
     state.ctx.drawImage(source, sx, sy, sw, sh, (cw - dw) / 2, (ch - dh) / 2, dw, dh);
     state.hasPicture = true;
+    state.canvas.classList.remove('stale');
     if (state.active) state.canvas.classList.add('visible');
   }
 
@@ -223,9 +224,12 @@
   function desiredLevel() {
     const spp = secondsPerPixel(), speed = Math.abs(state.velocity);
     if (spp <= VIDEO_MAX_SPP && speed <= VIDEO_MAX_SPEED && isMp4(state.cursor.record)) return VIDEO;
-    if (spp <= FINE_MAX_SPP && speed <= FINE_MAX_SPEED) return FINE;
+    // A cursor at rest always gets per-second frames, whatever the zoom.
+    if ((spp <= FINE_MAX_SPP && speed <= FINE_MAX_SPEED) || speed === 0) return FINE;
     return COARSE;
   }
+  // Sharper sources win ties: the 160x90 track, 256x144 track, full video.
+  const DETAIL = { coarse: 0, fine: 1, video: 2 };
   // How far a frame may be from the cursor before it is reported as stale.
   function lagBound(level) {
     return INTERVAL[level === VIDEO ? FINE : level] * 1.5 + Math.abs(state.velocity) * 0.25;
@@ -481,9 +485,9 @@
     if (!state.active || state.cursor.t === null) return;
     metrics.ticks += 1;
     const now = performance.now();
-    // Without input the cursor is at rest: its speed decays to zero.
-    if (now - state.lastInputAt > 150) state.velocity *= 0.5;
-    if (Math.abs(state.velocity) < 0.01) state.velocity = 0;
+    // Scroll events arrive at least every few frames while anything moves;
+    // a short silence means the cursor is at rest.
+    if (now - state.lastInputAt > REST_AFTER_MS) state.velocity = 0;
     const level = desiredLevel();
     metrics.levels[level] = (metrics.levels[level] || 0) + 1;
     if (state.cursor.record) {
@@ -509,18 +513,69 @@
       // Replace the picture only with a frame nearer the cursor, or with an
       // equally near frame from this zoom level's own density.
       const nearer = candidate && shown && distanceToCursor(candidate) < distanceToCursor(shown) - 1e-3;
-      const upgrade = candidate && shown && candidate.level === sheetLevel && shown.level !== sheetLevel &&
+      const upgrade = candidate && shown && candidate.level === sheetLevel && DETAIL[candidate.level] > DETAIL[shown.level] &&
         distanceToCursor(candidate) <= distanceToCursor(shown) + 1e-3;
       if (candidate && candidate.key !== shown?.key && (!shown || shown.stale || nearer || upgrade)) {
         paintFrame(candidate);
       } else if (shown?.stale && shown.level !== VIDEO && decodedSheet(shown)) paintFrame({ ...shown, stale: false });
       updateLabel(sheetLevel);
+      if (state.velocity === 0 && !state.pointerDown && now - state.lastInputAt > PREPARE_AFTER_MS) prepareMain();
     }
     // Keep ticking until the cursor has come to rest and its frames are in,
     // so the resting density (finer than the moving one) gets drawn.
     const busy = state.sheetsInFlight || state.manifestsInFlight || state.proxySeeking ||
       now - state.lastInputAt < 600 || state.velocity !== 0 || state.gapPlaying;
     if (busy) wake();
+  }
+
+  // --------------------------------------------------- main player at rest
+  // Once the cursor stops, load and seek the main player at that position
+  // behind the preview. Its full-resolution frame replaces the small preview
+  // frame, and the commit that follows only has to press play.
+  function prepareMain() {
+    const record = state.cursor.record, video = mainVideo();
+    if (!record || !video || !isMp4(record) || !state.active ||
+        (state.commitToken && state.commitToken === state.requestToken)) return;
+    const offset = state.cursor.offset, prepared = state.prepared;
+    if (prepared && prepared.token === state.requestToken) return;
+    const token = state.requestToken;
+    state.prepared = { token, path: record.path, offset };
+    const seek = () => {
+      if (token !== state.requestToken || !state.active) return;
+      const target = Number.isFinite(video.duration) ? Math.min(offset, Math.max(0, video.duration - 0.05)) : offset;
+      if (!video.seeking && video.readyState >= 2 && Math.abs(video.currentTime - target) < 0.02) { showMainAtRest(record, token); return; }
+      video.addEventListener('seeked', () => showMainAtRest(record, token), { once: true });
+      try { video.currentTime = target; } catch {}
+    };
+    if (workspacePlaybackUrl === record.url && video.dataset.playback === 'recording' && video.readyState >= 1 && !video.error) {
+      video.pause();
+      seek();
+      return;
+    }
+    disableNativeControls(video);
+    // The live view relies on autoplay; a prepared recording must stay
+    // paused until the commit plays it. Live view turns autoplay back on.
+    video.autoplay = false;
+    video.pause();
+    video.onerror = null;
+    if (typeof stopLivePlayback === 'function') stopLivePlayback(video);
+    video.dataset.playback = 'recording';
+    video.addEventListener('loadedmetadata', seek, { once: true });
+    video.src = record.url;
+    video.load();
+    workspacePlaybackUrl = record.url;
+    workspacePlaybackStartSeconds = timelineSeconds(record);
+  }
+
+  function showMainAtRest(record, token) {
+    const video = mainVideo();
+    if (token !== state.requestToken || !state.active || state.cursor.record?.path !== record.path || !video || video.readyState < 2) return;
+    const frame = { t: recordStart(record) + video.currentTime, level: VIDEO, key: `main@${record.path}@${video.currentTime.toFixed(3)}` };
+    if (state.displayed && distanceToCursor(frame) > distanceToCursor(state.displayed) + 0.05) return;
+    if (!drawMainFrame()) return;
+    state.displayed = frame;
+    recordPaint(frame, performance.now());
+    updateLabel(FINE);
   }
 
   // ------------------------------------------------------ video fine scrub
@@ -684,8 +739,12 @@
         state.hasPicture = true;
       }
       state.canvas.classList.add('visible');
+      // The held picture is older or newer footage: dim it so it is never
+      // mistaken for the selected time, and say when footage resumes.
+      state.canvas.classList.toggle('stale', hadFrame);
       if (confirmedGap) {
-        scrubMessage(`No recording · ${date} ${formatTimelineTime(selected)}${hadFrame ? ' · last frame shown' : ''}`);
+        const next = nextRecording(selected);
+        scrubMessage(`No recording · ${date} ${formatTimelineTime(selected)}${hadFrame ? ' · last frame shown' : ''}${next ? ` · next recording ${formatTimelineTime(timelineSeconds(next))}` : ''}`);
         updateStatus('No recording is available at the selected time.');
       } else {
         scrubMessage('');
@@ -693,6 +752,8 @@
       }
       return;
     }
+    // Back on footage: the label, not dimming, reports any remaining lag.
+    state.canvas?.classList.remove('stale');
     wake();
   }
 
@@ -799,6 +860,14 @@
       startGapClock();
       return;
     }
+    // Preparation must not touch the player while the current commit is
+    // using it. A commit superseded by new movement no longer blocks it.
+    state.commitToken = token;
+    try { return await commitRecording(record, selected, video, token, converted); }
+    finally { if (state.commitToken === token) state.commitToken = 0; }
+  }
+
+  async function commitRecording(record, selected, video, token, converted) {
     const offset = recordingOffset(record, selected);
     const url = converted ? `${record.url}${record.url.includes('?') ? '&' : '?'}format=mp4` : sourceFor(record);
     const sameSource = video && workspacePlaybackUrl === record.url && video.dataset.playback === 'recording' && !converted;
@@ -826,12 +895,12 @@
         drawMainFrame();
         if (typeof verticalTimelineUserScrolling !== 'undefined') verticalTimelineUserScrolling = false;
         if (typeof updateTimelinePlayhead === 'function') updateTimelinePlayhead(selected);
+        updateStatus(userPaused() ? 'Recording paused.' : 'Playing recording.');
         if (token !== state.requestToken) return;
         hidePreview();
       }
       return;
     }
-    state.committing = true;
     updateStatus('Loading selected recording…');
     disableNativeControls(video);
     video.pause();
@@ -876,7 +945,7 @@
       }
       if (token === state.requestToken) handlePlaybackStartError(error);
       log('commit:error', error);
-    } finally { state.committing = false; }
+    }
   }
 
   function startAndWaitForFrame(video) {
@@ -948,6 +1017,9 @@
     const openWorkspace = window.openLiveWorkspace;
     if (typeof openWorkspace === 'function') {
       window.openLiveWorkspace = async (...args) => {
+        const live = mainVideo();
+        if (live) live.autoplay = true;
+        state.prepared = null;
         const result = await openWorkspace(...args);
         if (window.workspaceCamera === args[0]) {
           state.camera = window.workspaceCamera;
@@ -974,6 +1046,9 @@
       state.direction = 0;
       if (state.gesture) state.gesture.ended = true;
       window.workspaceScrubActive = false;
+      const live = mainVideo();
+      if (live) live.autoplay = true;
+      state.prepared = null;
       const result = await returnToLive(...args);
       const current = mainVideo();
       if (current?.readyState >= 2) hidePreview();
@@ -1060,6 +1135,7 @@
   style.textContent = `
     .workspace-scrub-frame { position:absolute; inset:0; z-index:5; width:100%; height:100%; object-fit:contain; display:none; pointer-events:none; background:#030507; }
     .workspace-scrub-frame.visible { display:block; }
+    .workspace-scrub-frame.stale { filter:grayscale(1) brightness(.45); }
     .workspace-scrub-message { position:absolute; left:50%; bottom:16px; transform:translateX(-50%); z-index:6; display:none; align-items:center; justify-content:center; padding:8px 14px; border-radius:8px; color:#d5dce7; background:#030507dd; font-size:clamp(14px,1.5vw,20px); font-weight:600; text-align:center; pointer-events:none; }
     .workspace-scrub-message.visible { display:flex; }
     .workspace-scrub-proxy { position:absolute; width:1px; height:1px; opacity:0; pointer-events:none; }

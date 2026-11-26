@@ -670,7 +670,7 @@ buildVerticalTimeline=function(){
   if(!scroll||scroll.dataset.continuousDaysReady)return;
   scroll.dataset.continuousDaysReady='true';
   ensureVerticalTimelineZoomControls();
-  if(verticalTimelineHeight!==3600)rebuildVerticalTimelineLayers();
+  if(verticalTimelineHeight!==3600){rebuildVerticalTimelineLayers();void fillVerticalTimelineDays(null)}
   let wheelRemainder=0;
   scroll.addEventListener('wheel',event=>{if(event.ctrlKey||!event.deltaY)return;const pixels=timelineWheelPixels(event);if(event.deltaMode===0&&pixels===event.deltaY)return;event.preventDefault();wheelRemainder+=pixels;const whole=Math.trunc(wheelRemainder);wheelRemainder-=whole;if(whole)scroll.scrollTop+=whole},{passive:false});
   scroll.addEventListener('wheel',event=>{if(!event.ctrlKey||!event.deltaY)return;event.preventDefault();stepVerticalTimelineZoom(event.deltaY<0?1:-1)},{passive:false});
@@ -806,7 +806,29 @@ function setVerticalTimelineZoom(id){
   renderVerticalTimelineLabels(true);
   requestAnimationFrame(()=>{verticalTimelineProgrammatic=false});
   updateVerticalTimelineZoomControls();
+  void fillVerticalTimelineDays(live?null:selection);
   return true;
+}
+// Zoomed out, a day can be shorter than the timeline window, leaving nothing
+// to scroll. Load earlier days until there is room, then put the selected
+// time back under the cursor unless the user has moved since.
+async function fillVerticalTimelineDays(selection){
+  const scroll=document.querySelector('.vertical-timeline-scroll');
+  if(!scroll||typeof window.loadPreviousTimelineDay!=='function')return;
+  const height=verticalTimelineHeight;
+  for(let attempt=0;attempt<8&&height===verticalTimelineHeight;attempt++){
+    if(verticalTimelineLoadedDays.length*verticalTimelineHeight>=scroll.scrollTop+scroll.clientHeight*2+1800)break;
+    const before=verticalTimelineLoadedDays.length;
+    await window.loadPreviousTimelineDay();
+    if(verticalTimelineLoadedDays.length===before){if(verticalTimelineDayPaging){await new Promise(resolve=>setTimeout(resolve,200));continue}break}
+  }
+  if(!selection||height!==verticalTimelineHeight||(typeof verticalTimelineUserScrolling!=='undefined'&&verticalTimelineUserScrolling))return;
+  const dayIndex=verticalTimelineLoadedDays.findIndex(day=>day.date===selection.date),current=verticalTimelineSelection();
+  if(dayIndex<0||(current.date===selection.date&&Math.abs(current.seconds-selection.seconds)<=86400/verticalTimelineHeight*2))return;
+  verticalTimelineProgrammatic=true;
+  scroll.scrollTop=Math.max(verticalTimelineMinimumScroll(scroll),Math.min(scroll.scrollHeight-scroll.clientHeight,(dayIndex+1-selection.seconds/timelineDayLength(selection.date))*verticalTimelineHeight-26));
+  renderVerticalTimelineLabels(true);
+  requestAnimationFrame(()=>{verticalTimelineProgrammatic=false});
 }
 function stepVerticalTimelineZoom(direction){const index=verticalTimelineZoomLevels.findIndex(item=>item.id===verticalTimelineZoom),next=verticalTimelineZoomLevels[Math.max(0,Math.min(verticalTimelineZoomLevels.length-1,index+direction))];if(next)setVerticalTimelineZoom(next.id)}
 function updateVerticalTimelineZoomControls(){
