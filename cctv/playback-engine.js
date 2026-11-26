@@ -23,8 +23,10 @@
   const FINE = 'fine', COARSE = 'coarse', VIDEO = 'video';
   const INTERVAL = { fine: 1, coarse: 15, video: 1 / 30 };
   // Timeline seconds per pixel up to which per-second sheets are used, and
-  // the cursor speed (footage seconds per second) that sheets can keep up with.
-  const FINE_MAX_SPP = 10, FINE_MAX_SPEED = 120;
+  // the cursor speed (footage seconds per second) up to which they are
+  // fetched: 600 s/s is 20 segment sheets (about 2 MB) per second. When a
+  // sheet is late, the coarse frame near the cursor stands in for it.
+  const FINE_MAX_SPP = 10, FINE_MAX_SPEED = 600;
   // Detailed zooms decode the recording itself for sub-second positions.
   const VIDEO_MAX_SPP = 0.6, VIDEO_MAX_SPEED = 30;
   const LIMITS = { decodedFine: 16, decodedCoarse: 4, sheetFetches: 4, manifestFetches: 3, decodes: 2 };
@@ -457,10 +459,11 @@
       const frames = hourIndex(hour)?.[sheetLevel] || [];
       for (let i = lowerBound(frames, from); i < frames.length && frames[i].t <= to; i++) want(frames[i]);
     });
-    // Keep the sheet under the cursor wanted at every level so a switch of
-    // density never aborts the frame that is about to be drawn.
-    for (const other of [FINE, COARSE]) {
-      const near = nearestFrame(other, t, lagBound(other), false);
+    // Keep the sheet of the density on screen wanted too, so a switch of
+    // density never aborts the frame that is about to be replaced.
+    const shownLevel = state.displayed?.level;
+    if ((shownLevel === FINE || shownLevel === COARSE) && shownLevel !== sheetLevel) {
+      const near = nearestFrame(shownLevel, t, lagBound(shownLevel), false);
       if (near) want(near);
     }
     // Never want more sheets than the decoded cache can hold, or prefetching
@@ -485,11 +488,14 @@
     metrics.levels[level] = (metrics.levels[level] || 0) + 1;
     if (state.cursor.record) {
       prefetch(level);
-      if (level === VIDEO || (state.cursor.record && isMp4(state.cursor.record) &&
-          hourIndex(hourOf(state.cursor.t))?.pending.has(state.cursor.record.path))) {
+      // Decode the recording itself at detailed zooms, and for a closed
+      // segment whose preview frames are not ready yet.
+      const decode = level === VIDEO || (isMp4(state.cursor.record) &&
+        hourIndex(hourOf(state.cursor.t))?.pending.has(state.cursor.record.path));
+      if (decode) {
         requestProxy(state.cursor.record);
+        chaseProxy();
       }
-      chaseProxy();
       const sheetLevel = level === VIDEO ? FINE : level;
       const bound = lagBound(sheetLevel);
       const nearestAny = nearestFrame(sheetLevel, state.cursor.t, bound, false);

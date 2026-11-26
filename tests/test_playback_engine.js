@@ -167,14 +167,19 @@ async function forwardAndReverse() {
     const start = direction > 0 ? 21600 : 21600 + 40 * 30 - 1;
     await env.move(start, { frames: 6 });
     env.draws.length = 0;
-    // 1h zoom: one pixel is 6 s; a scroll event every 16 ms is 375 s/s.
-    for (let i = 1; i <= 60; i++) await env.move(start + direction * i * 6);
+    // 1h zoom: three pixels (18 s) every 16 ms is about 1100 s/s.
+    let settled = 0;
+    for (let i = 1; i <= 60; i++) {
+      if (i === 10) settled = env.draws.length;
+      await env.move(start + direction * i * 18);
+    }
     const times = env.draws.map(env.frameTime).filter(Number.isFinite);
     assert.ok(times.length >= 20, `continuous ${direction > 0 ? 'forward' : 'reverse'} scrolling paints many frames (${times.length})`);
     for (let i = 1; i < times.length; i++) {
       assert.ok((times[i] - times[i - 1]) * direction >= 0, `frames never step against the scroll direction (${times[i - 1]} -> ${times[i]})`);
     }
-    assert.ok(env.draws.every(draw => env.level(draw) === 'coarse'), 'fast movement uses one density: the coarse track');
+    // The speed estimate needs a few events to reach full speed.
+    assert.ok(env.draws.slice(settled).every(draw => env.level(draw) === 'coarse'), 'fast movement uses one density: the coarse track');
     // At rest the per-second track takes over and lands on the cursor.
     env.advance(400);
     await env.frames(10);
@@ -290,7 +295,13 @@ async function sourceConsistency() {
   env.advance(400);
   await env.frames(6);
   assert.ok(env.draws.length > 0);
-  assert.ok(env.draws.every(draw => env.level(draw) === 'coarse'), 'the 24h zoom does not mix in per-second frames');
+  // Until the hour's coarse sheet arrives, an already decoded per-second
+  // frame may stand in; once the zoom's own density is on screen, it stays.
+  const first = env.draws.findIndex(draw => env.level(draw) === 'coarse');
+  assert.ok(first >= 0, 'the 24h zoom shows the coarse track');
+  assert.ok(env.draws.slice(first).every(draw => env.level(draw) === 'coarse'), 'the 24h zoom does not mix in per-second frames');
+  for (const second of [21712, 21731, 21755]) await env.move(second, { stepMs: 400, frames: 4 });
+  assert.ok(env.draws.slice(first).every(draw => env.level(draw) === 'coarse'), 'later moves stay on the coarse track');
 }
 
 async function segmentBoundaries() {
