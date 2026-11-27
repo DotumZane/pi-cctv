@@ -12,7 +12,7 @@ Pi agents -- heartbeat/config --> management API <-- dashboard
 - The management API stores devices, assignments, settings, health, and audit entries in SQLite.
 - Camera and monitor agents enroll, send heartbeats, and recover their media subprocesses.
 - Monitor agents report connected displays, then poll assignments and build either a single-camera or 2×2 hardware-decoder pipeline for one display, or one single-camera pipeline per output for two displays.
-- The recorder reads compressed RTSP streams independently and writes segmented files with retention cleanup.
+- The recorder reads compressed RTSP streams independently and writes segmented files with retention cleanup. Open segments are fragmented MP4 so a crash loses at most about a second; closed segments are rewritten as ordinary MP4 and indexed into a small keyframe preview track that the dashboard uses for timeline scrubbing.
 - Media does not pass through the management API. One encoded camera stream is fanned out by the camera Pi relay to assigned monitors and one NVR forwarder. Browser viewers use server MediaMTX, not another camera Pi connection.
 
 The current implementation is a V1 prototype. Production rollout still requires Pi hardware tests, network sizing, TLS/reverse-proxy deployment, a stronger identity/enrollment model, and storage failure testing.

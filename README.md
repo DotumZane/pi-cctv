@@ -262,7 +262,15 @@ Pi heartbeats include available CPU temperature, one-minute load, memory-use per
 
 For the IMX477 HQ camera, the camera installer automatically enables `dtoverlay=imx477` in the Pi boot configuration. Set a camera to 2560×1440 in **Camera settings** when 2K/QHD recording is desired. The recorder keeps that source resolution with stream copy, while a 1080p monitor scales the same stream down locally.
 
-The Compose management service automatically starts an FFmpeg stream-copy recorder for each online camera enabled in **NVR settings**. Recordings are stored persistently in the `cctv-data` volume under `/data/recordings`, and the NVR timeline indexes completed segments. With the default 15-minute segment length, the first completed segment appears after up to 15 minutes. The recorder does not transcode live video. To use the standalone recorder manually:
+The Compose management service automatically starts an FFmpeg stream-copy recorder for each online camera enabled in **NVR settings**. Recordings are stored persistently in the `cctv-data` volume under `/data/recordings`, in 30-second segments by default (configurable in **NVR settings**). The recorder does not transcode live video.
+
+- **Crash-safe segments.** The open segment is written as fragmented MP4, so a crash or power cut keeps the footage up to its last one-second fragment. Once a segment closes, the server rewrites it as an ordinary MP4 (a stream copy taking a fraction of a second) before indexing or serving it; a segment cut off by a crash is recovered the same way. A segment appears in the timeline about 10–15 seconds after it closes.
+- **Clean shutdown.** On `docker compose stop`, restarts and server updates, the server stops every recorder together so each open segment is completed. Compose allows the management container 20 seconds for this. A recorder that keeps failing (for example while the media server restarts) is retried after 2, 4, 8 … up to 60 seconds.
+- **Preview track.** A background indexer, one closed segment at a time and newest first, extracts each segment's keyframes into small preview images: 256×144 frames about once per second, plus 160×90 frames every 15 seconds collected into one sheet per hour. They take about 15 MB per camera-hour, live under `/data/recordings/.preview-track`, and are deleted with their recordings. After an upgrade or a fresh install, existing footage is indexed in the background (roughly an hour of work per camera-day on a typical server).
+
+**Playback.** The camera workspace's vertical timeline has live at the top and the past below. A slim strip along its right edge marks where footage exists, so gaps are visible. Zoom with the **24h, 6h, 4h, 1h, 15m, 5m, 1m** buttons or with Ctrl+scroll / trackpad pinch; one mouse-wheel notch moves one pixel (24 seconds at the default 4h zoom, 0.1 seconds at 1m). While the cursor moves, the player shows preview frames from the preview track at a density that suits the zoom and scroll speed; at the 5m and 1m zooms it decodes the recording itself for sub-second positions. When scrolling stops, the full-resolution frame appears and playback starts from that point, once per scroll gesture. Playback continues across segment boundaries at the chosen speed (the next segment is loaded in advance), and stopping in a gap holds the last frame, dimmed, and names the next recording while the clock runs through the gap. Add `?debugPlayback` to the dashboard URL and run `cctvScrubMetrics.snapshot()` in the browser console to see preview frame rate, latency and cache figures.
+
+To use the standalone recorder manually (it records and finalizes segments but does not build the preview track):
 
 ```bash
 python3 -m cctv.recording --camera-id cam-1 \
@@ -272,7 +280,7 @@ python3 -m cctv.recording --camera-id cam-1 \
 
 Files are organized by camera and date, and old segments are deleted automatically. Recording throughput and storage capacity must be sized and tested for the final camera bitrate and retention period.
 
-Retained segments can be indexed with `GET /api/recordings?camera_id=cam-01` and downloaded from `/recordings/<relative-path>` using a read-authorized client.
+Retained segments can be indexed with `GET /api/recordings?camera_id=cam-01` and downloaded from `/recordings/<relative-path>` using a read-authorized client. The preview track is available per camera and hour (`hour` is a Unix timestamp on an hour boundary) from `GET /api/recordings/preview-track?camera_id=cam-01&hour=…`, which lists each preview frame's time and sheet URL; preview sheets are served with immutable, versioned URLs.
 
 Administrative mutations are written to the SQLite audit log. Authorized clients can inspect the most recent entries with `GET /api/audit?limit=100`.
 
