@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import os
 import shutil
 import struct
@@ -21,10 +20,9 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 if TYPE_CHECKING:
     from .store import Store
 
-SCRUB_ATLAS_BUILD_SLOT = threading.BoundedSemaphore(1)
-SCRUB_ATLAS_FPS = 8
-SCRUB_BACKFILL_FPS = 1
-SCRUB_ATLAS_RETRY_SECONDS = 600
+# Caches of the scrub previews used before the preview track. Nothing reads
+# them any more; they are deleted on the next pruning pass.
+LEGACY_PREVIEW_CACHES = (".scrub-frames", ".trickplay-cache")
 
 
 def recording_files(root: Path) -> list[Path]:
@@ -84,109 +82,9 @@ def mp4_duration(path: Path) -> float | None:
     return None
 
 
-def trickplay_path(root: Path, recording: Path) -> Path:
-    relative = recording.relative_to(root)
-    return root / ".trickplay-cache" / relative.parent / f"{relative.stem}.mp4"
-
-
 def playback_cache_path(root: Path, recording: Path) -> Path:
     relative = recording.relative_to(root)
     return root / '.playback-cache' / relative.parent / f'{relative.stem}.mp4'
-
-
-def scrub_frames_dir(root: Path, recording: Path) -> Path:
-    relative = recording.relative_to(root)
-    return root / ".scrub-frames" / relative.parent / relative.stem
-
-
-def scrub_frames_ready(source: Path, directory: Path) -> bool:
-    manifest = directory / "manifest.json"
-    return manifest.is_file() and manifest.stat().st_mtime_ns >= source.stat().st_mtime_ns
-
-
-def prepare_scrub_frames(source: Path, directory: Path, fps: int = SCRUB_ATLAS_FPS) -> bool | None:
-    """Build a compact sequence of real frames in seek-free JPEG atlases."""
-    try:
-        if scrub_frames_ready(source, directory):
-            return
-    except OSError:
-        return
-    if not SCRUB_ATLAS_BUILD_SLOT.acquire(blocking=False):
-        return False
-    temporary = directory.with_name(f"{directory.name}.{os.getpid()}.{threading.get_ident()}.tmp")
-    failure = directory.with_suffix(".failed")
-    success = False
-    try:
-        if scrub_frames_ready(source, directory):
-            success = True
-            return
-        directory.parent.mkdir(parents=True, exist_ok=True)
-        probe = subprocess.run(
-            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-             "-of", "default=noprint_wrappers=1:nokey=1", str(source)],
-            capture_output=True, text=True, timeout=20,
-        )
-        duration = float(probe.stdout.strip()) if probe.returncode == 0 else 0
-        if not math.isfinite(duration) or duration <= 0:
-            return
-        temporary.mkdir(parents=True, exist_ok=True)
-        result = subprocess.run(
-            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
-             "-i", str(source), "-map", "0:v:0", "-an",
-             "-vf", f"fps={fps},scale=384:216:force_original_aspect_ratio=decrease,"
-                    "pad=384:216:(ow-iw)/2:(oh-ih)/2,tile=6x4",
-             "-fps_mode", "vfr", "-q:v", "7", "-start_number", "0",
-             str(temporary / "%03d.jpg")],
-            capture_output=True, timeout=180,
-        )
-        sheets = sorted(temporary.glob("*.jpg"))
-        if result.returncode != 0 or not sheets:
-            return
-        frame_count = min(math.ceil(duration * fps), len(sheets) * 24)
-        (temporary / "manifest.json").write_text(json.dumps({
-            "fps": fps, "width": 384, "height": 216, "columns": 6, "rows": 4,
-            "frames": frame_count, "sheets": len(sheets),
-        }))
-        if directory.exists():
-            shutil.rmtree(directory)
-        temporary.replace(directory)
-        failure.unlink(missing_ok=True)
-        success = True
-    except (OSError, ValueError, subprocess.TimeoutExpired):
-        pass
-    finally:
-        try:
-            shutil.rmtree(temporary, ignore_errors=True)
-            if not success and directory.parent.is_dir():
-                failure.touch()
-        finally:
-            SCRUB_ATLAS_BUILD_SLOT.release()
-
-
-def prepare_trickplay(recording: Path, target: Path) -> None:
-    """Produce an independently decodable, silent scrub proxy."""
-    temporary = target.with_name(f"{target.stem}.{os.getpid()}.{threading.get_ident()}.tmp.mp4")
-    failure = target.with_suffix(".failed")
-    success = False
-    try:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        result = subprocess.run(
-            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
-             "-i", str(recording), "-map", "0:v:0", "-an", "-vf", "fps=8,scale=640:-2",
-             "-c:v", "libx264", "-preset", "ultrafast", "-crf", "32", "-g", "1",
-             "-bf", "0", "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(temporary)],
-            capture_output=True, timeout=180,
-        )
-        if result.returncode == 0 and temporary.is_file() and temporary.stat().st_size:
-            temporary.replace(target)
-            failure.unlink(missing_ok=True)
-            success = True
-    except (OSError, subprocess.TimeoutExpired):
-        pass
-    finally:
-        temporary.unlink(missing_ok=True)
-        if not success:
-            failure.touch()
 
 
 @dataclass(frozen=True)
@@ -213,77 +111,47 @@ class RecorderConfig:
         return datetime.now(timezone.utc) - timedelta(hours=self.retention_hours)
 
 
+def remove_legacy_preview_caches(output_dir: Path) -> None:
+    for name in LEGACY_PREVIEW_CACHES:
+        shutil.rmtree(output_dir / name, ignore_errors=True)
+
+
 def prune_recordings(output_dir: Path, retention_hours: int, now: datetime | None = None) -> int:
+    from .preview_track import prune_previews, remove_preview
     cutoff = (now or datetime.now(timezone.utc)) - timedelta(hours=retention_hours)
     removed = 0
     for path in recording_files(output_dir):
         modified = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
         if modified < cutoff:
             path.unlink()
-            proxy = trickplay_path(output_dir, path)
-            proxy.unlink(missing_ok=True)
             playback_cache_path(output_dir, path).unlink(missing_ok=True)
-            proxy.with_suffix(".failed").unlink(missing_ok=True)
-            frames = scrub_frames_dir(output_dir, path)
-            shutil.rmtree(frames, ignore_errors=True)
-            frames.with_suffix(".failed").unlink(missing_ok=True)
-            from .preview_track import remove_preview
             remove_preview(output_dir, path)
             removed += 1
-    from .preview_track import prune_previews
     prune_previews(output_dir, retention_hours, (now or datetime.now(timezone.utc)).timestamp())
-    for proxy in (output_dir / ".trickplay-cache").glob("**/*.mp4"):
-        source = output_dir / proxy.relative_to(output_dir / ".trickplay-cache")
-        if not source.is_file() and not source.with_suffix(".mkv").is_file():
-            proxy.unlink(missing_ok=True)
-    for failure in (output_dir / ".trickplay-cache").glob("**/*.failed"):
-        source = output_dir / failure.relative_to(output_dir / ".trickplay-cache").with_suffix(".mp4")
-        if not source.is_file() and not source.with_suffix(".mkv").is_file():
-            failure.unlink(missing_ok=True)
     for cached in (output_dir / '.playback-cache').glob('**/*.mp4'):
         source = output_dir / cached.relative_to(output_dir / '.playback-cache')
         if not source.is_file() and not source.with_suffix('.mkv').is_file():
             cached.unlink(missing_ok=True)
-    frame_root = output_dir / ".scrub-frames"
-    for manifest in frame_root.glob("**/manifest.json"):
-        source = output_dir / manifest.parent.relative_to(frame_root).with_suffix(".mp4")
-        if not source.is_file() and not source.with_suffix(".mkv").is_file():
-            shutil.rmtree(manifest.parent, ignore_errors=True)
-    for failure in frame_root.glob("**/*.failed"):
-        source = output_dir / failure.relative_to(frame_root).with_suffix(".mp4")
-        if not source.is_file() and not source.with_suffix(".mkv").is_file():
-            failure.unlink(missing_ok=True)
+    remove_legacy_preview_caches(output_dir)
     return removed
 
 
 def enforce_storage_limit(output_dir: Path, limit_gb: int) -> int:
-    files = sorted(recording_files(output_dir), key=lambda path: path.stat().st_mtime)
     from .preview_track import preview_size, remove_preview
+    files = sorted(recording_files(output_dir), key=lambda path: path.stat().st_mtime)
     def assets_size(path: Path) -> int:
-        proxy = trickplay_path(output_dir, path)
         playback = playback_cache_path(output_dir, path)
-        frames = scrub_frames_dir(output_dir, path)
-        return ((proxy.stat().st_size if proxy.is_file() else 0)
-                + (playback.stat().st_size if playback.is_file() else 0)
-                + sum(frame.stat().st_size for frame in frames.glob("*.jpg"))
-                + preview_size(output_dir, path))
+        return (playback.stat().st_size if playback.is_file() else 0) + preview_size(output_dir, path)
     total = sum(path.stat().st_size + assets_size(path) for path in files)
     removed = 0
     limit = max(1, limit_gb) * 1024**3
     for path in files:
         if total <= limit: break
-        size = path.stat().st_size
+        size = path.stat().st_size + assets_size(path)
         path.unlink()
-        proxy = trickplay_path(output_dir, path)
-        proxy_size = assets_size(path)
-        proxy.unlink(missing_ok=True)
         playback_cache_path(output_dir, path).unlink(missing_ok=True)
-        proxy.with_suffix(".failed").unlink(missing_ok=True)
-        frames = scrub_frames_dir(output_dir, path)
-        shutil.rmtree(frames, ignore_errors=True)
-        frames.with_suffix(".failed").unlink(missing_ok=True)
         remove_preview(output_dir, path)
-        total -= size + proxy_size
+        total -= size
         removed += 1
     return removed
 
@@ -361,33 +229,6 @@ def recording_space_available(output_dir: Path, reserve_gb: int) -> bool:
         return False
 
 
-def next_scrub_frame_source(output_dir: Path, *, oldest_first: bool, now: float | None = None) -> Path | None:
-    """Choose a closed segment needing a preview, including older footage."""
-    now = time.time() if now is None else now
-    candidates = []
-    for source in recording_files(output_dir):
-        try:
-            modified = source.stat().st_mtime
-            if now - modified >= 8:
-                candidates.append((modified, source))
-        except OSError:
-            continue
-    candidates.sort(key=lambda item: item[0], reverse=not oldest_first)
-    for _, source in candidates:
-        try:
-            frames = scrub_frames_dir(output_dir, source)
-            if scrub_frames_ready(source, frames):
-                continue
-            failure = frames.with_suffix('.failed')
-            if failure.is_file() and now - failure.stat().st_mtime < SCRUB_ATLAS_RETRY_SECONDS:
-                continue
-            return source
-        except OSError:
-            # Retention can remove a segment while the index is being scanned.
-            continue
-    return None
-
-
 class RecorderSupervisor:
     """Keep one stream-copy recorder running for each enabled online camera."""
 
@@ -400,9 +241,8 @@ class RecorderSupervisor:
         self._preview_wake = threading.Event()
         self._processes: dict[str, tuple[subprocess.Popen, tuple[int, int, int], str]] = {}
         self._thread: threading.Thread | None = None
-        self._trickplay_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cctv-preview-index")
-        self._trickplay_job = None
-        self._scrub_oldest_first = False
+        self._preview_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cctv-preview-index")
+        self._preview_job = None
         self._lock = threading.Lock()
         self._started_at: dict[str, float] = {}
         self._failures: dict[str, int] = {}
@@ -427,7 +267,7 @@ class RecorderSupervisor:
         self._stop_recorders(list(self._processes), timeout)
         if self._thread:
             self._thread.join(timeout=2)
-        self._trickplay_pool.shutdown(wait=False, cancel_futures=True)
+        self._preview_pool.shutdown(wait=False, cancel_futures=True)
 
     def _settings(self) -> dict:
         try:
@@ -518,12 +358,12 @@ class RecorderSupervisor:
                 # newest first, without touching the stream-copy recorders or
                 # opening another camera connection. The worker thread is the
                 # persistent indexer; FFmpeg runs once per closed segment.
-                if space_available and (not self._trickplay_job or self._trickplay_job.done()):
+                if space_available and (not self._preview_job or self._preview_job.done()):
                     from .preview_track import build_segment_preview, next_preview_source
                     source = next_preview_source(self.output_dir)
                     if source:
-                        self._trickplay_job = self._trickplay_pool.submit(build_segment_preview, self.output_dir, source)
-                        self._trickplay_job.add_done_callback(self._preview_finished)
+                        self._preview_job = self._preview_pool.submit(build_segment_preview, self.output_dir, source)
+                        self._preview_job.add_done_callback(self._preview_finished)
 
                 if time.monotonic() - last_cleanup >= 300:
                     prune_recordings(self.output_dir, retention)

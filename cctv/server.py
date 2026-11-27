@@ -28,11 +28,9 @@ from urllib import request as urllib_request
 
 from . import __agent_version__, __version__, pi_bootstrap
 from .fleet import FleetAgentUpdateCoordinator, FleetOsUpdateCoordinator
-from .recording import (RecorderSupervisor, mp4_duration, prepare_scrub_frames, prepare_trickplay,
-                        scrub_frames_dir, scrub_frames_ready, trickplay_path, recording_schedule_active)
+from .recording import RecorderSupervisor, mp4_duration, recording_schedule_active
 from .store import Store
 from .server_logs import capture_server_output, read_server_logs
-from .scrub_overview import overview
 from .preview_track import PREVIEW_ROOT, coarse_sheet, hour_manifest, preview_ready
 
 
@@ -48,34 +46,8 @@ DEFAULT_NVR_SETTINGS = {
     "camera_schedules": {},
 }
 PLAYBACK_CACHE_LOCK = threading.Lock()
-SCRUB_FRAME_LOCK = threading.Lock()
-SCRUB_FRAME_SLOTS = threading.BoundedSemaphore(2)
-SCRUB_FRAME_CACHE: OrderedDict[tuple[str, int, int, int], bytes] = OrderedDict()
 RECORDING_DURATION_LOCK = threading.Lock()
 RECORDING_DURATION_CACHE: OrderedDict[tuple[str, int, int], float | None] = OrderedDict()
-TRICKPLAY_LOCK = threading.Lock()
-TRICKPLAY_JOBS: set[str] = set()
-TRICKPLAY_SLOTS = threading.BoundedSemaphore(2)
-
-
-def _prepare_trickplay_job(recording: Path, target: Path) -> None:
-    try:
-        prepare_trickplay(recording, target)
-    finally:
-        with TRICKPLAY_LOCK:
-            TRICKPLAY_JOBS.discard(str(target))
-        TRICKPLAY_SLOTS.release()
-
-
-def _prepare_scrub_frames_job(recording: Path, directory: Path) -> None:
-    try:
-        prepare_scrub_frames(recording, directory)
-    finally:
-        with TRICKPLAY_LOCK:
-            TRICKPLAY_JOBS.discard(str(directory))
-        TRICKPLAY_SLOTS.release()
-
-
 class Handler(BaseHTTPRequestHandler):
     server_version = "PiCCTV/0.1"
 
@@ -865,7 +837,7 @@ class Handler(BaseHTTPRequestHandler):
             entries = []
             scan_root = root / camera_id if camera_id else root
             recordings = []
-            # Never descend into atlas, snapshot, playback or trickplay caches.
+            # Never descend into preview, snapshot or playback caches.
             # Filter dated camera directories before walking their contents.
             for directory, dirs, files in os.walk(scan_root):
                 relative_dir = Path(directory).relative_to(root)
@@ -918,25 +890,6 @@ class Handler(BaseHTTPRequestHandler):
             entries.sort(key=lambda entry: entry["modified"], reverse=True)
             self.send_json({"recordings": entries})
             return
-        if parsed.path == "/api/recordings/overview":
-            if not self.require_read_auth():
-                return
-            params = parse_qs(parsed.query)
-            camera = params.get('camera_id', [''])[0]
-            try:
-                hour = int(params.get('hour', [''])[0])
-                if not camera or camera.startswith('.') or '/' in camera or '\\' in camera or hour < 0 or hour > 4102444800 or hour % 3600:
-                    raise ValueError('invalid overview')
-            except ValueError:
-                self.send_json({'error': 'invalid overview request'}, HTTPStatus.BAD_REQUEST)
-                return
-            root = Path(getattr(self.server, 'recordings_dir', 'recordings')).resolve()
-            if (root / camera).resolve().parent != root:
-                self.send_json({'error': 'invalid camera'}, HTTPStatus.BAD_REQUEST)
-                return
-            quality = params.get('detail', [''])[0]
-            self.send_json(overview(root, camera, hour, quality) if quality in ('high', 'compact') else overview(root, camera, hour))
-            return
         if parsed.path in {"/api/recordings/preview-track", "/api/recordings/preview-coarse"}:
             if not self.require_read_auth():
                 return
@@ -982,39 +935,6 @@ class Handler(BaseHTTPRequestHandler):
             self.send_cached_file(sheet, "image/jpeg", f'"{version}"',
                                   immutable=params.get("v", [""])[0] == version)
             return
-        if parsed.path in {"/api/recordings/trickplay", "/api/recordings/scrub-frames"}:
-            if not self.require_read_auth():
-                return
-            root = Path(getattr(self.server, "recordings_dir", "recordings")).resolve()
-            requested = (root / unquote(parse_qs(parsed.query).get("path", [""])[0])).resolve()
-            if root not in requested.parents or any(part.startswith(".") for part in requested.relative_to(root).parts) or requested.suffix not in {".mp4", ".mkv"} or not requested.is_file():
-                self.send_json({"error": "recording not found"}, HTTPStatus.NOT_FOUND)
-                return
-            frames = parsed.path.endswith("/scrub-frames")
-            target = scrub_frames_dir(root, requested) if frames else trickplay_path(root, requested)
-            ready = scrub_frames_ready(requested, target) if frames else target.is_file() and target.stat().st_mtime_ns >= requested.stat().st_mtime_ns
-            failure = target.with_suffix(".failed")
-            failed = failure.is_file() and failure.stat().st_mtime_ns >= requested.stat().st_mtime_ns
-            # An open MP4 may not yet have its moov atom. Wait for the recorder
-            # to close it before starting a conversion.
-            prepare = parse_qs(parsed.query).get("prepare", ["1"])[0] != "0"
-            if prepare and not ready and not failed and time.time() - requested.stat().st_mtime > 8 and shutil.which("ffmpeg") and (not frames or shutil.which("ffprobe")):
-                with TRICKPLAY_LOCK:
-                    if str(target) not in TRICKPLAY_JOBS and TRICKPLAY_SLOTS.acquire(blocking=False):
-                        TRICKPLAY_JOBS.add(str(target))
-                        try:
-                            job = _prepare_scrub_frames_job if frames else _prepare_trickplay_job
-                            threading.Thread(target=job, args=(requested, target), daemon=True).start()
-                        except RuntimeError:
-                            TRICKPLAY_JOBS.discard(str(target))
-                            TRICKPLAY_SLOTS.release()
-            if frames:
-                manifest = json.loads((target / "manifest.json").read_text()) if ready else None
-                self.send_json({"ready": ready, "failed": failed, "manifest": manifest,
-                                "urlBase": "/recordings/" + quote(str(target.relative_to(root))) + "/" if ready else None})
-            else:
-                self.send_json({"ready": ready, "failed": failed, "url": "/recordings/" + quote(str(target.relative_to(root))) if ready else None})
-            return
         if parsed.path == "/api/recordings/snapshot":
             if not self.require_read_auth():
                 return
@@ -1031,49 +951,6 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if root not in requested.parents or not requested.is_file() or requested.suffix not in {".mkv", ".mp4"}:
                 self.send_json({"error": "recording not found"}, HTTPStatus.NOT_FOUND)
-                return
-            if parse_qs(parsed.query).get("preview", [""])[0] == "1":
-                # Keep trick-play frames independent of the ordinary thumbnail
-                # cache. Quarter-second targets let slow scrubs show detail,
-                # while the bounded cache and decoder slots protect the NVR.
-                tick = round(seconds * 4)
-                stat = requested.stat()
-                key = (str(requested), stat.st_mtime_ns, stat.st_size, tick)
-                with SCRUB_FRAME_LOCK:
-                    image = SCRUB_FRAME_CACHE.get(key)
-                    if image is not None:
-                        SCRUB_FRAME_CACHE.move_to_end(key)
-                if image is None:
-                    if not SCRUB_FRAME_SLOTS.acquire(timeout=0.15):
-                        self.send_json({"error": "preview busy"}, HTTPStatus.SERVICE_UNAVAILABLE)
-                        return
-                    try:
-                        result = subprocess.run(
-                            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin",
-                             "-ss", f"{tick / 4:.3f}", "-i", str(requested),
-                             "-map", "0:v:0", "-frames:v", "1", "-vf", "scale=640:-2",
-                             "-q:v", "5", "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1"],
-                            capture_output=True, timeout=8,
-                        )
-                    except (OSError, subprocess.TimeoutExpired):
-                        result = None
-                    finally:
-                        SCRUB_FRAME_SLOTS.release()
-                    if result is None or result.returncode != 0 or not result.stdout.startswith(b"\xff\xd8"):
-                        self.send_json({"error": "preview frame unavailable"}, HTTPStatus.UNPROCESSABLE_ENTITY)
-                        return
-                    image = result.stdout
-                    with SCRUB_FRAME_LOCK:
-                        SCRUB_FRAME_CACHE[key] = image
-                        SCRUB_FRAME_CACHE.move_to_end(key)
-                        while len(SCRUB_FRAME_CACHE) > 256:
-                            SCRUB_FRAME_CACHE.popitem(last=False)
-                self.send_response(HTTPStatus.OK)
-                self.send_header("Content-Type", "image/jpeg")
-                self.send_header("Cache-Control", "private, max-age=60")
-                self.send_header("Content-Length", str(len(image)))
-                self.end_headers()
-                self.wfile.write(image)
                 return
             cache = root / ".snapshot-cache" / requested.relative_to(root).parent / f"{requested.stem}-{int(seconds):04d}.jpg"
             cache.parent.mkdir(parents=True, exist_ok=True)
@@ -1108,9 +985,8 @@ class Handler(BaseHTTPRequestHandler):
                 return
             root = Path(getattr(self.server, "recordings_dir", "recordings")).resolve()
             requested = (root / unquote(parsed.path.removeprefix("/recordings/"))).resolve()
-            is_atlas = requested.suffix == ".jpg" and (root / ".scrub-frames") in requested.parents
             is_preview = requested.suffix == ".jpg" and (root / PREVIEW_ROOT) in requested.parents
-            if root not in requested.parents or not requested.is_file() or (not is_atlas and not is_preview and requested.suffix not in {".mkv", ".mp4"}):
+            if root not in requested.parents or not requested.is_file() or (not is_preview and requested.suffix not in {".mkv", ".mp4"}):
                 self.send_json({"error": "recording not found"}, HTTPStatus.NOT_FOUND)
                 return
             if is_preview:
@@ -1131,15 +1007,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_cached_file(requested, "image/jpeg", f'"{stamp}-{requested.stat().st_size}"',
                                       immutable=parse_qs(parsed.query).get("v", [""])[0] == str(stamp))
                 return
-            if is_atlas:
-                relative = requested.parent.relative_to(root / ".scrub-frames")
-                source = root / relative.with_suffix(".mp4")
-                if not source.is_file():
-                    source = source.with_suffix(".mkv")
-                if not source.is_file() or not scrub_frames_ready(source, requested.parent):
-                    self.send_json({"error": "recording not found"}, HTTPStatus.NOT_FOUND)
-                    return
-            if not is_atlas and parse_qs(parsed.query).get("format", [""])[0] == "mp4":
+            if parse_qs(parsed.query).get("format", [""])[0] == "mp4":
                 if not shutil.which("ffmpeg"):
                     self.send_json({"error": "MP4 playback conversion is unavailable"}, HTTPStatus.NOT_IMPLEMENTED)
                     return
@@ -1191,7 +1059,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(status)
             if status == HTTPStatus.PARTIAL_CONTENT:
                 self.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")
-            self.send_header("Content-Type", "image/jpeg" if is_atlas else "video/mp4" if requested.suffix == ".mp4" else "video/x-matroska")
+            self.send_header("Content-Type", "video/mp4" if requested.suffix == ".mp4" else "video/x-matroska")
             self.send_header("Accept-Ranges", "bytes")
             self.send_header("Content-Length", str(length))
             self.end_headers()

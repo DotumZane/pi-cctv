@@ -59,20 +59,6 @@ class ApiTests(unittest.TestCase):
         connection.close()
         return response.status, body
 
-    def test_scrub_overview_requires_read_access_and_validates_parameters(self):
-        self.httpd.read_token = 'read-secret'
-        path = '/api/recordings/overview?camera_id=cam-01&hour=0'
-        self.assertEqual(self.call('GET', path)[0], 401)
-        with patch('cctv.server.overview', return_value={'ready': False}) as build:
-            self.assertEqual(self.call('GET', path, token='read-secret'), (200, {'ready': False}))
-            build.assert_called_once()
-            self.assertEqual(self.call('GET', path + '&detail=high', token='read-secret')[0], 200)
-            self.assertEqual(build.call_args.args[-1], 'high')
-            self.assertEqual(self.call('GET', path + '&detail=compact', token='read-secret')[0], 200)
-            self.assertEqual(build.call_args.args[-1], 'compact')
-            for invalid in ('camera_id=..%2Fsecret&hour=0', 'camera_id=cam&hour=1', 'camera_id=cam&hour=bad'):
-                self.assertEqual(self.call('GET', '/api/recordings/overview?' + invalid, token='read-secret')[0], 400)
-
     @unittest.skipUnless(shutil.which("openssl"), "openssl is required to test HTTPS")
     def test_dashboard_is_http_only_while_device_https_remains_available(self):
         root = Path(self.recordings.name)
@@ -333,7 +319,7 @@ class ApiTests(unittest.TestCase):
     def test_recording_index_limits_camera_and_time_without_walking_caches(self):
         root = Path(self.recordings.name)
         for path in ("cam-01/2026-11-04/06-00-00.mp4", "cam-01/2026-11-05/06-00-00.mp4",
-                     "cam-02/2026-11-04/06-00-00.mp4", ".scrub-frames/cam-01/hidden.mp4"):
+                     "cam-02/2026-11-04/06-00-00.mp4", ".preview-track/cam-01/hidden.mp4"):
             recording = root / path
             recording.parent.mkdir(parents=True, exist_ok=True)
             recording.write_bytes(b"video")
@@ -350,7 +336,7 @@ class ApiTests(unittest.TestCase):
             status, data = self.call("GET", "/api/recordings?" + query)
         self.assertEqual(status, 200)
         self.assertEqual([item["path"] for item in data["recordings"]], ["cam-01/2026-11-04/06-00-00.mp4"])
-        self.assertFalse(any(".scrub-frames" in path or "cam-02" in path or "2026-11-05" in path for path in visited))
+        self.assertFalse(any(".preview-track" in path or "cam-02" in path or "2026-11-05" in path for path in visited))
         self.assertEqual(self.call("GET", "/api/recordings?camera_id=../cam-02")[0], 400)
         self.assertEqual(self.call("GET", "/api/recordings?start=invalid")[0], 400)
 
@@ -412,92 +398,6 @@ class ApiTests(unittest.TestCase):
                                  'stream=codec_name', '-of', 'default=noprint_wrappers=1:nokey=1', str(cached)],
                                 capture_output=True, text=True, check=True)
         self.assertEqual(result.stdout.strip(), 'h264')
-
-    @unittest.skipUnless(shutil.which("ffmpeg"), "FFmpeg is required for frame extraction")
-    def test_scrub_frame_uses_recording_and_reuses_cached_decode(self):
-        recording = Path(self.recordings.name) / "cam-01" / "2026-11-04" / "06-00-00.mp4"
-        recording.parent.mkdir(parents=True)
-        subprocess.run([
-            "ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi",
-            "-i", "color=c=red:s=64x64:r=4:d=2", "-c:v", "mpeg4", str(recording),
-        ], check=True)
-        path = "/api/recordings/snapshot?preview=1&path=cam-01/2026-11-04/06-00-00.mp4&at=0.50"
-        def read_frame():
-            connection = HTTPConnection(*self.base)
-            connection.request("GET", path)
-            response = connection.getresponse()
-            result = response.status, response.read()
-            connection.close()
-            return result
-        status, image = read_frame()
-        self.assertEqual(status, 200)
-        self.assertTrue(image.startswith(b"\xff\xd8"))
-        with patch("cctv.server.subprocess.run", side_effect=AssertionError("cache miss")):
-            self.assertEqual(read_frame(), (200, image))
-        self.assertEqual(self.call("GET", path.replace("0.50", "nan"))[0], 400)
-
-    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg and ffprobe are required")
-    def test_trickplay_proxy_is_seekable_and_hidden_from_recording_index(self):
-        from datetime import datetime
-        from cctv.recording import prepare_trickplay, trickplay_path
-        root = Path(self.recordings.name)
-        recording = root / "cam-01" / datetime.now().strftime("%Y-%m-%d") / "06-00-00.mp4"
-        recording.parent.mkdir(parents=True)
-        subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi",
-                        "-i", "testsrc2=s=160x90:r=12:d=2", "-c:v", "mpeg4", str(recording)], check=True)
-        os.utime(recording, (time.time() - 20, time.time() - 20))
-        proxy = trickplay_path(root, recording)
-        prepare_trickplay(recording, proxy)
-        self.assertTrue(proxy.is_file())
-        probe = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0",
-                                "-show_entries", "frame=key_frame", "-of", "csv=p=0", str(proxy)],
-                               capture_output=True, text=True, check=True)
-        self.assertTrue(probe.stdout.strip())
-        self.assertTrue(all(line.split(",", 1)[0].strip() == "1" for line in probe.stdout.splitlines()))
-        relative = recording.relative_to(root).as_posix()
-        path = f"/api/recordings/trickplay?path={relative}"
-        status, result = self.call("GET", path)
-        self.assertEqual(status, 200)
-        self.assertTrue(result["ready"])
-        self.assertEqual([item["path"] for item in self.call("GET", "/api/recordings")[1]["recordings"]], [relative])
-        connection = HTTPConnection(*self.base)
-        connection.request("GET", result["url"], headers={"Range": "bytes=0-15"})
-        response = connection.getresponse()
-        self.assertEqual(response.status, 206)
-        self.assertEqual(len(response.read()), 16)
-        connection.close()
-
-    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg and ffprobe are required")
-    def test_scrub_atlas_serves_indexed_frames_without_listing_them_as_recordings(self):
-        from datetime import datetime
-        from cctv.recording import prepare_scrub_frames, scrub_frames_dir
-        root = Path(self.recordings.name)
-        recording = root / "cam-01" / datetime.now().strftime("%Y-%m-%d") / "06-00-00.mp4"
-        recording.parent.mkdir(parents=True)
-        subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi",
-                        "-i", "testsrc2=s=160x90:r=12:d=2", "-c:v", "mpeg4", str(recording)], check=True)
-        os.utime(recording, (time.time() - 20, time.time() - 20))
-        directory = scrub_frames_dir(root, recording)
-        relative = recording.relative_to(root).as_posix()
-        with patch("cctv.server.shutil.which", side_effect=AssertionError("unexpected atlas encode")):
-            status, pending = self.call("GET", f"/api/recordings/scrub-frames?prepare=0&path={relative}")
-        self.assertEqual(status, 200)
-        self.assertFalse(pending["ready"])
-        self.assertFalse(directory.exists())
-        prepare_scrub_frames(recording, directory)
-        status, result = self.call("GET", f"/api/recordings/scrub-frames?path={relative}")
-        self.assertEqual(status, 200)
-        self.assertTrue(result["ready"])
-        self.assertEqual(result["manifest"]["frames"], 16)
-        self.assertEqual(result["manifest"]["sheets"], 1)
-        self.assertEqual([item["path"] for item in self.call("GET", "/api/recordings")[1]["recordings"]], [relative])
-        connection = HTTPConnection(*self.base)
-        connection.request("GET", result["urlBase"] + "000.jpg")
-        response = connection.getresponse()
-        self.assertEqual(response.status, 200)
-        self.assertEqual(response.getheader("Content-Type"), "image/jpeg")
-        self.assertTrue(response.read().startswith(b"\xff\xd8"))
-        connection.close()
 
     def test_restart_media_command_is_queued_and_consumed(self):
         self.call("POST", "/api/devices", {"id": "cam-1", "kind": "camera", "name": "Saw 1"})

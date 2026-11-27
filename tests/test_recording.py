@@ -9,8 +9,7 @@ from unittest.mock import patch
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from cctv.recording import (RecorderConfig, RecorderSupervisor, SCRUB_ATLAS_BUILD_SLOT, mp4_duration,
-                            next_scrub_frame_source, prepare_scrub_frames, scrub_frames_ready,
+from cctv.recording import (RecorderConfig, RecorderSupervisor, mp4_duration,
                             prune_recordings, recording_files, recording_schedule_active, recording_space_available)
 
 
@@ -30,43 +29,6 @@ class RecordingTests(unittest.TestCase):
         finally:
             supervisor.stop()
 
-    def test_preview_backfill_includes_old_files_and_retries_failures(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            files = []
-            for i in range(30):
-                source = root / f'{i:02}.mp4'
-                source.touch()
-                os.utime(source, (1000 + i, 1000 + i))
-                files.append(source)
-            active = root / 'active.mp4'
-            active.touch()
-            os.utime(active, (1999, 1999))
-            self.assertEqual(next_scrub_frame_source(root, oldest_first=False, now=2000), files[-1])
-            self.assertEqual(next_scrub_frame_source(root, oldest_first=True, now=2000), files[0])
-            failure = root / '.scrub-frames' / '00.failed'
-            failure.parent.mkdir()
-            failure.touch()
-            os.utime(failure, (1900, 1900))
-            self.assertEqual(next_scrub_frame_source(root, oldest_first=True, now=2000), files[1])
-            self.assertEqual(next_scrub_frame_source(root, oldest_first=True, now=2601), files[0])
-
-    @unittest.skipUnless(shutil.which('ffmpeg') and shutil.which('ffprobe'), 'FFmpeg is required')
-    def test_compact_preview_atlas_is_generated_and_usable(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            source = root / 'recording.mp4'
-            subprocess.run(['ffmpeg', '-v', 'error', '-f', 'lavfi', '-i',
-                            'testsrc=size=160x90:rate=10:duration=4', '-c:v', 'mpeg4', str(source)],
-                           check=True, capture_output=True)
-            target = root / '.scrub-frames' / 'recording'
-            prepare_scrub_frames(source, target, fps=1)
-            self.assertTrue(scrub_frames_ready(source, target))
-            manifest = json.loads((target / 'manifest.json').read_text())
-            self.assertEqual(manifest['fps'], 1)
-            self.assertGreaterEqual(manifest['frames'], 4)
-            self.assertTrue((target / '000.jpg').is_file())
-
     def test_daily_schedule_handles_midnight_and_timezone(self):
         schedule = {"mode": "daily", "start": "22:00", "end": "06:00", "timezone": "America/Los_Angeles"}
         self.assertTrue(recording_schedule_active(schedule, datetime(2026, 1, 2, 7, 0, tzinfo=timezone.utc)))
@@ -84,20 +46,6 @@ class RecordingTests(unittest.TestCase):
         with patch('cctv.recording.shutil.disk_usage', return_value=usage(100, 90, 6 * 1024**3)):
             self.assertTrue(recording_space_available(Path('/test'), 5))
 
-    def test_busy_preview_worker_does_not_mark_recording_failed(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            source = root / 'recording.mp4'
-            source.touch()
-            target = root / '.scrub-frames' / 'recording'
-            self.assertTrue(SCRUB_ATLAS_BUILD_SLOT.acquire(blocking=False))
-            try:
-                with patch('cctv.recording.subprocess.run', side_effect=AssertionError('worker should stay idle')):
-                    prepare_scrub_frames(source, target)
-            finally:
-                SCRUB_ATLAS_BUILD_SLOT.release()
-            self.assertFalse(target.with_suffix('.failed').exists())
-
     def test_reads_duration_from_version_one_movie_header(self):
         def box(kind, payload):
             return struct.pack('>I4s', len(payload) + 8, kind) + payload
@@ -112,7 +60,7 @@ class RecordingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             recording = root / 'camera' / 'day' / 'video.mp4'
-            cache = root / '.scrub-frames' / 'camera' / 'day' / 'video'
+            cache = root / '.preview-track' / 'camera' / 'day' / 'video'
             recording.parent.mkdir(parents=True)
             cache.mkdir(parents=True)
             recording.touch()
@@ -124,7 +72,7 @@ class RecordingTests(unittest.TestCase):
                 return scandir(path)
             with patch('cctv.recording.os.scandir', side_effect=track):
                 self.assertEqual(recording_files(root), [recording])
-            self.assertFalse(any('.scrub-frames' in path for path in visited))
+            self.assertFalse(any('.preview-track' in path for path in visited))
 
     def test_uses_stream_copy_and_segmented_mp4_output(self):
         command = RecorderConfig("cam-1", "rtsp://media:8554/cam-1", Path("recordings")).ffmpeg_command()
@@ -162,3 +110,15 @@ class RecordingTests(unittest.TestCase):
             os.utime(source, (old, old))
             self.assertEqual(prune_recordings(root, 24), 1)
             self.assertFalse(cached.exists())
+
+    def test_pruning_deletes_the_old_scrub_preview_caches(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            atlas = root / '.scrub-frames' / 'camera' / 'day' / 'video' / '000.jpg'
+            proxy = root / '.trickplay-cache' / 'camera' / 'day' / 'video.mp4'
+            for path in (atlas, proxy):
+                path.parent.mkdir(parents=True)
+                path.write_bytes(b'old preview')
+            prune_recordings(root, 24)
+            self.assertFalse((root / '.scrub-frames').exists())
+            self.assertFalse((root / '.trickplay-cache').exists())
