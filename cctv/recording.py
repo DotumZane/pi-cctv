@@ -403,6 +403,10 @@ class RecorderSupervisor:
         self._trickplay_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cctv-preview-index")
         self._trickplay_job = None
         self._scrub_oldest_first = False
+        self._lock = threading.Lock()
+        self._started_at: dict[str, float] = {}
+        self._failures: dict[str, int] = {}
+        self._retry_at: dict[str, float] = {}
 
     def start(self) -> None:
         if not shutil.which("ffmpeg"):
@@ -412,11 +416,17 @@ class RecorderSupervisor:
         self._thread = threading.Thread(target=self._run, name="cctv-recorder-supervisor", daemon=True)
         self._thread.start()
 
-    def stop(self) -> None:
+    def stop(self, timeout: float = 6.0) -> None:
+        """Stop every recorder so FFmpeg can finish its current segment.
+
+        Docker allows the container a short grace period after SIGTERM, so
+        all recorders are signalled together rather than one at a time.
+        """
         self._stop.set()
         self._preview_wake.set()
+        self._stop_recorders(list(self._processes), timeout)
         if self._thread:
-            self._thread.join(timeout=10)
+            self._thread.join(timeout=2)
         self._trickplay_pool.shutdown(wait=False, cancel_futures=True)
 
     def _settings(self) -> dict:
@@ -426,14 +436,20 @@ class RecorderSupervisor:
             return {}
 
     def _stop_recorder(self, camera_id: str) -> None:
-        recorder = self._processes.pop(camera_id, None)
-        if not recorder:
-            return
-        process = recorder[0]
-        if process.poll() is None:
+        self._stop_recorders([camera_id], 8)
+
+    def _stop_recorders(self, camera_ids: list[str], timeout: float) -> None:
+        # SIGTERM makes FFmpeg write the open segment's index (moov) and
+        # exit; a killed FFmpeg leaves that segment unplayable.
+        with self._lock:
+            recorders = [self._processes.pop(camera_id) for camera_id in camera_ids if camera_id in self._processes]
+        running = [recorder[0] for recorder in recorders if recorder[0].poll() is None]
+        for process in running:
             process.terminate()
+        deadline = time.monotonic() + timeout
+        for process in running:
             try:
-                process.wait(timeout=8)
+                process.wait(timeout=max(0.1, deadline - time.monotonic()))
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait()
@@ -468,18 +484,34 @@ class RecorderSupervisor:
                         if is_scheduled and camera.get("status") == "online" and per_camera.get(camera["id"], True):
                             desired[camera["id"]] = (segment_seconds, retention, storage_limit_gb)
 
+                now = time.monotonic()
                 for camera_id, (process, current_settings, started_day) in list(self._processes.items()):
-                    if camera_id not in desired or current_settings != desired[camera_id] or started_day != today or process.poll() is not None:
+                    if process.poll() is not None:
+                        # A recorder that keeps failing (camera stream not
+                        # published yet, network down) backs off instead of
+                        # being relaunched on every loop.
+                        ran = now - self._started_at.get(camera_id, now)
+                        failures = self._failures.get(camera_id, 0) + 1 if ran < 60 else 1
+                        delay = min(60, 2 ** min(failures, 6))
+                        self._failures[camera_id] = failures
+                        self._retry_at[camera_id] = now + delay
+                        print(f"NVR recorder for {camera_id} exited with code {process.returncode} after {ran:.0f}s; retrying in {delay}s", flush=True)
                         self._stop_recorder(camera_id)
+                    elif camera_id not in desired or current_settings != desired[camera_id] or started_day != today:
+                        self._stop_recorder(camera_id)
+                    elif now - self._started_at.get(camera_id, now) >= 60:
+                        self._failures.pop(camera_id, None)
 
                 for camera_id, config_key in desired.items():
-                    if camera_id in self._processes:
+                    if camera_id in self._processes or self._stop.is_set() or now < self._retry_at.get(camera_id, 0):
                         continue
                     camera_dir = self.output_dir / camera_id
                     (camera_dir / today).mkdir(parents=True, exist_ok=True)
                     config = RecorderConfig(camera_id, self.stream_url_template.format(camera_id=camera_id), self.output_dir, *config_key)
                     process = subprocess.Popen(config.ffmpeg_command(), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    self._processes[camera_id] = (process, config_key, today)
+                    with self._lock:
+                        self._processes[camera_id] = (process, config_key, today)
+                    self._started_at[camera_id] = time.monotonic()
                     print(f"NVR recorder started for {camera_id} (pid {process.pid})", flush=True)
 
                 # Index one closed segment at a time into the preview track,
@@ -502,8 +534,7 @@ class RecorderSupervisor:
             self._preview_wake.wait(self.poll_seconds)
             self._preview_wake.clear()
 
-        for camera_id in list(self._processes):
-            self._stop_recorder(camera_id)
+        self._stop_recorders(list(self._processes), 6)
 
 
 def main() -> None:

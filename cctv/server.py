@@ -12,6 +12,7 @@ import os
 import re
 import secrets
 import shutil
+import signal
 import ssl
 import subprocess
 import tempfile
@@ -2335,14 +2336,23 @@ def main() -> None:
         print(f"Pi CCTV device API listening on https://{args.host}:{tls_port}", flush=True)
     elif setup_ap_enabled:
         raise SystemExit("HTTPS must be configured before enabling the server-managed setup Wi-Fi profile")
+    # Docker stops the container with SIGTERM. As PID 1 the server would
+    # otherwise ignore it until Docker kills everything, cutting off each
+    # recorder's open segment. Shut down the same way as Ctrl+C instead.
+    def request_shutdown(signum, frame) -> None:
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        raise KeyboardInterrupt
+    signal.signal(signal.SIGTERM, request_shutdown)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
+        # Recorders first: they need the container's stop grace period.
+        httpd.recorder_supervisor.stop()  # type: ignore[attr-defined]
+        print("NVR recorders stopped", flush=True)
         httpd.fleet_agent_updater.stop()  # type: ignore[attr-defined]
         httpd.fleet_os_updater.stop()  # type: ignore[attr-defined]
-        httpd.recorder_supervisor.stop()  # type: ignore[attr-defined]
         if tls_httpd is not None:
             tls_httpd.shutdown()
             tls_httpd.server_close()

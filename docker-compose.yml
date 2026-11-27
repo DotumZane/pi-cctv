@@ -2,6 +2,9 @@ services:
   management:
     build: .
     restart: unless-stopped
+    # Recorders finish their open segment on SIGTERM; give them time before
+    # Docker kills the container (the default is 10 seconds).
+    stop_grace_period: 20s
     ports:
       - "8080:8080"
       - "8443:8443"
