@@ -41,7 +41,7 @@ function manifestFor(records, hour) {
       width: 160, height: 90, columns: 16, times: coarse } : null };
 }
 
-function harness({ records, zoom = 14400, realClock = false, holdSheets = false, mainStalls = false } = {}) {
+function harness({ records, zoom = 14400, realClock = false, holdSheets = false, mainStalls = false, decodesOnLoad = false } = {}) {
   let fakeClock = 1000;
   const now = () => (realClock ? performance.now() : fakeClock);
   const animationFrames = [], draws = [], requests = [], held = [], listeners = new Map();
@@ -81,7 +81,11 @@ function harness({ records, zoom = 14400, realClock = false, holdSheets = false,
         // Loading a new file resets the speed, as browsers do.
         this.playbackRate = this.defaultPlaybackRate;
         // A stalled main player (slow network) never reports metadata.
-        if (!(mainStalls && name === 'main')) setImmediate(() => { this.readyState = 1; element.dispatch('loadedmetadata'); });
+        if (!(mainStalls && name === 'main')) setImmediate(() => {
+          this.readyState = 1; element.dispatch('loadedmetadata');
+          // Optionally the first frame is decoded right after the metadata.
+          if (decodesOnLoad) setImmediate(() => { this.readyState = 2; element.dispatch('loadeddata'); });
+        });
       },
       play() { this.plays++; this.paused = false; setImmediate(() => { this.readyState = 2; element.dispatch('canplay'); }); return Promise.resolve(); },
     };
@@ -473,8 +477,60 @@ async function speedSurvivesSegmentSwitch() {
   assert.equal(env.video.defaultPlaybackRate, 1);
 }
 
+async function preloadWhileScrollingSlowly() {
+  const env = harness({ records: makeRecords(21600, 4) });
+  // 2 s of footage every 200 ms (10 s/s) inside one segment.
+  for (const second of [21632, 21634, 21636]) await env.move(second, { stepMs: 200, frames: 2 });
+  assert.equal(env.video.loads, 1, 'a slowly moving cursor loads its segment before it stops');
+  assert.equal(env.video.src, '/recordings/cam-1/2026-11-12/06-00-30.mp4');
+  assert.equal(env.video.paused, true);
+  env.advance(400);
+  await env.frames(30);
+  assert.equal(env.video.loads, 1, 'stopping only seeks the already loaded segment');
+  assert.equal(env.video.currentTime, 6);
+  // A fast cursor does not load segments it passes.
+  const fast = harness({ records: makeRecords(21600, 40) });
+  for (let i = 1; i <= 20; i++) await fast.move(21600 + i * 30, { stepMs: 16, frames: 1 });
+  assert.equal(fast.video.loads, 0, 'fast scrolling does not load the main player');
+}
+
+async function seamlessSegmentSwitch() {
+  const env = harness({ records: makeRecords(21600, 4), decodesOnLoad: true });
+  await env.window.scrubWorkspaceTimeline(21650);
+  env.video.playbackRate = 2;
+  env.video._time = 24;
+  env.video.dispatch('timeupdate');
+  assert.equal(env.proxies.length, 1, 'the next segment is loaded in a hidden player near the end');
+  const next = env.proxies[0];
+  assert.equal(next.src, '/recordings/cam-1/2026-11-12/06-01-00.mp4');
+  for (let i = 0; i < 4; i++) await tick();
+  assert.equal(next.readyState >= 2, true);
+  env.video._time = 29.7;
+  env.video.dispatch('timeupdate');
+  env.statusHistory.length = 0;
+  const loadsBefore = env.video.loads;
+  env.video.ended = true;
+  env.video.dispatch('ended');
+  await tick();
+  assert.equal(next.paused, false, 'the preloaded segment starts playing at once');
+  next._time = 0.4; // the bridge keeps playing while the main player loads
+  assert.equal(next.playbackRate, 2, 'at the chosen speed');
+  assert.equal(env.visible.has('visible'), true, 'its picture covers the main player while that loads');
+  await env.frames(3);
+  assert.ok(env.draws.some(draw => draw.source === next), 'the overlay shows the playing next segment');
+  for (let i = 0; i < 10; i++) await tick();
+  assert.equal(env.video.loads, loadsBefore + 1);
+  assert.equal(env.video.src, next.src, 'the main player takes over the same segment');
+  assert.equal(env.video.currentTime, 0.4, 'the main player continues from the exact frame the bridge reached');
+  assert.equal(env.video.paused, false);
+  assert.equal(env.video.playbackRate, 2);
+  assert.equal(next.paused, true, 'the hidden player stops after the handover');
+  assert.equal(env.visible.has('visible'), false, 'the overlay is removed after the handover');
+  assert.ok(!env.statusHistory.some(text => /Loading selected recording/.test(text)));
+}
+
 Promise.resolve()
   .then(forwardAndReverse).then(rapidDirectionChanges).then(wheelGestureCommitsOnce).then(zoomSelectsDensity)
-  .then(sourceConsistency).then(segmentBoundaries).then(cacheMisses).then(scrubToPlayback).then(speedSurvivesSegmentSwitch).then(missingRecordingsAndPreviews)
+  .then(sourceConsistency).then(segmentBoundaries).then(cacheMisses).then(scrubToPlayback).then(speedSurvivesSegmentSwitch).then(preloadWhileScrollingSlowly).then(seamlessSegmentSwitch).then(missingRecordingsAndPreviews)
   .then(() => { console.log('Playback engine checks passed'); process.exit(0); })
   .catch(error => { console.error(error); process.exit(1); });

@@ -31,6 +31,11 @@
   const VIDEO_MAX_SPP = 0.6, VIDEO_MAX_SPEED = 30;
   const LIMITS = { decodedFine: 16, decodedCoarse: 4, sheetFetches: 4, manifestFetches: 3, decodes: 2 };
   const COMMIT_IDLE_MS = 350, WHEEL_IDLE_MS = 300, SCROLLEND_GRACE_MS = 120, REST_AFTER_MS = 120, PREPARE_AFTER_MS = 120;
+  // Start loading the segment under a slowly moving cursor once it has
+  // stayed in that segment this long, so stopping only needs a seek.
+  const PRELOAD_MAX_SPEED = 60, PRELOAD_DWELL_MS = 250;
+  // Load the next segment in a hidden player this long before the end.
+  const NEXT_PRELOAD_SECONDS = 8;
 
   const state = {
     canvas: null, ctx: null, message: null, proxy: null,
@@ -48,6 +53,7 @@
     gapPlaying: false, gapTimer: 0, gapLastTick: 0, gapTicking: false,
     commitTimer: 0, commitScheduleTimer: 0, pointerDown: false, lastWheelAt: 0,
     gesture: null, lastValue: null, lastTime: 0,
+    recordSince: 0, next: null, nextUrl: null, bridgeToken: 0, bridging: false,
   };
 
   function log(event, details) { if (debug) console.debug('[playback]', event, details || ''); }
@@ -520,6 +526,9 @@
       } else if (shown?.stale && shown.level !== VIDEO && decodedSheet(shown)) paintFrame({ ...shown, stale: false });
       updateLabel(sheetLevel);
       if (state.velocity === 0 && !state.pointerDown && now - state.lastInputAt > PREPARE_AFTER_MS) prepareMain();
+      else if (Math.abs(state.velocity) <= PRELOAD_MAX_SPEED && now - state.recordSince >= PRELOAD_DWELL_MS) {
+        loadMainSource(state.cursor.record);
+      }
     }
     // Keep ticking until the cursor has come to rest and its frames are in,
     // so the resting density (finer than the moving one) gets drawn.
@@ -547,11 +556,19 @@
       video.addEventListener('seeked', () => showMainAtRest(record, token), { once: true });
       try { video.currentTime = target; } catch {}
     };
-    if (workspacePlaybackUrl === record.url && video.dataset.playback === 'recording' && video.readyState >= 1 && !video.error) {
-      video.pause();
-      seek();
-      return;
-    }
+    if (!loadMainSource(record)) return;
+    video.pause();
+    if (video.readyState >= 1) seek();
+    else video.addEventListener('loadedmetadata', seek, { once: true });
+  }
+
+  // Put the cursor's segment in the main player, paused behind the preview.
+  // Returns false when that is not possible (no MP4 or a commit owns it).
+  function loadMainSource(record) {
+    const video = mainVideo();
+    if (!record || !video || !isMp4(record) || !state.active ||
+        (state.commitToken && state.commitToken === state.requestToken)) return false;
+    if (workspacePlaybackUrl === record.url && video.dataset.playback === 'recording' && !video.error) return true;
     disableNativeControls(video);
     // The live view relies on autoplay; a prepared recording must stay
     // paused until the commit plays it. Live view turns autoplay back on.
@@ -560,11 +577,11 @@
     video.onerror = null;
     if (typeof stopLivePlayback === 'function') stopLivePlayback(video);
     video.dataset.playback = 'recording';
-    video.addEventListener('loadedmetadata', seek, { once: true });
     video.src = record.url;
     video.load();
     workspacePlaybackUrl = record.url;
     workspacePlaybackStartSeconds = timelineSeconds(record);
+    return true;
   }
 
   function showMainAtRest(record, token) {
@@ -714,6 +731,8 @@
       if (direction) state.direction = direction;
     }
     state.lastInputAt = now;
+    if (record?.path !== state.cursor.record?.path) state.recordSince = now;
+    cancelBridge();
     state.cursor = { t: absolute, selected, record, offset: record ? recordingOffset(record, selected) : 0, date: workspaceTimelineDate };
     state.lastValue = state.target = selected;
     state.targetAbsolute = absolute;
@@ -844,6 +863,111 @@
     return error?.code === 3 || error?.code === 4 || error?.name === 'NotSupportedError';
   }
 
+  // --------------------------------------------------- seamless segment switch
+  function hiddenNextPlayer() {
+    if (state.next) return state.next;
+    const host = shell();
+    const video = document.createElement('video');
+    if (!host || !video?.addEventListener) return null;
+    video.className = 'workspace-scrub-proxy';
+    video.muted = true;
+    video.preload = 'auto';
+    video.setAttribute('playsinline', '');
+    disableNativeControls(video);
+    host.appendChild(video);
+    state.next = video;
+    return video;
+  }
+
+  // Near the end of a segment, load the next one in a hidden player.
+  function preloadNextSegment(video) {
+    if (typeof workspaceTimelineRecords === 'undefined' || !Number.isFinite(video.duration)) return;
+    const current = workspaceTimelineRecords.find(record => record.url === workspacePlaybackUrl);
+    if (!current) return;
+    const next = nextRecording(timelineSeconds(current));
+    if (!next || !isMp4(next) || timelineSeconds(next) > timelineSeconds(current) + video.duration + 0.1) return;
+    if (state.nextUrl === next.url) return;
+    const player = hiddenNextPlayer();
+    if (!player) return;
+    state.nextUrl = next.url;
+    player.src = next.url;
+    player.load();
+  }
+
+  function cancelBridge() {
+    if (!state.bridging) return;
+    state.bridging = false;
+    state.bridgeToken += 1;
+    state.next?.pause?.();
+  }
+
+  // Play the preloaded next segment on the overlay at once, while the main
+  // player loads it; hand over when the main player shows the same moment.
+  async function bridgeToNext(record, video, token) {
+    const player = state.next;
+    const bridge = ++state.bridgeToken;
+    state.bridging = true;
+    const rate = video.playbackRate || video.defaultPlaybackRate || 1;
+    player.playbackRate = rate;
+    try { player.currentTime = 0; } catch {}
+    try { await Promise.resolve(player.play()); }
+    catch { state.bridging = false; return false; }
+    ensurePreview();
+    state.canvas.classList.add('visible');
+    const paint = () => {
+      if (bridge !== state.bridgeToken || !state.bridging) return;
+      if (player.readyState >= 2) drawSource(player, 0, 0, player.videoWidth || 1, player.videoHeight || 1);
+      if (typeof updateTimelinePlayhead === 'function') updateTimelinePlayhead(timelineSeconds(record) + player.currentTime);
+      requestAnimationFrame(paint);
+    };
+    requestAnimationFrame(paint);
+    disableNativeControls(video);
+    video.pause();
+    video.onerror = null;
+    video.dataset.playback = 'recording';
+    video.src = record.url;
+    video.load();
+    workspacePlaybackUrl = record.url;
+    workspacePlaybackStartSeconds = timelineSeconds(record);
+    try {
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('recording load timed out')), 15000);
+        video.addEventListener('loadedmetadata', () => { clearTimeout(timer); resolve(); }, { once: true });
+        video.addEventListener('error', () => { clearTimeout(timer); reject(video.error); }, { once: true });
+      });
+      if (bridge !== state.bridgeToken || token !== state.requestToken) return true;
+      const limit = Math.max(0, (video.duration || Infinity) - 0.05);
+      // Get ready near the bridge's position (it keeps playing meanwhile),
+      // then pause the bridge and line up on its exact frame. The data for
+      // that frame is already loaded, so the final seek is quick, and the
+      // picture neither jumps ahead nor back at the handover.
+      video.currentTime = Math.min(player.currentTime, limit);
+      await waitForDisplayedFrame(video);
+      if (bridge !== state.bridgeToken || token !== state.requestToken) return true;
+      player.pause();
+      const target = Math.min(player.currentTime, limit);
+      if (Math.abs(video.currentTime - target) > 0.04) {
+        video.currentTime = target;
+        await waitForDisplayedFrame(video);
+      }
+      if (bridge !== state.bridgeToken || token !== state.requestToken) return true;
+      await startAndWaitForFrame(video);
+      if (bridge !== state.bridgeToken || token !== state.requestToken) return true;
+      if (userPaused()) video.pause();
+      drawMainFrame();
+      updateStatus(userPaused() ? 'Recording paused.' : 'Playing recording.');
+    } catch (error) {
+      if (bridge === state.bridgeToken && token === state.requestToken) handlePlaybackStartError(error);
+    } finally {
+      if (bridge === state.bridgeToken) {
+        state.bridging = false;
+        player.pause();
+        if (!state.active) state.canvas?.classList.remove('visible');
+      }
+    }
+    return true;
+  }
+
   // `continuous` marks the automatic move to the next segment during
   // playback: it must look like uninterrupted playback, not a new load.
   async function commit(value, converted = false, continuous = false) {
@@ -873,6 +997,8 @@
 
   async function commitRecording(record, selected, video, token, converted, continuous) {
     const offset = recordingOffset(record, selected);
+    if (continuous && !converted && offset < 0.5 && state.nextUrl === record.url && state.next?.readyState >= 2 &&
+        !state.active && await bridgeToNext(record, video, token)) return;
     const url = converted ? `${record.url}${record.url.includes('?') ? '&' : '?'}format=mp4` : sourceFor(record);
     const sameSource = video && workspacePlaybackUrl === record.url && video.dataset.playback === 'recording' && !converted;
     const same = sameSource && video.readyState >= 1 && !video.error;
@@ -1060,6 +1186,7 @@
         if (speed) speed.value = '1';
       }
       state.prepared = null;
+      cancelBridge();
       const result = await returnToLive(...args);
       const current = mainVideo();
       if (current?.readyState >= 2) hidePreview();
@@ -1122,6 +1249,7 @@
         // browsers cannot draw a video once it has ended, which showed black
         // while the next segment loaded.
         const remaining = (video.duration || 0) - video.currentTime;
+        if (remaining > 0 && remaining < NEXT_PRELOAD_SECONDS) preloadNextSegment(video);
         if (remaining > 0 && remaining < 0.6 && video.readyState >= 2 && ensurePreview()) {
           drawSource(video, 0, 0, video.videoWidth || video.clientWidth, video.videoHeight || video.clientHeight);
         }
