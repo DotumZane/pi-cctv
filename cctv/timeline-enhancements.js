@@ -170,26 +170,55 @@ const multiGridFitStyle=document.createElement('style');
 multiGridFitStyle.textContent='#live-workspace.multi-workspace .multi-camera-grid{width:min(100%,calc((100dvh - 310px) * 16 / 9));align-self:center}#live-workspace.multi-workspace #workspace-multi-timeline{height:clamp(240px,calc(100dvh - 170px),760px)}@media(max-width:600px){#live-workspace.multi-workspace .multi-camera-grid{width:100%}}';
 document.head.appendChild(multiGridFitStyle);
 let multiTimelineDays=[],multiTimelineLoading=false,multiTimelineGeneration=0;
-const multiContinuousHeight=3600;
-function multiAppendDay(date,records){
+// Pixels per day of the grid timeline; set by the zoom buttons (same levels
+// as the single-camera timeline).
+let multiContinuousHeight=3600,multiTimelineZoom='4h',multiTimelineLabelFrame=0,multiTimelineZoomLoaded=false;
+// The zoom levels are defined by a later dashboard script; read the saved
+// zoom when the grid timeline is first drawn.
+function multiLoadSavedZoom(){if(multiTimelineZoomLoaded)return;multiTimelineZoomLoaded=true;try{const saved=localStorage.getItem('cctvGridTimelineZoom'),level=verticalTimelineZoomLevels.find(item=>item.id===saved);if(level){multiTimelineZoom=level.id;multiContinuousHeight=level.pxPerDay}}catch{}}
+function multiDayLength(date){const start=new Date(date+'T00:00:00'),end=new Date(start);end.setDate(end.getDate()+1);return (end-start)/1000}
+function multiLabelStep(){return verticalTimelineLabelStep(86400,multiContinuousHeight)}
+// One slim lane per camera along the right edge marks where it has footage.
+function multiRange(id,record,start,duration){
+  const seconds=(new Date(record.start)-start)/1000,length=Number(record.duration)||Number(workspaceTimelineSegmentSeconds)||30,span=document.createElement('span');
+  span.className='multi-vertical-timeline-range';span.style.setProperty('--lane',String(Math.max(0,multiWorkspaceCameras.indexOf(id))));
+  span.style.top=Math.max(0,(1-(seconds+length)/duration)*multiContinuousHeight)+'px';span.style.height=Math.max(3,length/duration*multiContinuousHeight)+'px';
+  span.title=state.devices.find(device=>device.id===id)?.name||id;return span;
+}
+function multiRenderDay(day,index){
   const content=document.querySelector('.multi-vertical-timeline-content');if(!content)return;
-  const index=multiTimelineDays.length,day={date,records};multiTimelineDays.push(day);
-  const start=new Date(date+'T00:00:00'),end=new Date(start);end.setDate(end.getDate()+1);
-  const duration=(end-start)/1000,layer=document.createElement('div');
+  const start=new Date(day.date+'T00:00:00'),duration=multiDayLength(day.date),layer=document.createElement('div');
+  layer.dataset.multiDay=day.date;
   layer.style.cssText='position:absolute;left:0;right:0;top:'+index*multiContinuousHeight+'px;height:'+multiContinuousHeight+'px';
-  const marker=document.createElement('span');marker.style.cssText='position:absolute;top:5px;left:44px;color:var(--muted);font-size:10px';marker.textContent=date;layer.appendChild(marker);
-  for(let seconds=0;seconds<duration;seconds+=1800){
+  const marker=document.createElement('span');marker.style.cssText='position:absolute;top:5px;left:44px;color:var(--muted);font-size:10px';marker.textContent=day.date;layer.appendChild(marker);
+  const step=multiLabelStep();
+  // Detailed zooms label only the region around the viewport (multiRenderLabels).
+  if(duration/step<=720)for(let seconds=0;seconds<duration;seconds+=step){
     const label=document.createElement('span');label.className='multi-vertical-timeline-label';
-    label.style.top=(1-seconds/duration)*multiContinuousHeight+'px';
-    const time=new Date(start.getTime()+seconds*1000);label.textContent=String(time.getHours()).padStart(2,'0')+':'+String(time.getMinutes()).padStart(2,'0');layer.appendChild(label);
+    label.style.top=(1-seconds/duration)*multiContinuousHeight+'px';label.textContent=verticalTimelineLabelText(seconds,step);layer.appendChild(label);
   }
-  for(const [id,items] of records)items.forEach((record,i)=>{
-    const seconds=(new Date(record.start)-start)/1000,span=document.createElement('span');
-    const length=Number(record.duration)||Math.max(1,Number(workspaceTimelineSegmentSeconds)||30);
-    span.className='multi-vertical-timeline-range';span.style.top=Math.max(0,(1-(seconds+length)/duration)*multiContinuousHeight)+'px';span.style.height=Math.max(3,length/duration*multiContinuousHeight)+'px';span.title=state.devices.find(device=>device.id===id)?.name||id;layer.appendChild(span);
-  });
+  for(const [id,items] of day.records)items.forEach(record=>layer.appendChild(multiRange(id,record,start,duration)));
   content.appendChild(layer);content.style.height=content.style.minHeight=(multiTimelineDays.length*multiContinuousHeight)+'px';
 }
+function multiAppendDay(date,records){
+  const content=document.querySelector('.multi-vertical-timeline-content');if(!content)return;
+  const day={date,records};multiTimelineDays.push(day);multiRenderDay(day,multiTimelineDays.length-1);
+}
+function multiRenderLabels(force=false){
+  const scroll=document.querySelector('.multi-vertical-timeline-scroll'),content=scroll?.querySelector('.multi-vertical-timeline-content');if(!scroll||!content)return;
+  let band=content.querySelector('.multi-vertical-timeline-label-band');
+  if(!band){band=document.createElement('div');band.className='multi-vertical-timeline-label-band';content.appendChild(band)}
+  const step=multiLabelStep(),H=multiContinuousHeight;
+  if(86400/step<=720){if(band.childElementCount)band.textContent='';band.dataset.range='';return}
+  const top=Math.max(0,scroll.scrollTop-scroll.clientHeight),bottom=scroll.scrollTop+scroll.clientHeight*2,range=Math.floor(top/Math.max(1,scroll.clientHeight))+':'+H;
+  if(!force&&band.dataset.range===range)return;
+  band.dataset.range=range;band.textContent='';
+  for(let index=Math.floor(top/H);index<=Math.min(multiTimelineDays.length-1,Math.floor(bottom/H));index++){
+    const duration=multiDayLength(multiTimelineDays[index].date),first=Math.max(0,Math.floor((1-(bottom-index*H)/H)*duration/step)*step),last=Math.min(duration,(1-(top-index*H)/H)*duration);
+    for(let seconds=first;seconds<=last;seconds+=step){const label=document.createElement('span');label.className='multi-vertical-timeline-label';label.style.top=(index*H+(1-seconds/duration)*H)+'px';label.textContent=verticalTimelineLabelText(seconds,step);band.appendChild(label)}
+  }
+}
+function multiScheduleLabels(){if(multiTimelineLabelFrame)return;multiTimelineLabelFrame=requestAnimationFrame(()=>{multiTimelineLabelFrame=0;multiRenderLabels()})}
 async function multiAppendPreviousDays(){
   if(multiTimelineLoading||!multiTimelineDays.length)return;
   multiTimelineLoading=true;const generation=multiTimelineGeneration,pending=[];
@@ -198,18 +227,60 @@ async function multiAppendPreviousDays(){
     const results=await Promise.all(multiWorkspaceCameras.map(async id=>{try{const response=await api('/api/recordings?camera_id='+encodeURIComponent(id));return [id,response.ok?(await response.json()).recordings||[]:[]]}catch{return [id,[]]}}));
     if(generation!==multiTimelineGeneration)return;
     for(const day of pending)for(const [id,records] of results)day.records.set(id,records.filter(record=>record.start&&localDateKey(record.start)===day.date).sort((a,b)=>new Date(a.start)-new Date(b.start)));
-    // Paint recording ranges in their existing layers without moving the scroll position.
+    // Paint recording lanes in their existing layers without moving the scroll position.
     const content=document.querySelector('.multi-vertical-timeline-content');
-    for(const day of pending){const index=multiTimelineDays.indexOf(day),layer=content?.children[index];if(!layer)continue;const start=new Date(day.date+'T00:00:00'),end=new Date(start);end.setDate(end.getDate()+1);const duration=(end-start)/1000;for(const [id,items] of day.records)for(const record of items){const seconds=(new Date(record.start)-start)/1000,length=Number(record.duration)||Number(workspaceTimelineSegmentSeconds)||30,range=document.createElement('span');range.className='multi-vertical-timeline-range';range.style.top=Math.max(0,(1-(seconds+length)/duration)*multiContinuousHeight)+'px';range.style.height=Math.max(3,length/duration*multiContinuousHeight)+'px';range.title=state.devices.find(device=>device.id===id)?.name||id;layer.appendChild(range)}}
+    for(const day of pending){const layer=content?.querySelector(`[data-multi-day="${day.date}"]`);if(!layer)continue;const start=new Date(day.date+'T00:00:00'),duration=multiDayLength(day.date);for(const [id,items] of day.records)for(const record of items)layer.appendChild(multiRange(id,record,start,duration))}
     const selected=multiTimelineDays.find(day=>day.date===multiWorkspaceDate);if(selected&&pending.includes(selected)){multiWorkspaceRecords=selected.records;await multiSeekAll(multiWorkspaceValue)}
   }finally{if(generation===multiTimelineGeneration)multiTimelineLoading=false}
 }
+// Zoomed out, a day can be shorter than the timeline window; load earlier
+// days until there is room to scroll.
+async function multiFillDays(){
+  const scroll=document.querySelector('.multi-vertical-timeline-scroll');if(!scroll)return;
+  for(let attempt=0;attempt<8;attempt++){
+    if(multiTimelineDays.length*multiContinuousHeight>=scroll.scrollTop+scroll.clientHeight*2+1800)break;
+    const before=multiTimelineDays.length;await multiAppendPreviousDays();
+    if(multiTimelineDays.length===before){if(multiTimelineLoading){await new Promise(resolve=>setTimeout(resolve,200));continue}break}
+  }
+}
+function multiPositionTimeline(date,value){
+  const scroll=document.querySelector('.multi-vertical-timeline-scroll'),index=multiTimelineDays.findIndex(day=>day.date===date);if(!scroll||index<0)return;
+  multiTimelineProgrammatic=true;scroll.scrollTop=Math.max(0,Math.min(scroll.scrollHeight-scroll.clientHeight,index*multiContinuousHeight+(1-(Number(value)||0)/multiDayLength(date))*multiContinuousHeight-26));
+  multiRenderLabels(true);requestAnimationFrame(()=>{multiTimelineProgrammatic=false});
+}
+function setMultiTimelineZoom(id){
+  const level=verticalTimelineZoomLevels.find(item=>item.id===id),content=document.querySelector('.multi-vertical-timeline-content');
+  if(!level||!content||level.pxPerDay===multiContinuousHeight)return false;
+  const date=multiWorkspaceDate,value=multiWorkspaceValue,index=Math.max(0,multiTimelineDays.findIndex(day=>day.date===date));
+  const help=document.querySelector('.multi-vertical-timeline-help');
+  if((index+2)*level.pxPerDay>verticalTimelineMaxHeight){if(help)help.textContent=`Zoom ${id} is not available this far back. Scroll nearer to today first.`;return false}
+  while(multiTimelineDays.length>index+2&&multiTimelineDays.length*level.pxPerDay>verticalTimelineMaxHeight)multiTimelineDays.pop();
+  multiTimelineZoom=level.id;multiContinuousHeight=level.pxPerDay;try{localStorage.setItem('cctvGridTimelineZoom',level.id)}catch{}
+  content.textContent='';multiTimelineDays.forEach((day,i)=>multiRenderDay(day,i));
+  multiPositionTimeline(date,value);updateMultiZoomControls();void multiFillDays().then(()=>{if(!multiTimelineUserScrolling)multiPositionTimeline(date,value)});
+  return true;
+}
+function updateMultiZoomControls(){
+  document.querySelectorAll('.multi-timeline-zoom button').forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.zoom===multiTimelineZoom)));
+  const help=document.querySelector('.multi-vertical-timeline-help'),perNotch=86400/multiContinuousHeight;
+  if(help)help.textContent=`Scroll to move in time · ${perNotch>=1?Math.round(perNotch)+' s':perNotch.toFixed(1)+' s'} per wheel notch · Ctrl+scroll to zoom. One lane per camera marks recordings.`;
+}
+function ensureMultiZoomControls(){
+  const heading=document.querySelector('.multi-vertical-timeline-heading');if(!heading||heading.querySelector('.multi-timeline-zoom'))return;
+  const group=document.createElement('div');group.className='vertical-timeline-zoom multi-timeline-zoom';group.setAttribute('role','group');group.setAttribute('aria-label','Timeline zoom');
+  verticalTimelineZoomLevels.forEach(level=>{const button=document.createElement('button');button.type='button';button.className='ghost';button.dataset.zoom=level.id;button.textContent=level.id;button.addEventListener('click',()=>setMultiTimelineZoom(level.id));group.appendChild(button)});
+  heading.after(group);updateMultiZoomControls();
+}
 const multiRenderBeforeContinuous=renderMultiTimeline;
 renderMultiTimeline=function(){
+  multiLoadSavedZoom();
   multiRenderBeforeContinuous();multiTimelineGeneration++;multiTimelineLoading=false;multiTimelineDays=[];
   const scroll=document.querySelector('.multi-vertical-timeline-scroll'),content=scroll?.querySelector('.multi-vertical-timeline-content');if(!scroll||!content)return;
   content.innerHTML='';multiAppendDay(multiWorkspaceDate,new Map(multiWorkspaceRecords));
+  ensureMultiZoomControls();
+  scroll.addEventListener('wheel',event=>{if(!event.ctrlKey||!event.deltaY)return;event.preventDefault();const index=verticalTimelineZoomLevels.findIndex(item=>item.id===multiTimelineZoom),next=verticalTimelineZoomLevels[Math.max(0,Math.min(verticalTimelineZoomLevels.length-1,index+(event.deltaY<0?1:-1)))];if(next)setMultiTimelineZoom(next.id)},{passive:false});
   scroll.addEventListener('scroll',event=>{
+    multiScheduleLabels();
     if(multiTimelineProgrammatic)return;
     event.stopImmediatePropagation();multiTimelineUserScrolling=true;
     const position=Math.max(0,scroll.scrollTop+26),index=Math.min(multiTimelineDays.length-1,Math.floor(position/multiContinuousHeight)),day=multiTimelineDays[index];
@@ -218,10 +289,16 @@ renderMultiTimeline=function(){
     const dateInput=document.querySelector('#multi-workspace-date');if(dateInput)dateInput.value=day.date;
     const length=multiDaySeconds();multiWorkspaceValue=Math.max(0,Math.min(length-1,length*(1-(position-index*multiContinuousHeight)/multiContinuousHeight)));
     multiUpdatePlayhead(multiWorkspaceValue);
+    // Show each camera's preview frame for this time while scrolling.
+    window.cctvGridScrub?.move(multiWorkspaceDate,multiWorkspaceValue);
     if(scroll.scrollHeight-scroll.scrollTop-scroll.clientHeight<1800)void multiAppendPreviousDays();
-    clearTimeout(scroll._continuousSeek);scroll._continuousSeek=setTimeout(()=>{multiTimelineUserScrolling=false;void multiSeekAll(multiWorkspaceValue)},180);
+    // Seek the players once scrolling settles (one wheel gesture, one seek).
+    clearTimeout(scroll._continuousSeek);scroll._continuousSeek=setTimeout(()=>{multiTimelineUserScrolling=false;void multiSeekAll(multiWorkspaceValue)},350);
   },{capture:true,passive:true});
-  void multiAppendPreviousDays();
+  // The base renderer positions the scroll a frame later at the default
+  // scale; position for the current zoom after it.
+  requestAnimationFrame(()=>multiPositionTimeline(multiWorkspaceDate,multiWorkspaceValue));
+  void multiAppendPreviousDays().then(()=>multiFillDays());
 };
 const multiPositionBeforeContinuous=multiUpdatePlayhead;
 multiUpdatePlayhead=function(value){
@@ -230,7 +307,8 @@ multiUpdatePlayhead=function(value){
   if(!scroll||index<0){multiPositionBeforeContinuous(value);return}
   multiTimelineUserScrolling=true;multiPositionBeforeContinuous(value);multiTimelineUserScrolling=false;
   multiTimelineProgrammatic=true;scroll.scrollTop=Math.max(0,index*multiContinuousHeight+(1-(Number(value)||0)/multiDaySeconds())*multiContinuousHeight-26);
-  requestAnimationFrame(()=>{multiTimelineProgrammatic=false});
+  multiRenderLabels();requestAnimationFrame(()=>{multiTimelineProgrammatic=false});
 };
-
-/* Commit a scrub without handing control back to the autoplay playback loader. */
+const multiTimelineLaneStyle=document.createElement('style');
+multiTimelineLaneStyle.textContent='#live-workspace.multi-workspace .multi-vertical-timeline-content .multi-vertical-timeline-range{left:auto;right:calc(4px + var(--lane,0) * 5px);width:3px;min-height:3px;border-radius:2px;background:#5b8def;opacity:.85;pointer-events:none}.multi-vertical-timeline-label-band{position:absolute;inset:0;pointer-events:none}.multi-timeline-zoom{margin:0 0 6px}';
+document.head.appendChild(multiTimelineLaneStyle);

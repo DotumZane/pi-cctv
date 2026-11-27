@@ -529,8 +529,77 @@ async function seamlessSegmentSwitch() {
   assert.ok(!env.statusHistory.some(text => /Loading selected recording/.test(text)));
 }
 
+async function gridPreviews() {
+  // Two grid tiles; camera b has no footage before 06:05.
+  const recordsA = makeRecords(21600, 40), recordsB = makeRecords(21900, 30).map(r => ({ ...r, path: r.path.replace('cam-1', 'cam-b'), url: r.url.replace('cam-1', 'cam-b') }));
+  const animationFrames = [], draws = [], classes = new Map();
+  const canvasFor = id => ({ width: 0, height: 0, setAttribute() {}, className: '',
+    classList: { add(...names) { names.forEach(n => classes.get(id).add(n)); }, remove(...names) { names.forEach(n => classes.get(id).delete(n)); },
+      contains(name) { return classes.get(id).has(name); }, toggle() {} },
+    getContext() { return { fillRect() {}, set fillStyle(_) {}, drawImage(source, sx, sy, sw, sh) { draws.push({ id, source, sx, sy, sw, sh }); } }; } });
+  const tiles = ['cam-1', 'cam-b'].map(id => {
+    classes.set(id, new Set());
+    const listeners = new Map(), missing = { hidden: true, textContent: '' };
+    const video = { dataset: { cameraId: id, playback: 'live' }, readyState: 0, videoWidth: 0, paused: true, seeking: false,
+      clientWidth: 640, clientHeight: 360, isConnected: true, currentSrc: '', duration: 30, _src: '',
+      getAttribute(name) { return name === 'src' ? this._src : null; },
+      addEventListener(type, fn) { listeners.set(type, [...(listeners.get(type) || []), fn]); },
+      dispatch(type) { (listeners.get(type) || []).forEach(fn => fn({ type })); }, pause() { this.paused = true; } };
+    const host = { appendChild(canvas) { video.canvas = canvas; }, querySelector: sel => sel === '.multi-camera-missing' ? missing : null };
+    video.parentElement = host;
+    return { id, video, missing };
+  });
+  let created = 0;
+  const document = {
+    body: {}, head: { appendChild() {} }, documentElement: { dataset: {} },
+    createElement(tag) { if (tag === 'canvas') return canvasFor(tiles[created++ % tiles.length].id); return { textContent: '', setAttribute() {}, classList: { toggle() {} } }; },
+    querySelector() { return null }, querySelectorAll: sel => sel === '.multi-camera-video' ? tiles.map(t => t.video) : [],
+    addEventListener() {},
+  };
+  const manifests = (camera, hour) => manifestFor(camera === 'cam-1' ? recordsA : recordsB, hour);
+  const seeks = [];
+  const globals = {
+    document, window: {}, URLSearchParams, URL, AbortController, location: { search: '', href: 'http://x/' }, devicePixelRatio: 1,
+    performance: { now: () => clock }, console, setTimeout, clearTimeout, setImmediate,
+    requestAnimationFrame(fn) { animationFrames.push(fn); return animationFrames.length; }, cancelAnimationFrame() {},
+    MutationObserver: class { observe() {} }, timelineDayLength: () => 86400, timelineSeconds: r => r.startSeconds,
+    workspaceTimelineDate: DATE, multiContinuousHeight: 14400,
+    multiWorkspaceRecords: new Map([['cam-1', recordsA], ['cam-b', recordsB]]),
+    multiRecordAt: (records, value) => records.find(r => value >= r.startSeconds && value < r.startSeconds + r.duration),
+    multiSeconds: r => r.startSeconds, multiWorkspaceValue: 0,
+    async multiSeekAll(value) { seeks.push(value); tiles.forEach(t => { t.video._src = 'x.mp4'; t.video.readyState = 2; }); },
+    api(url) {
+      const params = new URL(url, 'http://x').searchParams;
+      if (url.includes('/preview-track?')) return Promise.resolve({ ok: true, json: async () => manifests(params.get('camera_id'), Number(params.get('hour'))) });
+      return Promise.resolve({ ok: true, blob: async () => ({ url }) });
+    },
+    createImageBitmap: async blob => ({ id: blob.url, close() {} }),
+  };
+  let clock = 1000;
+  vm.runInNewContext(SOURCE, globals);
+  const frames = async (n = 6) => { for (let i = 0; i < n; i++) { animationFrames.splice(0).forEach(fn => fn(clock)); await tick(); await tick(); } };
+  const shown = id => { const d = [...draws].reverse().find(x => x.id === id && x.source?.id); return d && d.source.id; };
+  globals.window.cctvGridScrub.move(DATE, 22000);
+  clock += 400;
+  await frames(8);
+  assert.match(shown('cam-1'), /cam-1\/2026-11-12\/06-06-30\/000\.jpg/, 'each tile shows its own camera at the cursor time');
+  assert.match(shown('cam-b'), /cam-b\/2026-11-12\/06-06-30\/000\.jpg/);
+  assert.equal(classes.get('cam-1').has('visible'), true);
+  // Before 06:05 camera b has no footage: its last picture is dimmed.
+  globals.window.cctvGridScrub.move(DATE, 21700);
+  clock += 400;
+  await frames(8);
+  assert.equal(classes.get('cam-b').has('stale'), true, 'a camera without footage keeps its picture, dimmed');
+  assert.equal(tiles[1].missing.hidden, false);
+  assert.match(shown('cam-1'), /06-01-30\/000\.jpg/, 'the other camera keeps following the cursor');
+  // Committing seeks the players; overlays stay until each shows its frame.
+  await globals.window.multiSeekAll(21700);
+  assert.deepEqual([...seeks], [21700]);
+  assert.equal(classes.get('cam-1').has('visible'), false, 'a ready player replaces its overlay');
+}
+
 Promise.resolve()
   .then(forwardAndReverse).then(rapidDirectionChanges).then(wheelGestureCommitsOnce).then(zoomSelectsDensity)
-  .then(sourceConsistency).then(segmentBoundaries).then(cacheMisses).then(scrubToPlayback).then(speedSurvivesSegmentSwitch).then(preloadWhileScrollingSlowly).then(seamlessSegmentSwitch).then(missingRecordingsAndPreviews)
+  .then(sourceConsistency).then(segmentBoundaries).then(cacheMisses).then(scrubToPlayback).then(speedSurvivesSegmentSwitch).then(preloadWhileScrollingSlowly).then(seamlessSegmentSwitch).then(gridPreviews).then(missingRecordingsAndPreviews)
   .then(() => { console.log('Playback engine checks passed'); process.exit(0); })
   .catch(error => { console.error(error); process.exit(1); });

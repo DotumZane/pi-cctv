@@ -756,7 +756,7 @@ const verticalTimelineZoomLevels=[{id:'24h',pxPerDay:600},{id:'6h',pxPerDay:2400
 const verticalTimelineMaxHeight=15000000;
 let verticalTimelineZoom='4h',verticalTimelineLabelFrame=0;
 try{const saved=typeof localStorage!=='undefined'&&localStorage.getItem('cctvTimelineZoom');const level=verticalTimelineZoomLevels.find(item=>item.id===saved);if(level){verticalTimelineZoom=level.id;verticalTimelineHeight=level.pxPerDay}}catch{}
-function verticalTimelineLabelStep(dayLength=86400){const pxPerSecond=verticalTimelineHeight/dayLength;return [1,5,10,15,30,60,120,300,600,900,1800,3600,7200,10800].find(step=>step*pxPerSecond>=44)||10800}
+function verticalTimelineLabelStep(dayLength=86400,height=verticalTimelineHeight){const pxPerSecond=height/dayLength;return [1,5,10,15,30,60,120,300,600,900,1800,3600,7200,10800].find(step=>step*pxPerSecond>=44)||10800}
 function verticalTimelineLabelText(seconds,step){const text=formatTimelineTime(Math.min(seconds,86399));return step<60?text:(seconds>=86400?'24:00':text.slice(0,5))}
 function scheduleVerticalTimelineLabels(){if(verticalTimelineLabelFrame||typeof requestAnimationFrame!=='function')return;verticalTimelineLabelFrame=requestAnimationFrame(()=>{verticalTimelineLabelFrame=0;renderVerticalTimelineLabels()})}
 function renderVerticalTimelineLabels(force=false){

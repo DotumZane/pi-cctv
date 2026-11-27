@@ -56,6 +56,13 @@
     recordSince: 0, next: null, nextUrl: null, bridgeToken: 0, bridging: false,
   };
 
+  // The 2x2 camera grid: one preview overlay per tile, driven by its own
+  // timeline cursor (see the grid section below).
+  const grid = {
+    active: false, cameras: [], tiles: new Map(), t: null, value: null, date: null,
+    velocity: 0, direction: 0, lastInputAt: 0, loop: 0,
+  };
+
   function log(event, details) { if (debug) console.debug('[playback]', event, details || ''); }
 
   // ---------------------------------------------------------------- metrics
@@ -269,18 +276,18 @@
     return hour + 3600 > now - 60 || entry.index?.pending.size ? 10000 : 300000;
   }
 
-  function requestHour(hour, priority) {
-    if (!state.camera || hour < 0) return null;
-    const key = hourKey(state.camera, hour);
+  function requestHour(hour, priority, camera = state.camera) {
+    if (!camera || hour < 0) return null;
+    const key = hourKey(camera, hour);
     let entry = state.hours.get(key);
     if (entry && (entry.loading || performance.now() - entry.loadedAt < (entry.error ? 5000 : manifestAge(entry)))) {
       if (entry.queued) entry.priority = Math.min(entry.priority, priority);
       return entry;
     }
     if (!entry) {
-      entry = { hour, camera: state.camera, index: null, loadedAt: 0, loading: false };
+      entry = { hour, camera, index: null, loadedAt: 0, loading: false };
       state.hours.set(key, entry);
-      while (state.hours.size > 96) {
+      while (state.hours.size > 192) {
         const oldest = state.hours.keys().next().value;
         if (oldest === key) break;
         state.hours.delete(oldest);
@@ -300,7 +307,7 @@
     while (state.manifestsInFlight < LIMITS.manifestFetches && state.manifestQueue.length) {
       const entry = state.manifestQueue.shift();
       entry.queued = false;
-      if (entry.camera !== state.camera) continue;
+      if (!previewCameras().has(entry.camera)) continue;
       entry.loading = true;
       state.manifestsInFlight += 1;
       metrics.manifestRequests += 1;
@@ -327,8 +334,14 @@
     return bitmap || null;
   }
 
+  // The grid's four cameras share the cache, so it holds more sheets then.
+  function decodedLimit(level) {
+    const base = level === COARSE ? LIMITS.decodedCoarse : LIMITS.decodedFine;
+    return grid.active ? base * 2 : base;
+  }
+
   function storeDecoded(level, url, bitmap) {
-    const cache = decodedCache(level), limit = level === COARSE ? LIMITS.decodedCoarse : LIMITS.decodedFine;
+    const cache = decodedCache(level), limit = decodedLimit(level);
     cache.set(url, bitmap);
     while (cache.size > limit) {
       const oldest = cache.keys().next().value;
@@ -379,8 +392,13 @@
   }
 
   // ---------------------------------------------------------- frame lookup
-  function hourIndex(hour) {
-    return state.camera ? state.hours.get(hourKey(state.camera, hour))?.index || null : null;
+  function hourIndex(hour, camera = state.camera) {
+    return camera ? state.hours.get(hourKey(camera, hour))?.index || null : null;
+  }
+
+  // Cameras whose previews are wanted: the grid's tiles, or the workspace camera.
+  function previewCameras() {
+    return new Set(grid.active ? grid.cameras : [state.camera]);
   }
 
   function lowerBound(frames, t) {
@@ -391,11 +409,11 @@
 
   // Nearest frame of `level` within `bound` seconds of `t`. With `decoded`,
   // only frames whose sheet is ready to draw are considered.
-  function nearestFrame(level, t, bound, decoded) {
+  function nearestFrame(level, t, bound, decoded, camera = state.camera) {
     let best = null;
     for (const hour of [hourOf(t), hourOf(t) - 3600, hourOf(t) + 3600]) {
       if (Math.abs(hour + 1800 - t) > 1800 + bound) continue;
-      const frames = hourIndex(hour)?.[level];
+      const frames = hourIndex(hour, camera)?.[level];
       if (!frames?.length) continue;
       const start = lowerBound(frames, t);
       for (let step = 0; step < frames.length; step++) {
@@ -419,6 +437,7 @@
   // --------------------------------------------------------- render loop
   function wake() {
     if (state.active && !state.loop) state.loop = requestAnimationFrame(tick);
+    if (grid.active && !grid.loop) grid.loop = requestAnimationFrame(gridTick);
   }
 
   function distanceToCursor(frame) { return frame ? Math.abs(frame.t - state.cursor.t) : Infinity; }
@@ -447,18 +466,18 @@
     else scrubMessage(`Loading preview · showing ${clock(shown.t)}`);
   }
 
-  function prefetch(level) {
-    const t = state.cursor.t, speed = Math.abs(state.velocity), direction = state.direction;
-    const sheetLevel = level === VIDEO ? FINE : level, interval = INTERVAL[sheetLevel];
+  // Add the sheets around `t` for one camera to `wanted`. `share` shrinks
+  // the window when several cameras split the decoded-sheet cache.
+  function wantAround(wanted, camera, t, sheetLevel, speed, direction, share = 1) {
+    const interval = INTERVAL[sheetLevel];
     // Look further ahead the faster the cursor moves; keep a short window
     // behind so a reversal finds frames already decoded.
-    const ahead = Math.max(interval * (sheetLevel === FINE ? 45 : 8), speed * 2.5);
-    const behind = Math.max(interval * (sheetLevel === FINE ? 15 : 4), speed * 0.5);
+    const ahead = Math.max(interval * (sheetLevel === FINE ? 45 : 8) * share, speed * 2.5);
+    const behind = Math.max(interval * (sheetLevel === FINE ? 15 : 4) * share, speed * 0.5);
     const from = direction < 0 ? t - ahead : t - behind, to = direction < 0 ? t + behind : t + ahead;
     const hours = [];
     for (let hour = hourOf(from); hour <= hourOf(to) && hours.length < 14; hour += 3600) hours.push(hour);
-    hours.forEach(hour => requestHour(hour, Math.abs(hour + 1800 - t)));
-    const wanted = new Map();
+    hours.forEach(hour => requestHour(hour, Math.abs(hour + 1800 - t), camera));
     const want = (frame) => {
       const distance = Math.abs(frame.t - t), forward = Math.sign(frame.t - t) === direction;
       const priority = forward || !direction ? distance : distance * 2;
@@ -466,9 +485,28 @@
       if (!current || priority < current.priority) wanted.set(frame.url, { level: frame.level, priority });
     };
     hours.forEach(hour => {
-      const frames = hourIndex(hour)?.[sheetLevel] || [];
+      const frames = hourIndex(hour, camera)?.[sheetLevel] || [];
       for (let i = lowerBound(frames, from); i < frames.length && frames[i].t <= to; i++) want(frames[i]);
     });
+    return want;
+  }
+
+  // Never want more sheets than the decoded cache can hold, or prefetching
+  // would evict the frames it just fetched.
+  function fetchWanted(wanted) {
+    const kept = new Map(), counts = { fine: 0, coarse: 0 };
+    [...wanted.entries()].sort((a, b) => a[1].priority - b[1].priority).forEach(([url, item]) => {
+      const limit = item.level === COARSE ? decodedLimit(COARSE) - 1 : decodedLimit(FINE) - 2;
+      if (counts[item.level] < limit) { counts[item.level] += 1; kept.set(url, item); }
+    });
+    syncSheets(kept);
+  }
+
+  function prefetch(level) {
+    const t = state.cursor.t;
+    const sheetLevel = level === VIDEO ? FINE : level;
+    const wanted = new Map();
+    const want = wantAround(wanted, state.camera, t, sheetLevel, Math.abs(state.velocity), state.direction);
     // Keep the sheet of the density on screen wanted too, so a switch of
     // density never aborts the frame that is about to be replaced.
     const shownLevel = state.displayed?.level;
@@ -476,14 +514,7 @@
       const near = nearestFrame(shownLevel, t, lagBound(shownLevel), false);
       if (near) want(near);
     }
-    // Never want more sheets than the decoded cache can hold, or prefetching
-    // would evict the frames it just fetched.
-    const kept = new Map(), counts = { fine: 0, coarse: 0 };
-    [...wanted.entries()].sort((a, b) => a[1].priority - b[1].priority).forEach(([url, item]) => {
-      const limit = item.level === COARSE ? LIMITS.decodedCoarse - 1 : LIMITS.decodedFine - 2;
-      if (counts[item.level] < limit) { counts[item.level] += 1; kept.set(url, item); }
-    });
-    syncSheets(kept);
+    fetchWanted(wanted);
   }
 
   function tick() {
@@ -1138,8 +1169,232 @@
     requestHour(hourOf(now) - 3600, 1);
   }
 
+  // ------------------------------------------------------------- 2x2 grid
+  // The grid timeline (timeline-enhancements.js) moves one shared cursor for
+  // four cameras. While it moves, each tile shows that camera's preview frame
+  // on its own overlay; the overlay stays until the tile's player shows the
+  // committed position.
+  function gridSecondsPerPixel() {
+    return typeof multiContinuousHeight === 'number' && multiContinuousHeight > 0 ? 86400 / multiContinuousHeight : 24;
+  }
+
+  function gridTile(camera) {
+    const known = grid.tiles.get(camera);
+    if (known?.video.isConnected) return known;
+    const video = [...document.querySelectorAll('.multi-camera-video')].find(item => item.dataset.cameraId === camera);
+    const host = video?.parentElement;
+    if (!host) return null;
+    const canvas = document.createElement('canvas');
+    canvas.className = 'multi-camera-scrub-frame';
+    canvas.setAttribute('aria-hidden', 'true');
+    host.appendChild(canvas);
+    const tile = { camera, video, canvas, ctx: canvas.getContext('2d', { alpha: false }), displayed: null, hasPicture: false, settle: false };
+    video.addEventListener('seeked', () => gridSettle(tile));
+    video.addEventListener('playing', () => gridSettle(tile));
+    grid.tiles.set(camera, tile);
+    return tile;
+  }
+
+  function gridDraw(tile, source, sx, sy, sw, sh) {
+    const canvas = tile.canvas, scale = Math.min(1.5, devicePixelRatio || 1);
+    const width = Math.max(1, Math.round((tile.video.clientWidth || 640) * scale));
+    const height = Math.max(1, Math.round((tile.video.clientHeight || 360) * scale));
+    if (canvas.width !== width || canvas.height !== height) { canvas.width = width; canvas.height = height; }
+    const fit = Math.min(width / sw, height / sh), dw = sw * fit, dh = sh * fit;
+    tile.ctx.fillStyle = '#030507';
+    tile.ctx.fillRect(0, 0, width, height);
+    tile.ctx.drawImage(source, sx, sy, sw, sh, (width - dw) / 2, (height - dh) / 2, dw, dh);
+    tile.hasPicture = true;
+    canvas.classList.remove('stale');
+  }
+
+  function gridSettle(tile) {
+    if (!tile.settle || grid.active || tile.video.seeking || tile.video.readyState < 2) return;
+    tile.settle = false;
+    tile.displayed = null;
+    tile.canvas.classList.remove('visible');
+  }
+
+  function gridHasRecording(camera, value) {
+    if (typeof multiRecordAt !== 'function' || typeof multiWorkspaceRecords === 'undefined') return true;
+    return Boolean(multiRecordAt(multiWorkspaceRecords.get(camera) || [], value));
+  }
+
+  function gridDistance(frame) {
+    return frame && Number.isFinite(frame.t) ? Math.abs(frame.t - grid.t) : Infinity;
+  }
+
+  function gridMove(date, value) {
+    const now = performance.now(), t = absoluteTimelineSeconds(date, value);
+    if (grid.active && grid.t !== null) {
+      const elapsed = Math.max(8, now - grid.lastInputAt), delta = t - grid.t;
+      const instant = delta * 1000 / elapsed, direction = Math.sign(delta);
+      if (direction && direction !== grid.direction) grid.velocity = instant;
+      else grid.velocity += (instant - grid.velocity) * Math.min(1, elapsed / 120);
+      if (direction) grid.direction = direction;
+    } else {
+      grid.velocity = 0;
+      grid.direction = 0;
+    }
+    grid.active = true;
+    grid.cameras = [...document.querySelectorAll('.multi-camera-video')].map(video => video.dataset.cameraId).filter(Boolean);
+    grid.t = t;
+    grid.value = Number(value);
+    grid.date = date;
+    grid.lastInputAt = now;
+    for (const camera of grid.cameras) {
+      const tile = gridTile(camera);
+      if (!tile) continue;
+      tile.settle = false;
+      if (!tile.canvas.classList.contains('visible')) {
+        // Start from the picture the tile shows now; any nearer preview
+        // frame replaces it.
+        const video = tile.video;
+        if (video.readyState >= 2 && video.videoWidth) gridDraw(tile, video, 0, 0, video.videoWidth, video.videoHeight);
+        tile.displayed = { t: NaN, key: 'player' };
+        if (tile.hasPicture) tile.canvas.classList.add('visible');
+      }
+      if (tile.video.dataset.playback === 'recording' && !tile.video.paused) tile.video.pause();
+    }
+    wake();
+  }
+
+  function gridTick() {
+    grid.loop = 0;
+    if (!grid.active || grid.t === null) return;
+    const now = performance.now();
+    if (now - grid.lastInputAt > REST_AFTER_MS) grid.velocity = 0;
+    const speed = Math.abs(grid.velocity), spp = gridSecondsPerPixel();
+    // The grid has no per-tile decoder; at rest it uses per-second frames.
+    const level = speed === 0 || (spp <= FINE_MAX_SPP && speed <= FINE_MAX_SPEED) ? FINE : COARSE;
+    const other = level === FINE ? COARSE : FINE, bound = INTERVAL[level] * 1.5 + speed * 0.25;
+    const wanted = new Map(), share = 1 / Math.max(1, grid.cameras.length);
+    for (const camera of grid.cameras) {
+      const tile = gridTile(camera);
+      if (!tile) continue;
+      wantAround(wanted, camera, grid.t, level, speed, grid.direction, share);
+      const missing = tile.video.parentElement?.querySelector('.multi-camera-missing');
+      if (!gridHasRecording(camera, grid.value)) {
+        // Keep the last picture, dimmed, so it is not taken for this time.
+        if (tile.hasPicture) { tile.canvas.classList.add('stale', 'visible'); }
+        if (missing) { missing.hidden = false; missing.textContent = 'No recording at this time'; }
+        continue;
+      }
+      if (missing) missing.hidden = true;
+      tile.canvas.classList.remove('stale');
+      const candidate = nearestFrame(level, grid.t, bound, true, camera) || nearestFrame(other, grid.t, bound, true, camera);
+      const shown = tile.displayed;
+      const nearer = candidate && gridDistance(candidate) < gridDistance(shown) - 1e-3;
+      const upgrade = candidate && shown && candidate.level === level && DETAIL[candidate.level] > (DETAIL[shown.level] ?? -1) &&
+        gridDistance(candidate) <= gridDistance(shown) + 1e-3;
+      if (candidate && candidate.key !== shown?.key && (!shown || nearer || upgrade)) {
+        const bitmap = decodedSheet(candidate);
+        if (bitmap) {
+          const x = (candidate.cell % candidate.columns) * candidate.width, y = Math.floor(candidate.cell / candidate.columns) * candidate.height;
+          gridDraw(tile, bitmap, x, y, candidate.width, candidate.height);
+          tile.canvas.classList.add('visible');
+          tile.displayed = candidate;
+          recordPaint(candidate, now);
+        }
+      }
+    }
+    fetchWanted(wanted);
+    if (state.sheetsInFlight || state.manifestsInFlight || now - grid.lastInputAt < 600 || grid.velocity !== 0) wake();
+  }
+
+  function gridStop() {
+    grid.active = false;
+    grid.t = null;
+    if (grid.loop) cancelAnimationFrame(grid.loop);
+    grid.loop = 0;
+    grid.tiles.forEach(tile => { tile.settle = false; tile.displayed = null; tile.canvas.classList.remove('visible', 'stale'); });
+  }
+
+  // While the grid plays, a tile whose segment ends continues with that
+  // camera's next segment at the shared time.
+  function gridContinue(video) {
+    if (grid.active || video.dataset.playback !== 'recording' || typeof multiWorkspaceRecords === 'undefined' ||
+        typeof multiSeconds !== 'function') return;
+    const records = multiWorkspaceRecords.get(video.dataset.cameraId) || [];
+    const current = records.find(record => new URL(record.url, location.href).href === video.currentSrc);
+    if (!current) return;
+    const end = multiSeconds(current) + (video.duration || 0);
+    const next = records.find(record => multiSeconds(record) > multiSeconds(current) && multiSeconds(record) <= end + 1);
+    if (!next) return;
+    const tile = gridTile(video.dataset.cameraId);
+    if (tile?.hasPicture) { tile.canvas.classList.add('visible'); tile.settle = true; }
+    const rate = video.playbackRate || 1;
+    video.defaultPlaybackRate = rate;
+    video.src = isMp4(next) ? next.url : `${next.url}${next.url.includes('?') ? '&' : '?'}format=mp4`;
+    video.load();
+    video.addEventListener('loadedmetadata', () => {
+      const shared = typeof multiWorkspaceValue === 'number' ? multiWorkspaceValue : end;
+      try { video.currentTime = Math.max(0, Math.min((video.duration || Infinity) - 0.05, shared - multiSeconds(next))); } catch {}
+      Promise.resolve(video.play()).catch(() => {});
+    }, { once: true });
+  }
+
+  function gridAttachPlayback() {
+    document.querySelectorAll('.multi-camera-video').forEach(video => {
+      if (video.dataset.gridContinuation) return;
+      video.dataset.gridContinuation = 'true';
+      video.addEventListener('timeupdate', () => {
+        // Keep the closing frame for the switch to the next segment.
+        const remaining = (video.duration || 0) - video.currentTime;
+        if (video.dataset.playback !== 'recording' || grid.active || remaining <= 0 || remaining > 0.6 || video.readyState < 2) return;
+        const tile = gridTile(video.dataset.cameraId);
+        if (tile && video.videoWidth) gridDraw(tile, video, 0, 0, video.videoWidth, video.videoHeight);
+      });
+      video.addEventListener('ended', () => gridContinue(video));
+    });
+  }
+
+  function installGrid() {
+    window.cctvGridScrub = { move: gridMove, stop: gridStop };
+    if (typeof multiSeekAll === 'function' && !multiSeekAll.cctvGrid) {
+      const seekAll = multiSeekAll;
+      const wrapped = async (...args) => {
+        grid.tiles.forEach(tile => { tile.settle = true; });
+        grid.active = false;
+        if (grid.loop) cancelAnimationFrame(grid.loop);
+        grid.loop = 0;
+        try { return await seekAll(...args); }
+        finally {
+          gridAttachPlayback();
+          grid.tiles.forEach(tile => {
+            // Tiles without footage show their "No recording" notice.
+            if (!tile.video.getAttribute('src')) { tile.settle = false; tile.canvas.classList.remove('visible', 'stale'); }
+            else gridSettle(tile);
+          });
+        }
+      };
+      wrapped.cctvGrid = true;
+      window.multiSeekAll = wrapped;
+    }
+    for (const name of ['multiSetLive', 'multiCloseWorkspace']) {
+      const original = window[name];
+      if (typeof original !== 'function' || original.cctvGrid) continue;
+      const wrapped = (...args) => { gridStop(); return original(...args); };
+      wrapped.cctvGrid = true;
+      window[name] = wrapped;
+    }
+    const open = window.openMultiCameraWorkspace;
+    if (typeof open === 'function' && !open.cctvGrid) {
+      const wrapped = async (...args) => {
+        gridStop();
+        grid.tiles.clear();
+        const result = await open(...args);
+        gridAttachPlayback();
+        return result;
+      };
+      wrapped.cctvGrid = true;
+      window.openMultiCameraWorkspace = wrapped;
+    }
+  }
+
   // ---------------------------------------------------------------- install
   function install() {
+    installGrid();
     const video = mainVideo();
     if (!video || document.documentElement.dataset.playbackEngineInstalled) return;
     document.documentElement.dataset.playbackEngineInstalled = 'true';
@@ -1292,6 +1547,10 @@
     .workspace-scrub-message { position:absolute; left:50%; bottom:16px; transform:translateX(-50%); z-index:6; display:none; align-items:center; justify-content:center; padding:8px 14px; border-radius:8px; color:#d5dce7; background:#030507dd; font-size:clamp(14px,1.5vw,20px); font-weight:600; text-align:center; pointer-events:none; }
     .workspace-scrub-message.visible { display:flex; }
     .workspace-scrub-proxy { position:absolute; width:1px; height:1px; opacity:0; pointer-events:none; }
+    .multi-camera-scrub-frame { position:absolute; inset:0; z-index:1; width:100%; height:100%; display:none; pointer-events:none; background:#030507; }
+    .multi-camera-scrub-frame.visible { display:block; }
+    .multi-camera-scrub-frame.stale { filter:grayscale(1) brightness(.45); }
+    #live-workspace.multi-workspace .multi-camera-missing { z-index:2; }
     #workspace-live, #workspace-live::-webkit-media-controls, #workspace-live::-webkit-media-controls-enclosure { -webkit-appearance:none; }
     #workspace-live::-webkit-media-controls { display:none !important; }
   `;
