@@ -28,7 +28,7 @@ from urllib import request as urllib_request
 
 from . import __agent_version__, __version__, pi_bootstrap
 from .fleet import FleetAgentUpdateCoordinator, FleetOsUpdateCoordinator
-from .recording import RecorderSupervisor, mp4_duration, recording_schedule_active
+from .recording import RecorderSupervisor, is_fragmented_mp4, mp4_duration, recording_schedule_active
 from .store import Store
 from .server_logs import capture_server_output, read_server_logs
 from .preview_track import PREVIEW_ROOT, coarse_sheet, hour_manifest, preview_ready
@@ -861,6 +861,12 @@ class Handler(BaseHTTPRequestHandler):
                     continue  # Retention can remove a file while the index is built.
                 modified_at = datetime.fromtimestamp(stat.st_mtime, timezone.utc)
                 if datetime.now(timezone.utc) - modified_at < timedelta(seconds=10):
+                    continue
+                # A just-closed segment is still fragmented until the indexer
+                # rewrites it (within seconds); listing it earlier would let a
+                # browser start reading a file that is about to be replaced.
+                if (recording.suffix == ".mp4" and datetime.now(timezone.utc) - modified_at < timedelta(minutes=10)
+                        and is_fragmented_mp4(recording)):
                     continue
                 start = None
                 try:

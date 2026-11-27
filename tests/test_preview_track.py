@@ -16,19 +16,21 @@ from cctv import __agent_version__
 from cctv.fleet import FleetAgentUpdateCoordinator, FleetOsUpdateCoordinator
 from cctv.preview_track import (COARSE_INTERVAL, build_segment_preview, coarse_sheet, hour_manifest,
                                 next_preview_source, preview_dir, preview_ready, preview_size, prune_previews)
-from cctv.recording import enforce_storage_limit, prune_recordings
+from cctv.recording import enforce_storage_limit, is_fragmented_mp4, mp4_duration, prune_recordings
 from cctv.server import Handler
 from cctv.store import Store
 
 
-def make_segment(root: Path, start: float, seconds: int = 30, gop: int = 10, rate: int = 10) -> Path:
+def make_segment(root: Path, start: float, seconds: int = 30, gop: int = 10, rate: int = 10,
+                 fragmented: bool = False) -> Path:
     stamp = datetime.fromtimestamp(start).astimezone()
     path = root / "cam-1" / stamp.strftime("%Y-%m-%d") / (stamp.strftime("%H-%M-%S") + ".mp4")
     path.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi",
                     "-i", f"testsrc2=s=320x180:r={rate}:d={seconds}", "-c:v", "libx264", "-preset", "ultrafast",
                     "-g", str(gop), "-keyint_min", str(gop), "-sc_threshold", "0", "-bf", "0",
-                    "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(path)], check=True)
+                    "-pix_fmt", "yuv420p", "-movflags",
+                    "+frag_keyframe+empty_moov+default_base_moof" if fragmented else "+faststart", str(path)], check=True)
     os.utime(path, (time.time() - 60, time.time() - 60))
     return path
 
@@ -74,6 +76,16 @@ class PreviewTrackTests(unittest.TestCase):
         self.assertEqual(built[1], hour["coarse"]["version"])
         self.assertTrue(built[0].read_bytes().startswith(b"\xff\xd8"))
         self.assertEqual(coarse_sheet(self.root, "cam-1", self.hour)[0], built[0], "the hour sheet is cached")
+
+    def test_indexing_finalizes_fragmented_recordings_first(self):
+        source = make_segment(self.root, self.hour, fragmented=True)
+        self.assertTrue(is_fragmented_mp4(source))
+        modified = source.stat().st_mtime_ns
+        self.assertTrue(build_segment_preview(self.root, source))
+        self.assertFalse(is_fragmented_mp4(source), "the indexer rewrites the segment as ordinary MP4")
+        self.assertAlmostEqual(mp4_duration(source), 30, delta=0.5)
+        self.assertEqual(source.stat().st_mtime_ns, modified)
+        self.assertTrue(preview_ready(source, preview_dir(self.root, source)))
 
     def test_sparse_keyframes_fall_back_to_one_frame_per_second(self):
         source = make_segment(self.root, self.hour, seconds=20, gop=100)
@@ -179,6 +191,17 @@ class PreviewTrackApiTests(unittest.TestCase):
         # Removing the recording makes its preview unavailable.
         source.unlink()
         self.assertEqual(self.get(sheet)[0].status, 404)
+
+    def test_recent_fragmented_recordings_are_listed_once_finalized(self):
+        source = make_segment(self.root, self.hour, fragmented=True)
+        os.utime(source, (time.time() - 20, time.time() - 20))
+        response, body = self.get("/api/recordings?camera_id=cam-1")
+        self.assertEqual(json.loads(body)["recordings"], [], "a segment about to be rewritten is not offered yet")
+        build_segment_preview(self.root, source)
+        response, body = self.get("/api/recordings?camera_id=cam-1")
+        listed = json.loads(body)["recordings"]
+        self.assertEqual(len(listed), 1)
+        self.assertAlmostEqual(listed[0]["duration"], 30, delta=0.5)
 
     def test_requests_are_validated_and_authorized(self):
         self.assertEqual(self.get("/api/recordings/preview-track?camera_id=../x&hour=0")[0].status, 400)

@@ -82,6 +82,88 @@ def mp4_duration(path: Path) -> float | None:
     return None
 
 
+FRAGMENTED_MOVFLAGS = "movflags=+frag_keyframe+empty_moov+default_base_moof"
+
+
+def _mp4_boxes(handle, end):
+    while handle.tell() + 8 <= end:
+        start = handle.tell()
+        header = handle.read(8)
+        if len(header) != 8:
+            return
+        size, kind = struct.unpack('>I4s', header)
+        if size == 1:
+            extended = handle.read(8)
+            if len(extended) != 8:
+                return
+            size = struct.unpack('>Q', extended)[0]
+        elif size == 0:
+            size = end - start
+        finish = start + size
+        if finish < handle.tell() or finish > end:
+            return
+        yield kind, finish
+        handle.seek(finish)
+
+
+def is_fragmented_mp4(path: Path) -> bool:
+    """True when the movie header announces fragments (an mvex box)."""
+    try:
+        with path.open('rb') as handle:
+            size = path.stat().st_size
+            for kind, end in _mp4_boxes(handle, size):
+                if kind == b'moov':
+                    return any(child == b'mvex' for child, _ in _mp4_boxes(handle, end))
+                if kind == b'mdat':
+                    return False
+    except (OSError, struct.error):
+        pass
+    return False
+
+
+def finalize_segment(path: Path) -> bool:
+    """Rewrite a closed fragmented recording as an ordinary faststart MP4.
+
+    Browsers seek ordinary MP4 files directly and the duration comes from
+    the movie header, as before. A segment cut off by a crash is recovered
+    up to its last complete fragment. The modification time is kept, so
+    retention and the recording index treat the file as before.
+    Returns True when the file was rewritten.
+    """
+    if path.suffix != '.mp4' or not is_fragmented_mp4(path):
+        return False
+    temporary = path.with_name(f'.{path.stem}.{os.getpid()}.{threading.get_ident()}.finalize.mp4')
+    try:
+        stat = path.stat()
+        result = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i", str(path),
+             "-map", "0", "-c", "copy", "-movflags", "+faststart", "-f", "mp4", str(temporary)],
+            capture_output=True, timeout=120)
+        if result.returncode != 0 or not temporary.is_file() or not mp4_duration(temporary):
+            return False
+        os.utime(temporary, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+        temporary.replace(path)
+        return True
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def finalize_closed_segments(output_dir: Path, max_age_seconds: float = 7200, now: float | None = None) -> int:
+    """Finalize recent closed segments (for the standalone recorder)."""
+    now = time.time() if now is None else now
+    finalized = 0
+    for path in recording_files(output_dir):
+        try:
+            age = now - path.stat().st_mtime
+        except OSError:
+            continue
+        if 8 <= age <= max_age_seconds and finalize_segment(path):
+            finalized += 1
+    return finalized
+
+
 def playback_cache_path(root: Path, recording: Path) -> Path:
     relative = recording.relative_to(root)
     return root / '.playback-cache' / relative.parent / f'{relative.stem}.mp4'
@@ -102,7 +184,11 @@ class RecorderConfig:
             "ffmpeg", "-hide_banner", "-loglevel", "warning", "-nostdin",
             "-rtsp_transport", "tcp", "-fflags", "nobuffer", "-i", self.stream_url,
             "-map", "0:v:0", "-c", "copy", "-f", "segment", "-segment_format", "mp4",
-            "-segment_format_options", "movflags=+faststart",
+            # Fragmented MP4: every keyframe closes a self-contained fragment,
+            # so a recorder killed mid-segment (crash, power cut) still leaves
+            # the footage up to its last fragment playable. Closed segments
+            # are rewritten as ordinary MP4 by finalize_segment.
+            "-segment_format_options", FRAGMENTED_MOVFLAGS,
             "-segment_time", str(self.segment_seconds), "-strftime", "1",
             "-reset_timestamps", "1", str(output),
         ]
@@ -175,6 +261,7 @@ def run(config: RecorderConfig, cleanup_interval: int = 300) -> None:
             settings = {}
         now = time.monotonic()
         if now - last_cleanup >= cleanup_interval:
+            finalize_closed_segments(config.output_dir)
             prune_recordings(config.output_dir, config.retention_hours)
             enforce_storage_limit(config.output_dir, config.storage_limit_gb)
             last_cleanup = now

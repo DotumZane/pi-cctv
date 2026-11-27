@@ -24,7 +24,7 @@ from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .recording import mp4_duration, recording_files
+from .recording import finalize_segment, mp4_duration, recording_files
 
 PREVIEW_ROOT = ".preview-track"
 FINE_WIDTH, FINE_HEIGHT, FINE_COLUMNS, FINE_ROWS = 256, 144, 6, 5
@@ -122,6 +122,9 @@ def build_segment_preview(root: Path, source: Path) -> bool | None:
     failure = directory.with_suffix(".failed")
     success = False
     try:
+        # Closed segments are recorded as fragmented MP4; turn them into
+        # ordinary MP4 before indexing (or serving) them.
+        finalize_segment(source)
         if preview_ready(source, directory):
             return None
         start = segment_start(root, source)
